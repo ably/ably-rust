@@ -8,6 +8,9 @@
 
 use std::time::Duration;
 
+/// A `Result` alias where the `Err` variant contains an `ably::ErrorInfo`.
+pub type Result<T> = std::result::Result<T, ErrorInfo>;
+
 /// A client for the [Ably REST API].
 ///
 /// [Ably REST API]: https://ably.com/documentation/rest-api
@@ -35,7 +38,7 @@ impl RestClient {
     /// ```
     ///
     /// [`ably::RestClient::from`]: RestClient::from
-    pub fn new(options: ClientOptions) -> Result<Self, ErrorInfo> {
+    pub fn new(options: ClientOptions) -> Result<Self> {
         options.validate()?;
 
         Ok(RestClient {
@@ -50,14 +53,14 @@ impl RestClient {
     /// # Example
     ///
     /// ```
-    /// # async fn run() -> Result<(), ably::ErrorInfo> {
+    /// # async fn run() -> ably::Result<()> {
     /// let client = ably::RestClient::from("<api_key>");
     ///
     /// let time = client.time().await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn time(&self) -> Result<Duration, ErrorInfo> {
+    pub async fn time(&self) -> Result<Duration> {
         let url = format!("{}/time", self.options.rest_url());
 
         let time: Vec<u64> = self.client.get(&url).send().await?.json().await?;
@@ -202,7 +205,7 @@ impl ClientOptions {
     /// - checks a credential has been provided ([RSC1b])
     ///
     /// [RSC1b]: https://docs.ably.io/client-lib-development-guide/features/#RSC1b
-    fn validate(&self) -> Result<(), ErrorInfo> {
+    fn validate(&self) -> Result<()> {
         match self.credential {
             None => Err(error!(40106, "must provide either an API key or a token")),
             _ => Ok(()),
