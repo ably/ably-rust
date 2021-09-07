@@ -9,4 +9,4 @@ edition = "2018"
 reqwest = { version = "*", features = ["json"] }
 
 [dev-dependencies]
-tokio-test = "*"
+tokio = { version = "*", features = ["macros"] }

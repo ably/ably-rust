@@ -291,15 +291,8 @@ mod tests {
         assert_eq!(err.code, 40106);
     }
 
-    /// A convenience macro to wait for a future to resolve.
-    macro_rules! wait {
-        ($e:expr) => {
-            tokio_test::block_on($e)
-        };
-    }
-
-    #[test]
-    fn returns_the_server_time() {
+    #[tokio::test]
+    async fn time_returns_the_server_time() -> Result<()> {
         let five_minutes_ago = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
@@ -308,13 +301,15 @@ mod tests {
         let mut options = ClientOptions::from("aaaaaa.bbbbbb:cccccc");
         options.set_environment("sandbox");
 
-        let client = RestClient::new(options).unwrap();
+        let client = RestClient::new(options)?;
 
-        let time = wait!(client.time()).unwrap();
+        let time = client.time().await?;
         assert!(
             time > five_minutes_ago,
             "Expected server time {} to be within the last 5 minutes",
             time.as_millis()
         );
+
+        Ok(())
     }
 }
