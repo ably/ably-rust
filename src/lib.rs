@@ -8,6 +8,9 @@
 
 use std::time::Duration;
 
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+
 /// A `Result` alias where the `Err` variant contains an `ably::ErrorInfo`.
 pub type Result<T> = std::result::Result<T, ErrorInfo>;
 
@@ -61,11 +64,123 @@ impl RestClient {
     /// # }
     /// ```
     pub async fn time(&self) -> Result<Duration> {
-        let url = format!("{}/time", self.options.rest_url());
-
-        let time: Vec<u64> = self.client.get(&url).send().await?.json().await?;
+        let time: Vec<u64> = self
+            .request(http::Method::GET, "/time", None::<()>, None::<()>, None)
+            .await?
+            .json()
+            .await?;
 
         Ok(Duration::from_millis(time[0]))
+    }
+
+    /// Sends a custom HTTP request to the Ably REST API.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # async fn run() -> ably::Result<()> {
+    /// let client = ably::RestClient::from("<api_key>");
+    ///
+    /// let params = [("key1", "val1"), ("key2", "val2")];
+    ///
+    /// let body = r#"{"json":"body"}"#;
+    ///
+    /// let mut headers = ably::http::HeaderMap::new();
+    /// headers.insert("Foo", "Bar".parse().unwrap());
+    ///
+    /// let response = client.request(
+    ///     ably::http::Method::POST,
+    ///     "/some/custom/path",
+    ///     Some(params),
+    ///     Some(body),
+    ///     Some(headers),
+    /// ).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn request<T, U>(
+        &self,
+        method: http::Method,
+        path: &str,
+        params: Option<T>,
+        body: Option<U>,
+        headers: Option<http::HeaderMap>,
+    ) -> Result<Response>
+    where
+        T: Serialize + Sized,
+        U: Serialize + Sized,
+    {
+        let url = format!("{}{}", self.options.rest_url(), path);
+
+        let mut req = self.client.request(method, &url);
+
+        if let Some(params) = params {
+            req = req.query(&params);
+        }
+
+        if let Some(body) = body {
+            req = req.json(&body);
+        }
+
+        if let Some(headers) = headers {
+            req = req.headers(headers);
+        }
+
+        req.send().await.map(Response::new).map_err(Into::into)
+    }
+}
+
+/// A Response from the [Ably REST API].
+///
+/// [Ably REST API]: https://ably.com/documentation/rest-api
+#[derive(Debug)]
+pub struct Response {
+    inner: reqwest::Response,
+}
+
+impl Response {
+    fn new(response: reqwest::Response) -> Response {
+        Response { inner: response }
+    }
+
+    /// Returns the list of items from the body of a paginated response.
+    pub async fn items<T: DeserializeOwned>(self) -> Result<Vec<T>> {
+        self.inner.json().await.map_err(Into::into)
+    }
+
+    /// Deserialize the response body as JSON.
+    pub async fn json<T: DeserializeOwned>(self) -> Result<T> {
+        self.inner.json().await.map_err(Into::into)
+    }
+
+    /// Returns the HTTP status code.
+    pub fn status_code(&self) -> http::StatusCode {
+        self.inner.status()
+    }
+
+    /// Returns true if the HTTP status code is within 200-299.
+    pub fn success(&self) -> bool {
+        self.status_code().is_success()
+    }
+
+    /// Returns the error code from the X-Ably-ErrorCode HTTP header.
+    pub fn error_code(&self) -> Option<u32> {
+        self.header(http::header::ERROR_CODE)
+            .map(|v| v.parse().ok())
+            .flatten()
+    }
+
+    /// Returns the error message from the X-Ably-ErrorMessage HTTP header.
+    pub fn error_message(&self) -> Option<&str> {
+        self.header(http::header::ERROR_MESSAGE)
+    }
+
+    fn header(&self, key: &str) -> Option<&str> {
+        self.inner
+            .headers()
+            .get(key)
+            .map(|v| v.to_str().ok())
+            .flatten()
     }
 }
 
@@ -158,6 +273,9 @@ pub struct ClientOptions {
 
     /// An optional custom environment used to construct the endpoint URLs.
     environment: Option<String>,
+
+    /// Override the hostname used in the REST API URL.
+    rest_host: Option<String>,
 }
 
 impl ClientOptions {
@@ -166,6 +284,7 @@ impl ClientOptions {
         ClientOptions {
             credential: None,
             environment: None,
+            rest_host: None,
         }
     }
 
@@ -200,6 +319,11 @@ impl ClientOptions {
         self.environment = Some(String::from(environment));
     }
 
+    /// Sets the rest_host.
+    pub fn set_rest_host(&mut self, rest_host: &str) {
+        self.rest_host = Some(String::from(rest_host));
+    }
+
     /// Validates the options:
     ///
     /// - checks a credential has been provided ([RSC1b])
@@ -212,13 +336,16 @@ impl ClientOptions {
         }
     }
 
-    /// Returns the REST URL, taking into account the custom environment
-    /// option.
+    /// Returns the REST URL, taking into account the rest_host and environment
+    /// options.
     fn rest_url(&self) -> String {
-        match &self.environment {
-            Some(e) => format!("https://{}-rest.ably.io", e),
-            None => String::from("https://rest.ably.io"),
+        if let Some(host) = &self.rest_host {
+            return format!("https://{}", host);
         }
+        if let Some(env) = &self.environment {
+            return format!("https://{}-rest.ably.io", env);
+        }
+        String::from("https://rest.ably.io")
     }
 }
 
@@ -249,6 +376,7 @@ impl From<&str> for ClientOptions {
                 None => auth::Token(String::from(s)),
             }),
             environment: None,
+            rest_host: None,
         }
     }
 }
@@ -263,8 +391,20 @@ mod auth {
     pub use Credential::*;
 }
 
+/// Encapsulate HTTP related types in the http module.
+pub mod http {
+    pub use reqwest::header::{HeaderMap, HeaderName};
+    pub use reqwest::{Method, Response, StatusCode};
+
+    pub mod header {
+        pub const ERROR_CODE: &str = "x-ably-errorcode";
+        pub const ERROR_MESSAGE: &str = "x-ably-errormessage";
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::http::Method;
     use super::*;
     use std::time::{Duration, SystemTime};
 
@@ -291,17 +431,24 @@ mod tests {
         assert_eq!(err.code, 40106);
     }
 
+    fn test_client_options() -> ClientOptions {
+        let mut options = ClientOptions::from("aaaaaa.bbbbbb:cccccc");
+        options.set_environment("sandbox");
+        options
+    }
+
+    fn test_client() -> RestClient {
+        RestClient::new(test_client_options()).unwrap()
+    }
+
     #[tokio::test]
     async fn time_returns_the_server_time() -> Result<()> {
+        let client = test_client();
+
         let five_minutes_ago = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             - Duration::from_secs(5 * 60);
-
-        let mut options = ClientOptions::from("aaaaaa.bbbbbb:cccccc");
-        options.set_environment("sandbox");
-
-        let client = RestClient::new(options)?;
 
         let time = client.time().await?;
         assert!(
@@ -309,6 +456,54 @@ mod tests {
             "Expected server time {} to be within the last 5 minutes",
             time.as_millis()
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn custom_request_returns_items() -> Result<()> {
+        let client = test_client();
+
+        let res = client
+            .request(Method::GET, "/time", None::<()>, None::<()>, None)
+            .await?;
+
+        let items: Vec<u64> = res.items().await?;
+
+        assert_eq!(items.len(), 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn custom_request_with_unknown_path_returns_404_response() -> Result<()> {
+        let client = test_client();
+
+        let res = client
+            .request(Method::GET, "/invalid", None::<()>, None::<()>, None)
+            .await?;
+
+        assert!(!res.success());
+        assert_eq!(res.status_code(), 404);
+        assert_eq!(res.error_code(), Some(40400));
+        assert!(res.error_message().is_some());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn custom_request_with_bad_rest_host_returns_network_error() -> Result<()> {
+        let mut options = test_client_options();
+        options.set_rest_host("i-dont-exist.ably.com");
+        let client = RestClient::new(options)?;
+
+        let err = client
+            .request(Method::GET, "/time", None::<()>, None::<()>, None)
+            .await
+            .expect_err("Expected network error");
+
+        assert_eq!(err.code, 40000);
+        println!("{}", err.message);
 
         Ok(())
     }
