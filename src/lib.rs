@@ -9,8 +9,8 @@
 #[macro_use]
 mod error;
 
-use std::time::Duration;
 use error::*;
+use chrono::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -27,8 +27,7 @@ pub struct RestClient {
 }
 
 impl RestClient {
-    /// Sends a GET request to /time and returns the server time as a Duration
-    /// since the Unix epoch.
+    /// Sends a GET request to /time and returns the server time in UTC.
     ///
     /// # Example
     ///
@@ -40,14 +39,17 @@ impl RestClient {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn time(&self) -> Result<Duration> {
-        let time: Vec<u64> = self
+    pub async fn time(&self) -> Result<DateTime<Utc>> {
+        let mut res: Vec<i64> = self
             .request(http::Method::GET, "/time", None::<()>, None::<()>, None)
             .await?
             .json()
             .await?;
 
-        Ok(Duration::from_millis(time[0]))
+        match res.pop() {
+            Some(time) => Ok(Utc.timestamp(time / 1000, time as u32 % 1000)),
+            None => Err(error!(40000, "Invalid response from /time")),
+        }
     }
 
     /// Sends a custom HTTP request to the Ably REST API.
@@ -337,7 +339,7 @@ pub mod http {
 mod tests {
     use super::http::Method;
     use super::*;
-    use std::time::{Duration, SystemTime};
+    use chrono::Duration;
 
     #[test]
     fn rest_client_from_sets_key_credential_with_string_with_colon() {
@@ -375,16 +377,13 @@ mod tests {
     async fn time_returns_the_server_time() -> Result<()> {
         let client = test_client();
 
-        let five_minutes_ago = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            - Duration::from_secs(5 * 60);
+        let five_minutes_ago = Utc::now() - Duration::minutes(5);
 
         let time = client.time().await?;
         assert!(
             time > five_minutes_ago,
             "Expected server time {} to be within the last 5 minutes",
-            time.as_millis()
+            time
         );
 
         Ok(())
