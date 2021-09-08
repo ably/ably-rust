@@ -24,32 +24,6 @@ pub struct RestClient {
 }
 
 impl RestClient {
-    /// Returns an `ably::RestClient` with the given options.
-    ///
-    /// This is typically used when configuring custom options. To initialise
-    /// a client with just an API key or token, use [`ably::RestClient::from`].
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use ably;
-    ///
-    /// let options = ably::ClientOptions::new();
-    /// // ... set some custom options ...
-    ///
-    /// let client = ably::RestClient::new(options);
-    /// ```
-    ///
-    /// [`ably::RestClient::from`]: RestClient::from
-    pub fn new(options: ClientOptions) -> Result<Self> {
-        options.validate()?;
-
-        Ok(RestClient {
-            options,
-            client: reqwest::Client::new(),
-        })
-    }
-
     /// Sends a GET request to /time and returns the server time as a Duration
     /// since the Unix epoch.
     ///
@@ -128,6 +102,22 @@ impl RestClient {
 
         req.send().await.map(Response::new).map_err(Into::into)
     }
+
+    /// Returns the API key from the ClientOptions.
+    pub fn key(&self) -> Option<String> {
+        match &self.options.credential {
+            Some(auth::Key(s)) => Some(s.to_string()),
+            _ => None,
+        }
+    }
+
+    /// Returns the token from the ClientOptions.
+    pub fn token(&self) -> Option<String> {
+        match &self.options.credential {
+            Some(auth::Token(s)) => Some(s.to_string()),
+            _ => None,
+        }
+    }
 }
 
 /// A Response from the [Ably REST API].
@@ -202,7 +192,7 @@ impl From<&str> for RestClient {
     fn from(s: &str) -> Self {
         // unwrap the result since we're guaranteed to have a valid client when
         // it's initialised with an API key or token.
-        RestClient::new(ClientOptions::from(s)).unwrap()
+        ClientOptions::from(s).client().unwrap()
     }
 }
 
@@ -288,52 +278,47 @@ impl ClientOptions {
         }
     }
 
-    /// Returns the API key.
-    pub fn key(&self) -> Option<String> {
-        match &self.credential {
-            Some(auth::Key(s)) => Some(s.to_string()),
-            _ => None,
-        }
-    }
-
     /// Sets the API key.
-    pub fn set_key(&mut self, key: &str) {
+    pub fn key(mut self, key: &str) -> Self {
         self.credential = Some(auth::Key(String::from(key)));
-    }
-
-    /// Returns the token.
-    pub fn token(&self) -> Option<String> {
-        match &self.credential {
-            Some(auth::Token(s)) => Some(s.to_string()),
-            _ => None,
-        }
+        self
     }
 
     /// Sets the token.
-    pub fn set_token(&mut self, token: &str) {
+    pub fn token(mut self, token: &str) -> Self {
         self.credential = Some(auth::Token(String::from(token)));
+        self
     }
 
     /// Sets the environment.
-    pub fn set_environment(&mut self, environment: &str) {
+    pub fn environment(mut self, environment: &str) -> Self {
         self.environment = Some(String::from(environment));
+        self
     }
 
     /// Sets the rest_host.
-    pub fn set_rest_host(&mut self, rest_host: &str) {
+    pub fn rest_host(mut self, rest_host: &str) -> Self {
         self.rest_host = Some(String::from(rest_host));
+        self
     }
 
-    /// Validates the options:
+    /// Returns a RestClient using the ClientOptions.
     ///
-    /// - checks a credential has been provided ([RSC1b])
+    /// # Errors
+    ///
+    /// This method fails if the ClientOptions are not valid:
+    ///
+    /// - a credential must be provided ([RSC1b])
     ///
     /// [RSC1b]: https://docs.ably.io/client-lib-development-guide/features/#RSC1b
-    fn validate(&self) -> Result<()> {
-        match self.credential {
-            None => Err(error!(40106, "must provide either an API key or a token")),
-            _ => Ok(()),
+    pub fn client(self) -> Result<RestClient> {
+        if let None = self.credential {
+            return Err(error!(40106, "must provide either an API key or a token"));
         }
+        Ok(RestClient {
+            options: self,
+            client: reqwest::Client::new(),
+        })
     }
 
     /// Returns the REST URL, taking into account the rest_host and environment
@@ -409,36 +394,35 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     #[test]
-    fn sets_key_credential_from_string_with_colon() {
+    fn rest_client_from_sets_key_credential_with_string_with_colon() {
         let s = "appID.keyID:keySecret";
         let client = RestClient::from(s);
-        assert_eq!(client.options.key(), Some(s.to_string()));
-        assert_eq!(client.options.token(), None);
+        assert_eq!(client.key(), Some(s.to_string()));
+        assert_eq!(client.token(), None);
     }
 
     #[test]
-    fn sets_token_credential_from_string_without_colon() {
+    fn rest_client_from_sets_token_credential_with_string_without_colon() {
         let s = "appID.tokenID";
         let client = RestClient::from(s);
-        assert_eq!(client.options.token(), Some(s.to_string()));
-        assert_eq!(client.options.key(), None);
+        assert_eq!(client.token(), Some(s.to_string()));
+        assert_eq!(client.key(), None);
     }
 
     #[test]
-    fn errors_with_no_key_or_token() {
-        let options = ClientOptions::new();
-        let err = RestClient::new(options).expect_err("Expected 40106 error");
+    fn client_options_errors_with_no_key_or_token() {
+        let err = ClientOptions::new()
+            .client()
+            .expect_err("Expected 40106 error");
         assert_eq!(err.code, 40106);
     }
 
     fn test_client_options() -> ClientOptions {
-        let mut options = ClientOptions::from("aaaaaa.bbbbbb:cccccc");
-        options.set_environment("sandbox");
-        options
+        ClientOptions::from("aaaaaa.bbbbbb:cccccc").environment("sandbox")
     }
 
     fn test_client() -> RestClient {
-        RestClient::new(test_client_options()).unwrap()
+        test_client_options().client().unwrap()
     }
 
     #[tokio::test]
@@ -493,9 +477,9 @@ mod tests {
 
     #[tokio::test]
     async fn custom_request_with_bad_rest_host_returns_network_error() -> Result<()> {
-        let mut options = test_client_options();
-        options.set_rest_host("i-dont-exist.ably.com");
-        let client = RestClient::new(options)?;
+        let client = test_client_options()
+            .rest_host("i-dont-exist.ably.com")
+            .client()?;
 
         let err = client
             .request(Method::GET, "/time", None::<()>, None::<()>, None)
