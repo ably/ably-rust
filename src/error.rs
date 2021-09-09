@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::convert::Infallible;
 
 /// Creates an [`ErrorInfo`] with the given code and message.
 ///
@@ -55,6 +56,14 @@ impl From<reqwest::Error> for ErrorInfo {
             ),
             None => error!(40000, format!("Unexpected HTTP error: {}", err), None),
         }
+    }
+}
+
+/// Implement From<Infallible> to support ErrorInfo being the associated
+/// type for the TryInto trait bound in ClientOptions#key.
+impl From<Infallible> for ErrorInfo {
+    fn from(_: Infallible) -> Self {
+        unreachable!()
     }
 }
 

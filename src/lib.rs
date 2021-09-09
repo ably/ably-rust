@@ -8,12 +8,14 @@
 
 #[macro_use]
 pub mod error;
+pub mod auth;
 pub mod stats;
 
 use crate::error::*;
 use chrono::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::convert::TryInto;
 
 /// A `Result` alias where the `Err` variant contains an `ably::ErrorInfo`.
 pub type Result<T> = std::result::Result<T, ErrorInfo>;
@@ -23,9 +25,9 @@ pub type Result<T> = std::result::Result<T, ErrorInfo>;
 /// [Ably REST API]: https://ably.com/documentation/rest-api
 #[derive(Clone, Debug)]
 pub struct RestClient {
-    pub options: ClientOptions,
-    client:      reqwest::Client,
-    url:         reqwest::Url,
+    pub credential: auth::Credential,
+    client:         reqwest::Client,
+    url:            reqwest::Url,
 }
 
 impl RestClient {
@@ -123,15 +125,12 @@ impl RestClient {
         let mut req = self.client.request(method, url);
 
         // Set the Authorization header
-        if let Some(credential) = &self.options.credential {
-            match credential {
-                auth::Key(key) => {
-                    let mut iter = key.splitn(2, ':');
-                    req = req.basic_auth(iter.next().unwrap(), Some(iter.next().unwrap()));
-                }
-                auth::Token(token) => {
-                    req = req.bearer_auth(token);
-                }
+        match &self.credential {
+            auth::Credential::Key(key) => {
+                req = req.basic_auth(&key.name, Some(&key.value));
+            }
+            auth::Credential::Token(token) => {
+                req = req.bearer_auth(&token);
             }
         }
 
@@ -139,17 +138,17 @@ impl RestClient {
     }
 
     /// Returns the API key from the ClientOptions.
-    pub fn key(&self) -> Option<String> {
-        match &self.options.credential {
-            Some(auth::Key(s)) => Some(s.to_string()),
+    pub fn key(&self) -> Option<&auth::Key> {
+        match &self.credential {
+            auth::Credential::Key(k) => Some(k),
             _ => None,
         }
     }
 
     /// Returns the token from the ClientOptions.
     pub fn token(&self) -> Option<String> {
-        match &self.options.credential {
-            Some(auth::Token(s)) => Some(s.to_string()),
+        match &self.credential {
+            auth::Credential::Token(s) => Some(s.to_string()),
             _ => None,
         }
     }
@@ -268,7 +267,7 @@ impl From<&str> for RestClient {
 #[derive(Clone, Debug)]
 pub struct ClientOptions {
     /// Holds either an API key or a token.
-    credential: Option<auth::Credential>,
+    credential: Result<auth::Credential>,
 
     /// An optional custom environment used to construct the endpoint URLs.
     environment: Option<String>,
@@ -285,7 +284,7 @@ impl ClientOptions {
     /// Returns ClientOptions with default values.
     pub fn new() -> Self {
         ClientOptions {
-            credential:  None,
+            credential:  Err(error!(40106, "must provide either an API key or a token")),
             environment: None,
             rest_host:   None,
             rest_url:    Ok(reqwest::Url::parse("https://rest.ably.io").unwrap()),
@@ -304,8 +303,15 @@ impl ClientOptions {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn key(mut self, key: &str) -> Self {
-        self.credential = Some(auth::Key(String::from(key)));
+    pub fn key<T>(mut self, key: T) -> Self
+    where
+        T: TryInto<auth::Key>,
+        T::Error: Into<ErrorInfo>,
+    {
+        self.credential = key
+            .try_into()
+            .map(|k| auth::Credential::Key(k))
+            .map_err(Into::into);
         self
     }
 
@@ -322,7 +328,7 @@ impl ClientOptions {
     /// # }
     /// ```
     pub fn token(mut self, token: &str) -> Self {
-        self.credential = Some(auth::Token(String::from(token)));
+        self.credential = Ok(auth::Credential::Token(String::from(token)));
         self
     }
 
@@ -422,18 +428,16 @@ impl ClientOptions {
     ///
     /// This method fails if the ClientOptions are not valid:
     ///
-    /// - a credential must be provided ([RSC1b])
+    /// - a valid credential must be provided ([RSC1b])
     /// - the REST API URL must be valid
     ///
     /// [RSC1b]: https://docs.ably.io/client-lib-development-guide/features/#RSC1b
     pub fn client(self) -> Result<RestClient> {
-        if let None = self.credential {
-            return Err(error!(40106, "must provide either an API key or a token"));
-        }
+        let credential = self.credential?;
         let url = self.rest_url.clone()?;
 
         Ok(RestClient {
-            options: self,
+            credential,
             client: reqwest::Client::new(),
             url,
         })
@@ -451,36 +455,23 @@ impl From<&str> for ClientOptions {
     ///
     /// ```
     /// // Initialise ClientOptions with an API key.
-    /// let client = ably::ClientOptions::from("uTNfLQ.ms51fw:****************");
+    /// let options = ably::ClientOptions::from("uTNfLQ.ms51fw:****************");
     /// ```
     ///
     /// ```
     /// // Initialise ClientOptions with a token.
-    /// let client = ably::ClientOptions::from("uTNfLQ.Gup2lu*********PYcwUb");
+    /// let options = ably::ClientOptions::from("uTNfLQ.Gup2lu*********PYcwUb");
     /// ```
     ///
     /// [RSC1a]: https://docs.ably.io/client-lib-development-guide/features/#RSC1a
     fn from(s: &str) -> Self {
-        ClientOptions {
-            credential:  Some(match s.find(':') {
-                Some(_) => auth::Key(String::from(s)),
-                None => auth::Token(String::from(s)),
-            }),
-            environment: None,
-            rest_host:   None,
-            rest_url:    Ok(reqwest::Url::parse("https://rest.ably.io").unwrap()),
+        let options = Self::new();
+
+        match s.find(':') {
+            Some(_) => options.key(s),
+            None => options.token(s),
         }
     }
-}
-
-mod auth {
-    /// An enum representing either an API key or a token.
-    #[derive(Clone, Debug, PartialEq)]
-    pub enum Credential {
-        Key(String),
-        Token(String),
-    }
-    pub use Credential::*;
 }
 
 /// Encapsulate HTTP related types in the http module.
@@ -507,16 +498,16 @@ mod tests {
     fn rest_client_from_sets_key_credential_with_string_with_colon() {
         let s = "appID.keyID:keySecret";
         let client = RestClient::from(s);
-        assert_eq!(client.key(), Some(s.to_string()));
-        assert_eq!(client.token(), None);
+        assert!(client.key().is_some());
+        assert!(client.token().is_none());
     }
 
     #[test]
     fn rest_client_from_sets_token_credential_with_string_without_colon() {
         let s = "appID.tokenID";
         let client = RestClient::from(s);
-        assert_eq!(client.token(), Some(s.to_string()));
-        assert_eq!(client.key(), None);
+        assert!(client.token().is_some());
+        assert!(client.key().is_none());
     }
 
     #[test]
@@ -538,14 +529,7 @@ mod tests {
     /// A test app in the Ably Sandbox environment.
     #[derive(Deserialize)]
     struct TestApp {
-        keys: Vec<TestKey>,
-    }
-
-    /// A test key associated with a test app.
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct TestKey {
-        key_str: String,
+        keys: Vec<auth::Key>,
     }
 
     impl TestApp {
@@ -565,7 +549,8 @@ mod tests {
 
         /// Returns a RestClient with the test app's key.
         fn client(&self) -> RestClient {
-            ClientOptions::from(self.keys[0].key_str.as_ref())
+            ClientOptions::new()
+                .key(self.keys[0].clone())
                 .environment("sandbox")
                 .client()
                 .unwrap()
