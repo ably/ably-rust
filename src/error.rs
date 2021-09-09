@@ -1,3 +1,5 @@
+use serde::Deserialize;
+
 /// Creates an [`ErrorInfo`] with the given code and message.
 ///
 /// [`ErrorInfo`]: ably::ErrorInfo
@@ -13,7 +15,7 @@ macro_rules! error {
 /// An [Ably error].
 ///
 /// [Ably error]: https://ably.com/documentation/rest/types#error-info
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct ErrorInfo {
     /// The [Ably error code].
     ///
@@ -24,6 +26,7 @@ pub struct ErrorInfo {
     pub message: String,
 
     /// HTTP Status Code corresponding to this error, where applicable.
+    #[serde(rename(deserialize = "statusCode"))]
     pub status_code: Option<u32>,
 
     /// Link to Ably documenation with more information about the error.
@@ -53,4 +56,35 @@ impl From<reqwest::Error> for ErrorInfo {
             None => error!(40000, format!("Unexpected HTTP error: {}", err), None),
         }
     }
+}
+
+/// Used to deserialize a wrapped ErrorInfo from a JSON error response.
+///
+/// # Example
+///
+/// ```
+/// # fn main() -> Result<(), serde_json::Error> {
+/// use ably::error::WrappedError;
+///
+/// let response = r#"
+///   {
+///       "error": {
+///           "message": "No authentication information provided. (See https://help.ably.io/error/40101 for help.)",
+///           "code": 40101,
+///           "statusCode": 401,
+///           "href": "https://help.ably.io/error/40101"
+///       }
+///   }"#;
+///
+/// let err: WrappedError = serde_json::from_str(response)?;
+///
+/// assert_eq!(err.error.code, 40101);
+/// assert_eq!(err.error.message, "No authentication information provided. (See https://help.ably.io/error/40101 for help.)");
+/// assert_eq!(err.error.status_code, Some(401));
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Deserialize)]
+pub struct WrappedError {
+    pub error: ErrorInfo,
 }

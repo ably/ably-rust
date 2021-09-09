@@ -7,9 +7,9 @@
 //! [Ably]: https://ably.com
 
 #[macro_use]
-mod error;
+pub mod error;
 
-use error::*;
+use crate::error::*;
 use chrono::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -146,6 +146,27 @@ impl Response {
     /// Deserialize the response body as JSON.
     pub async fn json<T: DeserializeOwned>(self) -> Result<T> {
         self.inner.json().await.map_err(Into::into)
+    }
+
+    /// Returns the ErrorInfo from the body of the response.
+    ///
+    /// This is typically called after checking that success() is false.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # async fn run() -> ably::Result<()> {
+    /// # let client = ably::RestClient::from("aaaaaa.bbbbbb:cccccc");
+    /// let res = client.request(ably::http::Method::GET, "/invalid", None::<()>, None::<()>, None).await?;
+    /// if !res.success() {
+    ///     let err = res.error().await.unwrap();
+    ///     assert_eq!(err.code, 404);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn error(self) -> Option<ErrorInfo> {
+        self.json::<WrappedError>().await.ok().map(|e| e.error)
     }
 
     /// Returns the HTTP status code.
