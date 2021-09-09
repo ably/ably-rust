@@ -54,7 +54,8 @@ impl RestClient {
     /// # }
     /// ```
     pub fn stats(&self) -> stats::StatsBuilder {
-        stats::StatsBuilder::new(self.clone())
+        let req = self.request(http::Method::GET, "/stats");
+        stats::StatsBuilder::new(req)
     }
 
     /// Sends a GET request to /time and returns the server time in UTC.
@@ -71,7 +72,8 @@ impl RestClient {
     /// ```
     pub async fn time(&self) -> Result<DateTime<Utc>> {
         let mut res: Vec<i64> = self
-            .request(http::Method::GET, "/time", None::<()>, None::<()>, None)
+            .request(http::Method::GET, "/time")
+            .send()
             .await?
             .json()
             .await?;
@@ -82,28 +84,29 @@ impl RestClient {
         }
     }
 
-    /// Sends a HTTP request to the Ably REST API.
+    /// Start building a HTTP request to the Ably REST API.
+    ///
+    /// Returns a RequestBuilder which can be used to set query params, headers
+    /// and the request body before sending the request.
     ///
     /// # Example
     ///
     /// ```
     /// # async fn run() -> ably::Result<()> {
+    /// use ably::http::{HeaderMap,Method};
+    ///
     /// let client = ably::RestClient::from("<api_key>");
     ///
-    /// let params = [("key1", "val1"), ("key2", "val2")];
-    ///
-    /// let body = r#"{"json":"body"}"#;
-    ///
-    /// let mut headers = ably::http::HeaderMap::new();
+    /// let mut headers = HeaderMap::new();
     /// headers.insert("Foo", "Bar".parse().unwrap());
     ///
-    /// let response = client.request(
-    ///     ably::http::Method::POST,
-    ///     "/some/custom/path",
-    ///     Some(params),
-    ///     Some(body),
-    ///     Some(headers),
-    /// ).await?;
+    /// let response = client
+    ///     .request(Method::POST, "/some/custom/path")
+    ///     .params(&[("key1", "val1"), ("key2", "val2")])
+    ///     .body(r#"{"json":"body"}"#)
+    ///     .headers(headers)
+    ///     .send()
+    ///     .await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -113,50 +116,78 @@ impl RestClient {
     /// Returns an error if sending the request fails or if the resulting
     /// response is unsuccessful (i.e. the status code is not in the 200-299
     /// range).
-    pub async fn request<T, U>(
-        &self,
-        method: http::Method,
-        path: &str,
-        params: Option<T>,
-        body: Option<U>,
-        headers: Option<http::HeaderMap>,
-    ) -> Result<Response>
-    where
-        T: Serialize + Sized,
-        U: Serialize + Sized,
-    {
+    pub fn request(&self, method: http::Method, path: &str) -> RequestBuilder {
         let mut url = self.url.clone();
         url.set_path(path);
 
         let mut req = self.client.request(method, url);
 
         // Set the Authorization header
+        if let Some(credential) = &self.options.credential {
+            match credential {
+                auth::Key(key) => {
+                    let mut iter = key.splitn(2, ':');
+                    req = req.basic_auth(iter.next().unwrap(), Some(iter.next().unwrap()));
+                }
+                auth::Token(token) => {
+                    req = req.bearer_auth(token);
+                }
+            }
+        }
+
+        RequestBuilder::new(req)
+    }
+
+    /// Returns the API key from the ClientOptions.
+    pub fn key(&self) -> Option<String> {
         match &self.options.credential {
-            Some(auth::Key(key)) => {
-                let mut iter = key.splitn(2, ':');
-                req = req.basic_auth(iter.next().unwrap(), Some(iter.next().unwrap()));
-            }
-            Some(auth::Token(token)) => {
-                req = req.bearer_auth(token);
-            }
-            None => {
-                return Err(error!(40106, "must provide either an API key or a token"));
-            }
+            Some(auth::Key(s)) => Some(s.to_string()),
+            _ => None,
         }
+    }
 
-        if let Some(params) = params {
-            req = req.query(&params);
+    /// Returns the token from the ClientOptions.
+    pub fn token(&self) -> Option<String> {
+        match &self.options.credential {
+            Some(auth::Token(s)) => Some(s.to_string()),
+            _ => None,
         }
+    }
+}
 
-        if let Some(body) = body {
-            req = req.json(&body);
-        }
+/// A builder to construct a HTTP request to the [Ably REST API].
+///
+/// [Ably REST API]: https://ably.com/documentation/rest-api
+pub struct RequestBuilder {
+    inner: reqwest::RequestBuilder,
+}
 
-        if let Some(headers) = headers {
-            req = req.headers(headers);
-        }
+impl RequestBuilder {
+    fn new(inner: reqwest::RequestBuilder) -> RequestBuilder {
+        RequestBuilder { inner }
+    }
 
-        let res = req.send().await?;
+    /// Modify the query params of the request, adding the parameters provided.
+    pub fn params<T: Serialize + ?Sized>(mut self, params: &T) -> RequestBuilder {
+        self.inner = self.inner.query(params);
+        self
+    }
+
+    /// Modify the JSON request body.
+    pub fn body<T: Serialize + ?Sized>(mut self, body: &T) -> RequestBuilder {
+        self.inner = self.inner.json(body);
+        self
+    }
+
+    /// Add a set of HTTP headers to the request.
+    pub fn headers(mut self, headers: http::HeaderMap) -> RequestBuilder {
+        self.inner = self.inner.headers(headers);
+        self
+    }
+
+    /// Send the request to the Ably REST API.
+    pub async fn send(self) -> Result<Response> {
+        let res = self.inner.send().await?;
 
         // Return the response if it was successful, otherwise try to decode a
         // JSON error from the response body, falling back to a generic error
@@ -176,22 +207,6 @@ impl RestClient {
                         Some(status_code)
                     )
                 }))
-        }
-    }
-
-    /// Returns the API key from the ClientOptions.
-    pub fn key(&self) -> Option<String> {
-        match &self.options.credential {
-            Some(auth::Key(s)) => Some(s.to_string()),
-            _ => None,
-        }
-    }
-
-    /// Returns the token from the ClientOptions.
-    pub fn token(&self) -> Option<String> {
-        match &self.options.credential {
-            Some(auth::Token(s)) => Some(s.to_string()),
-            _ => None,
         }
     }
 }
@@ -540,7 +555,9 @@ mod tests {
             let spec = json!({"keys":[{}]});
 
             test_client()
-                .request(Method::POST, "/apps", None::<()>, Some(spec), None)
+                .request(Method::POST, "/apps")
+                .body(&spec)
+                .send()
                 .await?
                 .json()
                 .await
@@ -577,9 +594,7 @@ mod tests {
     async fn custom_request_returns_items() -> Result<()> {
         let client = test_client();
 
-        let res = client
-            .request(Method::GET, "/time", None::<()>, None::<()>, None)
-            .await?;
+        let res = client.request(Method::GET, "/time").send().await?;
 
         let items: Vec<u64> = res.items().await?;
 
@@ -593,7 +608,8 @@ mod tests {
         let client = test_client();
 
         let err = client
-            .request(Method::GET, "/invalid", None::<()>, None::<()>, None)
+            .request(Method::GET, "/invalid")
+            .send()
             .await
             .expect_err("Expected 404 error");
 
@@ -610,7 +626,8 @@ mod tests {
             .client()?;
 
         let err = client
-            .request(Method::GET, "/time", None::<()>, None::<()>, None)
+            .request(Method::GET, "/time")
+            .send()
             .await
             .expect_err("Expected network error");
 
@@ -646,7 +663,9 @@ mod tests {
         ]);
 
         client
-            .request(Method::POST, "/stats", None::<()>, Some(fixtures), None)
+            .request(Method::POST, "/stats")
+            .body(&fixtures)
+            .send()
             .await?;
 
         // Retrieve the stats.

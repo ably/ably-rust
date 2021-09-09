@@ -1,5 +1,4 @@
-use super::http::Method;
-use super::{Response, RestClient, Result};
+use super::{RequestBuilder, Response, Result};
 use serde::Deserialize;
 
 /// Ably Application statistics retrieved from [REST stats endpoint].
@@ -170,54 +169,30 @@ pub struct ReactorRates {
 
 /// A builder to construct a REST stats request.
 pub struct StatsBuilder {
-    client: RestClient,
-    params: Option<Vec<(String, String)>>,
+    req: RequestBuilder,
 }
 
 impl StatsBuilder {
-    pub fn new(client: RestClient) -> StatsBuilder {
-        StatsBuilder {
-            client,
-            params: None,
-        }
+    pub fn new(req: RequestBuilder) -> StatsBuilder {
+        StatsBuilder { req }
     }
 
     pub fn start(mut self, interval: &str) -> StatsBuilder {
-        let param = ("start".to_string(), interval.to_string());
-
-        match self.params {
-            Some(ref mut params) => params.push(param),
-            None => self.params = Some(vec![param]),
-        }
-
+        self.req = self.req.params(&[("start", interval)]);
         self
     }
 
     pub fn end(mut self, interval: &str) -> StatsBuilder {
-        let param = ("end".to_string(), interval.to_string());
-
-        match self.params {
-            Some(ref mut params) => params.push(param),
-            None => self.params = Some(vec![param]),
-        }
-
+        self.req = self.req.params(&[("end", interval)]);
         self
     }
 
     pub fn forwards(mut self) -> StatsBuilder {
-        let param = ("direction".to_string(), "forwards".to_string());
-
-        match self.params {
-            Some(ref mut params) => params.push(param),
-            None => self.params = Some(vec![param]),
-        }
-
+        self.req = self.req.params(&[("direction", "forwards")]);
         self
     }
 
     pub async fn send(self) -> Result<Response> {
-        self.client
-            .request(Method::GET, "/stats", self.params, None::<()>, None)
-            .await
+        self.req.send().await
     }
 }
