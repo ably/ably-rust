@@ -24,6 +24,7 @@ pub type Result<T> = std::result::Result<T, ErrorInfo>;
 pub struct RestClient {
     pub options: ClientOptions,
     client: reqwest::Client,
+    url: reqwest::Url,
 }
 
 impl RestClient {
@@ -89,9 +90,10 @@ impl RestClient {
         T: Serialize + Sized,
         U: Serialize + Sized,
     {
-        let url = format!("{}{}", self.options.rest_url(), path);
+        let mut url = self.url.clone();
+        url.set_path(path);
 
-        let mut req = self.client.request(method, &url);
+        let mut req = self.client.request(method, url);
 
         if let Some(params) = params {
             req = req.query(&params);
@@ -235,6 +237,10 @@ pub struct ClientOptions {
 
     /// Override the hostname used in the REST API URL.
     rest_host: Option<String>,
+
+    /// The REST API URL which is constructed as options are set. Any error
+    /// encountered when updating rest_url will be returned from client().
+    rest_url: Result<reqwest::Url>,
 }
 
 impl ClientOptions {
@@ -244,6 +250,7 @@ impl ClientOptions {
             credential: None,
             environment: None,
             rest_host: None,
+            rest_url: Ok(reqwest::Url::parse("https://rest.ably.io").unwrap()),
         }
     }
 
@@ -261,13 +268,53 @@ impl ClientOptions {
 
     /// Sets the environment.
     pub fn environment(mut self, environment: &str) -> Self {
+        // Only allow the environment to be set if rest_host isn't set.
+        if self.rest_host.is_some() {
+            self.rest_url = Err(error!(40000, "Cannot set both environment and rest_host"));
+            return self;
+        }
+
+        // Update the host in the URL if we haven't yet encountered an error.
+        if let Ok(ref mut url) = self.rest_url {
+            let host = format!("{}-rest.ably.io", environment);
+
+            if let Err(err) = url.set_host(Some(host.as_ref())) {
+                self.rest_url = Err(error!(
+                    40000,
+                    format!("Invalid environment '{}' ({})", environment, err)
+                ));
+                return self;
+            }
+        }
+
+        // Track that the environment was set.
         self.environment = Some(String::from(environment));
+
         self
     }
 
     /// Sets the rest_host.
     pub fn rest_host(mut self, rest_host: &str) -> Self {
+        // Only allow the rest_host to be set if environment isn't set.
+        if self.environment.is_some() {
+            self.rest_url = Err(error!(40000, "Cannot set both environment and rest_host"));
+            return self;
+        }
+
+        // Update the host in the URL if we haven't yet encountered an error.
+        if let Ok(ref mut url) = self.rest_url {
+            if let Err(err) = url.set_host(Some(rest_host)) {
+                self.rest_url = Err(error!(
+                    40000,
+                    format!("Invalid rest_host '{}' ({})", rest_host, err)
+                ));
+                return self;
+            }
+        }
+
+        // Track that the rest_host was set.
         self.rest_host = Some(String::from(rest_host));
+
         self
     }
 
@@ -278,28 +325,20 @@ impl ClientOptions {
     /// This method fails if the ClientOptions are not valid:
     ///
     /// - a credential must be provided ([RSC1b])
+    /// - the REST API URL must be valid
     ///
     /// [RSC1b]: https://docs.ably.io/client-lib-development-guide/features/#RSC1b
     pub fn client(self) -> Result<RestClient> {
         if let None = self.credential {
             return Err(error!(40106, "must provide either an API key or a token"));
         }
+        let url = self.rest_url.clone()?;
+
         Ok(RestClient {
             options: self,
             client: reqwest::Client::new(),
+            url,
         })
-    }
-
-    /// Returns the REST URL, taking into account the rest_host and environment
-    /// options.
-    fn rest_url(&self) -> String {
-        if let Some(host) = &self.rest_host {
-            return format!("https://{}", host);
-        }
-        if let Some(env) = &self.environment {
-            return format!("https://{}-rest.ably.io", env);
-        }
-        String::from("https://rest.ably.io")
     }
 }
 
@@ -331,6 +370,7 @@ impl From<&str> for ClientOptions {
             }),
             environment: None,
             rest_host: None,
+            rest_url: Ok(reqwest::Url::parse("https://rest.ably.io").unwrap()),
         }
     }
 }
