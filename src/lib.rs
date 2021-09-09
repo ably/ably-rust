@@ -82,7 +82,7 @@ impl RestClient {
         }
     }
 
-    /// Sends a custom HTTP request to the Ably REST API.
+    /// Sends a HTTP request to the Ably REST API.
     ///
     /// # Example
     ///
@@ -107,6 +107,12 @@ impl RestClient {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sending the request fails or if the resulting
+    /// response is unsuccessful (i.e. the status code is not in the 200-299
+    /// range).
     pub async fn request<T, U>(
         &self,
         method: http::Method,
@@ -150,7 +156,27 @@ impl RestClient {
             req = req.headers(headers);
         }
 
-        req.send().await.map(Response::new).map_err(Into::into)
+        let res = req.send().await?;
+
+        // Return the response if it was successful, otherwise try to decode a
+        // JSON error from the response body, falling back to a generic error
+        // if decoding fails.
+        if res.status().is_success() {
+            Ok(Response::new(res))
+        } else {
+            let status_code: u32 = res.status().as_u16().into();
+            Err(res
+                .json::<WrappedError>()
+                .await
+                .map(|e| e.error)
+                .unwrap_or_else(|err| {
+                    error!(
+                        50000,
+                        format!("Unexpected error: {}", err),
+                        Some(status_code)
+                    )
+                }))
+        }
     }
 
     /// Returns the API key from the ClientOptions.
@@ -170,7 +196,7 @@ impl RestClient {
     }
 }
 
-/// A Response from the [Ably REST API].
+/// A successful Response from the [Ably REST API].
 ///
 /// [Ably REST API]: https://ably.com/documentation/rest-api
 #[derive(Debug)]
@@ -193,55 +219,9 @@ impl Response {
         self.inner.json().await.map_err(Into::into)
     }
 
-    /// Returns the ErrorInfo from the body of the response.
-    ///
-    /// This is typically called after checking that success() is false.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # async fn run() -> ably::Result<()> {
-    /// # let client = ably::RestClient::from("aaaaaa.bbbbbb:cccccc");
-    /// let res = client.request(ably::http::Method::GET, "/invalid", None::<()>, None::<()>, None).await?;
-    /// if !res.success() {
-    ///     let err = res.error().await.unwrap();
-    ///     assert_eq!(err.code, 404);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn error(self) -> Option<ErrorInfo> {
-        self.json::<WrappedError>().await.ok().map(|e| e.error)
-    }
-
     /// Returns the HTTP status code.
     pub fn status_code(&self) -> http::StatusCode {
         self.inner.status()
-    }
-
-    /// Returns true if the HTTP status code is within 200-299.
-    pub fn success(&self) -> bool {
-        self.status_code().is_success()
-    }
-
-    /// Returns the error code from the X-Ably-ErrorCode HTTP header.
-    pub fn error_code(&self) -> Option<u32> {
-        self.header(http::header::ERROR_CODE)
-            .map(|v| v.parse().ok())
-            .flatten()
-    }
-
-    /// Returns the error message from the X-Ably-ErrorMessage HTTP header.
-    pub fn error_message(&self) -> Option<&str> {
-        self.header(http::header::ERROR_MESSAGE)
-    }
-
-    fn header(&self, key: &str) -> Option<&str> {
-        self.inner
-            .headers()
-            .get(key)
-            .map(|v| v.to_str().ok())
-            .flatten()
     }
 }
 
@@ -612,14 +592,13 @@ mod tests {
     async fn custom_request_with_unknown_path_returns_404_response() -> Result<()> {
         let client = test_client();
 
-        let res = client
+        let err = client
             .request(Method::GET, "/invalid", None::<()>, None::<()>, None)
-            .await?;
+            .await
+            .expect_err("Expected 404 error");
 
-        assert!(!res.success());
-        assert_eq!(res.status_code(), 404);
-        assert_eq!(res.error_code(), Some(40400));
-        assert!(res.error_message().is_some());
+        assert_eq!(err.code, 40400);
+        assert_eq!(err.status_code, Some(404));
 
         Ok(())
     }
@@ -636,7 +615,6 @@ mod tests {
             .expect_err("Expected network error");
 
         assert_eq!(err.code, 40000);
-        println!("{}", err.message);
 
         Ok(())
     }
@@ -667,15 +645,9 @@ mod tests {
             }
         ]);
 
-        let res = client
+        client
             .request(Method::POST, "/stats", None::<()>, Some(fixtures), None)
             .await?;
-
-        assert!(
-            res.success(),
-            "Failed to POST stats, error = {:?}",
-            res.error().await
-        );
 
         // Retrieve the stats.
         let res = client
@@ -685,12 +657,6 @@ mod tests {
             .forwards()
             .send()
             .await?;
-
-        assert!(
-            res.success(),
-            "Failed to GET stats, error = {:?}",
-            res.error().await
-        );
 
         // Check the stats are what we expect.
         let stats: Vec<Stats> = res.items().await?;
