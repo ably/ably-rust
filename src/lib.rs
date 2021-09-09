@@ -255,18 +255,59 @@ impl ClientOptions {
     }
 
     /// Sets the API key.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # fn main() -> ably::Result<()> {
+    /// let client = ably::ClientOptions::new()
+    ///     .key("aaaaaa.bbbbbb:cccccc")
+    ///     .client()?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn key(mut self, key: &str) -> Self {
         self.credential = Some(auth::Key(String::from(key)));
         self
     }
 
     /// Sets the token.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # fn main() -> ably::Result<()> {
+    /// let client = ably::ClientOptions::new()
+    ///     .token("aaaaaa.dddddddddddd")
+    ///     .client()?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn token(mut self, token: &str) -> Self {
         self.credential = Some(auth::Token(String::from(token)));
         self
     }
 
-    /// Sets the environment.
+    /// Sets the environment. See [TO3k1].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # fn main() -> ably::Result<()> {
+    /// let client = ably::ClientOptions::new()
+    ///     .key("aaaaaa.bbbbbb:cccccc")
+    ///     .environment("sandbox")
+    ///     .client()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Fails if rest_host is already set or if the environment cannot be used
+    /// in the REST API URL.
+    ///
+    /// [T03k1]: https://docs.ably.io/client-lib-development-guide/features/#TO3k1
     pub fn environment(mut self, environment: &str) -> Self {
         // Only allow the environment to be set if rest_host isn't set.
         if self.rest_host.is_some() {
@@ -293,7 +334,26 @@ impl ClientOptions {
         self
     }
 
-    /// Sets the rest_host.
+    /// Sets the rest_host. See [TO3k2].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # fn main() -> ably::Result<()> {
+    /// let client = ably::ClientOptions::new()
+    ///     .key("aaaaaa.bbbbbb:cccccc")
+    ///     .rest_host("sandbox-rest.ably.io")
+    ///     .client()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Fails if environment is already set or if the rest_host cannot be used
+    /// in the REST API URL.
+    ///
+    /// [T03k2]: https://docs.ably.io/client-lib-development-guide/features/#TO3k2
     pub fn rest_host(mut self, rest_host: &str) -> Self {
         // Only allow the rest_host to be set if environment isn't set.
         if self.environment.is_some() {
