@@ -595,7 +595,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_request_with_bad_rest_host_returns_network_error() -> Result<()> {
-        let client = test_client_options()
+        let client = ClientOptions::from("aaaaaa.bbbbbb:cccccc")
             .rest_host("i-dont-exist.ably.com")
             .client()?;
 
