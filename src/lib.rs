@@ -475,6 +475,7 @@ mod tests {
     use super::http::Method;
     use super::*;
     use chrono::Duration;
+    use serde::Deserialize;
 
     #[test]
     fn rest_client_from_sets_key_credential_with_string_with_colon() {
@@ -507,6 +508,43 @@ mod tests {
     fn test_client() -> RestClient {
         test_client_options().client().unwrap()
     }
+
+    /// A test app in the Ably Sandbox environment.
+    #[derive(Deserialize)]
+    struct TestApp {
+        keys: Vec<TestKey>,
+    }
+
+    /// A test key associated with a test app.
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct TestKey {
+        key_str: String,
+    }
+
+    impl TestApp {
+        /// Creates a test app in the Ably Sandbox environment with a single
+        /// API key.
+        async fn create() -> Result<Self> {
+            let spec = json!({"keys":[{}]});
+
+            test_client()
+                .request(Method::POST, "/apps", None::<()>, Some(spec), None)
+                .await?
+                .json()
+                .await
+        }
+
+        /// Returns a RestClient with the test app's key.
+        fn client(&self) -> RestClient {
+            ClientOptions::from(self.keys[0].key_str.as_ref())
+                .environment("sandbox")
+                .client()
+                .unwrap()
+        }
+    }
+
+    // TODO: impl Drop for TestApp which deletes the app (needs to be sync)
 
     #[tokio::test]
     async fn time_returns_the_server_time() -> Result<()> {
