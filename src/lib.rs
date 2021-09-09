@@ -8,6 +8,7 @@
 
 #[macro_use]
 pub mod error;
+pub mod stats;
 
 use crate::error::*;
 use chrono::prelude::*;
@@ -20,7 +21,7 @@ pub type Result<T> = std::result::Result<T, ErrorInfo>;
 /// A client for the [Ably REST API].
 ///
 /// [Ably REST API]: https://ably.com/documentation/rest-api
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct RestClient {
     pub options: ClientOptions,
     client: reqwest::Client,
@@ -28,6 +29,34 @@ pub struct RestClient {
 }
 
 impl RestClient {
+    /// Start building a GET request to /stats.
+    ///
+    /// Returns a StatsBuilder which is used to set parameters before sending
+    /// the stats request.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # async fn run() -> ably::Result<()> {
+    /// use ably::stats::Stats;
+    ///
+    /// let client = ably::RestClient::from("<api_key>");
+    ///
+    /// let res = client
+    ///     .stats()
+    ///     .start("2021-09-09:15:00")
+    ///     .end("2021-09-09:15:05")
+    ///     .send()
+    ///     .await?;
+    ///
+    /// let stats: Vec<Stats> = res.items().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn stats(&self) -> stats::StatsBuilder {
+        stats::StatsBuilder::new(self.clone())
+    }
+
     /// Sends a GET request to /time and returns the server time in UTC.
     ///
     /// # Example
@@ -241,7 +270,7 @@ impl From<&str> for RestClient {
 /// [Ably client options] for initialising a REST or Realtime client.
 ///
 /// [Ably client options]: https://ably.com/documentation/rest/types#client-options
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ClientOptions {
     /// Holds either an API key or a token.
     credential: Option<auth::Credential>,
@@ -451,7 +480,7 @@ impl From<&str> for ClientOptions {
 
 mod auth {
     /// An enum representing either an API key or a token.
-    #[derive(Debug, PartialEq)]
+    #[derive(Clone, Debug, PartialEq)]
     pub enum Credential {
         Key(String),
         Token(String),
@@ -473,9 +502,11 @@ pub mod http {
 #[cfg(test)]
 mod tests {
     use super::http::Method;
+    use super::stats::Stats;
     use super::*;
     use chrono::Duration;
     use serde::Deserialize;
+    use serde_json::json;
 
     #[test]
     fn rest_client_from_sets_key_credential_with_string_with_colon() {
@@ -606,6 +637,78 @@ mod tests {
 
         assert_eq!(err.code, 40000);
         println!("{}", err.message);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stats_minute_forwards() -> Result<()> {
+        // Create a test app and client.
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        // Create some stats for 3rd Feb last year.
+        let last_year = (Utc::today() - Duration::days(365)).year();
+        let fixtures = json!([
+            {
+                "intervalId": format!("{}-02-03:15:03", last_year),
+                "inbound": { "realtime": { "messages": { "count": 50, "data": 5000 } } },
+                "outbound": { "realtime": { "messages": { "count": 20, "data": 2000 } } }
+            },
+            {
+                "intervalId": format!("{}-02-03:15:04", last_year),
+                "inbound": { "realtime": { "messages": { "count": 60, "data": 6000 } } },
+                "outbound": { "realtime": { "messages": { "count": 10, "data": 1000 } } }
+            },
+            {
+                "intervalId": format!("{}-02-03:15:05", last_year),
+                "inbound": { "realtime": { "messages": { "count": 70, "data": 7000 } } },
+                "outbound": { "realtime": { "messages": { "count": 40, "data": 4000 } } }
+            }
+        ]);
+
+        let res = client
+            .request(Method::POST, "/stats", None::<()>, Some(fixtures), None)
+            .await?;
+
+        assert!(
+            res.success(),
+            "Failed to POST stats, error = {:?}",
+            res.error().await
+        );
+
+        // Retrieve the stats.
+        let res = client
+            .stats()
+            .start(format!("{}-02-03:15:03", last_year).as_ref())
+            .end(format!("{}-02-03:15:05", last_year).as_ref())
+            .forwards()
+            .send()
+            .await?;
+
+        assert!(
+            res.success(),
+            "Failed to GET stats, error = {:?}",
+            res.error().await
+        );
+
+        // Check the stats are what we expect.
+        let stats: Vec<Stats> = res.items().await?;
+        assert_eq!(stats.len(), 3);
+        assert_eq!(
+            stats
+                .iter()
+                .map(|s| s.inbound.as_ref().unwrap().all.messages.count)
+                .sum::<f64>(),
+            50.0 + 60.0 + 70.0
+        );
+        assert_eq!(
+            stats
+                .iter()
+                .map(|s| s.outbound.as_ref().unwrap().all.messages.count)
+                .sum::<f64>(),
+            20.0 + 10.0 + 40.0
+        );
 
         Ok(())
     }

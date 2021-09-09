@@ -15,7 +15,7 @@ macro_rules! error {
 /// An [Ably error].
 ///
 /// [Ably error]: https://ably.com/documentation/rest/types#error-info
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ErrorInfo {
     /// The [Ably error code].
     ///
