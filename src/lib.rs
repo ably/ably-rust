@@ -95,6 +95,20 @@ impl RestClient {
 
         let mut req = self.client.request(method, url);
 
+        // Set the Authorization header
+        match &self.options.credential {
+            Some(auth::Key(key)) => {
+                let mut iter = key.splitn(2, ':');
+                req = req.basic_auth(iter.next().unwrap(), Some(iter.next().unwrap()));
+            }
+            Some(auth::Token(token)) => {
+                req = req.bearer_auth(token);
+            }
+            None => {
+                return Err(error!(40106, "must provide either an API key or a token"));
+            }
+        }
+
         if let Some(params) = params {
             req = req.query(&params);
         }
