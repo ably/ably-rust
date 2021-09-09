@@ -24,8 +24,8 @@ pub type Result<T> = std::result::Result<T, ErrorInfo>;
 #[derive(Clone, Debug)]
 pub struct RestClient {
     pub options: ClientOptions,
-    client: reqwest::Client,
-    url: reqwest::Url,
+    client:      reqwest::Client,
+    url:         reqwest::Url,
 }
 
 impl RestClient {
@@ -290,10 +290,10 @@ impl ClientOptions {
     /// Returns ClientOptions with default values.
     pub fn new() -> Self {
         ClientOptions {
-            credential: None,
+            credential:  None,
             environment: None,
-            rest_host: None,
-            rest_url: Ok(reqwest::Url::parse("https://rest.ably.io").unwrap()),
+            rest_host:   None,
+            rest_url:    Ok(reqwest::Url::parse("https://rest.ably.io").unwrap()),
         }
     }
 
@@ -467,13 +467,13 @@ impl From<&str> for ClientOptions {
     /// [RSC1a]: https://docs.ably.io/client-lib-development-guide/features/#RSC1a
     fn from(s: &str) -> Self {
         ClientOptions {
-            credential: Some(match s.find(':') {
+            credential:  Some(match s.find(':') {
                 Some(_) => auth::Key(String::from(s)),
                 None => auth::Token(String::from(s)),
             }),
             environment: None,
-            rest_host: None,
-            rest_url: Ok(reqwest::Url::parse("https://rest.ably.io").unwrap()),
+            rest_host:   None,
+            rest_url:    Ok(reqwest::Url::parse("https://rest.ably.io").unwrap()),
         }
     }
 }
