@@ -59,6 +59,12 @@ impl From<reqwest::Error> for ErrorInfo {
     }
 }
 
+impl From<hmac::crypto_mac::InvalidKeyLength> for ErrorInfo {
+    fn from(_: hmac::crypto_mac::InvalidKeyLength) -> Self {
+        error!(40101, "invalid credentials")
+    }
+}
+
 /// Implement From<Infallible> to support ErrorInfo being the associated
 /// type for the TryInto trait bound in ClientOptions#key.
 impl From<Infallible> for ErrorInfo {

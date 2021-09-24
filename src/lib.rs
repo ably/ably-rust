@@ -25,6 +25,7 @@ pub type Result<T> = std::result::Result<T, ErrorInfo>;
 /// [Ably REST API]: https://ably.com/documentation/rest-api
 #[derive(Clone, Debug)]
 pub struct RestClient {
+    pub auth:       auth::Auth,
     pub credential: auth::Credential,
     client:         reqwest::Client,
     url:            reqwest::Url,
@@ -437,6 +438,7 @@ impl ClientOptions {
         let url = self.rest_url.clone()?;
 
         Ok(RestClient {
+            auth: auth::Auth::new(credential.key()),
             credential,
             client: reqwest::Client::new(),
             url,
@@ -679,6 +681,81 @@ mod tests {
                 .sum::<f64>(),
             20.0 + 10.0 + 40.0
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn auth_create_token_request_no_options() -> Result<()> {
+        let client = test_client();
+
+        let req = client.auth.create_token_request().sign()?;
+
+        assert!(
+            req.mac.unwrap().len() > 0,
+            "expected tokenRequest.mac to be set"
+        );
+        assert!(req.nonce.len() > 0, "expected tokenRequest.nonce to be set");
+        assert!(
+            req.ttl.is_none(),
+            "expected tokenRequest.ttl to not be set by default"
+        );
+        assert!(
+            req.capability.is_none(),
+            "expected tokenRequest.capability to not be set by default"
+        );
+        assert!(
+            req.client_id.is_none(),
+            "expected tokenRequest.client_id to not be set by default"
+        );
+        assert_eq!(req.key_name, client.key().unwrap().name);
+
+        Ok(())
+    }
+
+    #[test]
+    fn auth_create_token_request_with_capability() -> Result<()> {
+        let client = test_client();
+
+        let capability = r#"{"*":["*"]}"#;
+
+        let req = client
+            .auth
+            .create_token_request()
+            .capability(capability)
+            .sign()?;
+
+        assert_eq!(req.capability, Some(capability.to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn auth_create_token_request_with_client_id() -> Result<()> {
+        let client = test_client();
+
+        let client_id = "test@ably.com";
+
+        let req = client
+            .auth
+            .create_token_request()
+            .client_id(client_id)
+            .sign()?;
+
+        assert_eq!(req.client_id, Some(client_id.to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn auth_create_token_request_with_ttl() -> Result<()> {
+        let client = test_client();
+
+        let ttl = 60000;
+
+        let req = client.auth.create_token_request().ttl(ttl).sign()?;
+
+        assert_eq!(req.ttl, Some(ttl));
 
         Ok(())
     }

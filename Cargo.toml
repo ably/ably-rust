@@ -6,9 +6,13 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+base64 = { version = "*" }
 chrono = { version = "*" }
+hmac = { version = "*" }
+rand = { version = "*" }
 reqwest = { version = "*", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
+sha2 = { version = "*" }
 
 [dev-dependencies]
 tokio = { version = "*", features = ["macros"] }
