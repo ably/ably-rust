@@ -16,6 +16,7 @@ use chrono::prelude::*;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::convert::TryInto;
+use std::fmt;
 
 /// A `Result` alias where the `Err` variant contains an `ably::ErrorInfo`.
 pub type Result<T> = std::result::Result<T, ErrorInfo>;
@@ -27,7 +28,7 @@ pub type Result<T> = std::result::Result<T, ErrorInfo>;
 pub struct RestClient {
     pub auth:       auth::Auth,
     pub credential: auth::Credential,
-    client:         reqwest::Client,
+    client:         HttpClient,
     url:            reqwest::Url,
 }
 
@@ -120,10 +121,7 @@ impl RestClient {
     /// response is unsuccessful (i.e. the status code is not in the 200-299
     /// range).
     pub fn request(&self, method: http::Method, path: &str) -> RequestBuilder {
-        let mut url = self.url.clone();
-        url.set_path(path);
-
-        let mut req = self.client.request(method, url);
+        let mut req = self.client.request(method, path);
 
         // Set the Authorization header
         match &self.credential {
@@ -135,7 +133,7 @@ impl RestClient {
             }
         }
 
-        RequestBuilder::new(req)
+        req
     }
 
     /// Returns the API key from the ClientOptions.
@@ -152,6 +150,42 @@ impl RestClient {
             auth::Credential::Token(s) => Some(s.to_string()),
             _ => None,
         }
+    }
+}
+
+/// A low-level HTTP client for the [Ably REST API].
+///
+/// [Ably REST API]: https://ably.com/documentation/rest-api
+#[derive(Clone, Debug)]
+pub struct HttpClient {
+    client:   reqwest::Client,
+    rest_url: reqwest::Url,
+}
+
+impl HttpClient {
+    fn new(rest_url: reqwest::Url) -> HttpClient {
+        HttpClient {
+            client: reqwest::Client::new(),
+            rest_url,
+        }
+    }
+
+    /// Start building a HTTP request to the Ably REST API.
+    ///
+    /// Returns a RequestBuilder which can be used to set query params, headers
+    /// and the request body before sending the request.
+    pub fn request(&self, method: http::Method, path: &str) -> RequestBuilder {
+        let mut url = self.rest_url.clone();
+        url.set_path(path);
+        self.request_url(method, url)
+    }
+
+    /// Start building a HTTP request to the given URL.
+    ///
+    /// Returns a RequestBuilder which can be used to set query params, headers
+    /// and the request body before sending the request.
+    pub fn request_url<U: reqwest::IntoUrl>(&self, method: http::Method, url: U) -> RequestBuilder {
+        RequestBuilder::new(self.client.request(method, url))
     }
 }
 
@@ -182,6 +216,25 @@ impl RequestBuilder {
     /// Add a set of HTTP headers to the request.
     pub fn headers(mut self, headers: http::HeaderMap) -> RequestBuilder {
         self.inner = self.inner.headers(headers);
+        self
+    }
+
+    /// Enable HTTP basic authentication.
+    pub fn basic_auth<U, P>(mut self, username: U, password: Option<P>) -> RequestBuilder
+    where
+        U: fmt::Display,
+        P: fmt::Display,
+    {
+        self.inner = self.inner.basic_auth(username, password);
+        self
+    }
+
+    /// Enable HTTP bearer authentication.
+    pub fn bearer_auth<T>(mut self, token: T) -> RequestBuilder
+    where
+        T: fmt::Display,
+    {
+        self.inner = self.inner.bearer_auth(token);
         self
     }
 
@@ -224,6 +277,16 @@ impl Response {
         Response { inner: response }
     }
 
+    pub fn content_type(&self) -> Option<mime::Mime> {
+        self.inner
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .map(|v| v.to_str().ok())
+            .flatten()
+            .map(|v| v.parse().ok())
+            .flatten()
+    }
+
     /// Returns the list of items from the body of a paginated response.
     pub async fn items<T: DeserializeOwned>(self) -> Result<Vec<T>> {
         self.inner.json().await.map_err(Into::into)
@@ -232,6 +295,11 @@ impl Response {
     /// Deserialize the response body as JSON.
     pub async fn json<T: DeserializeOwned>(self) -> Result<T> {
         self.inner.json().await.map_err(Into::into)
+    }
+
+    /// Return the response body as a String.
+    pub async fn text(self) -> Result<String> {
+        self.inner.text().await.map_err(Into::into)
     }
 
     /// Returns the HTTP status code.
@@ -436,11 +504,12 @@ impl ClientOptions {
     pub fn client(self) -> Result<RestClient> {
         let credential = self.credential?;
         let url = self.rest_url.clone()?;
+        let client = HttpClient::new(url.clone());
 
         Ok(RestClient {
-            auth: auth::Auth::new(credential.key()),
+            auth: auth::Auth::new(client.clone(), credential.key()),
             credential,
-            client: reqwest::Client::new(),
+            client,
             url,
         })
     }
@@ -493,6 +562,7 @@ mod tests {
     use super::stats::Stats;
     use super::*;
     use chrono::Duration;
+    use reqwest::Url;
     use serde::Deserialize;
     use serde_json::json;
 
@@ -552,10 +622,26 @@ mod tests {
         /// Returns a RestClient with the test app's key.
         fn client(&self) -> RestClient {
             ClientOptions::new()
-                .key(self.keys[0].clone())
+                .key(self.key())
                 .environment("sandbox")
                 .client()
                 .unwrap()
+        }
+
+        fn key(&self) -> auth::Key {
+            self.keys[0].clone()
+        }
+
+        async fn token_request(&self, params: auth::TokenParams) -> Result<auth::TokenResponse> {
+            let req = params.sign(&self.key())?;
+
+            Ok(auth::TokenResponse::Request(req))
+        }
+    }
+
+    impl auth::TokenProvider for TestApp {
+        fn provide_token<'a>(&'a self, params: auth::TokenParams) -> auth::TokenProviderFuture<'a> {
+            Box::pin(self.token_request(params))
         }
     }
 
@@ -756,6 +842,93 @@ mod tests {
         let req = client.auth.create_token_request().ttl(ttl).sign()?;
 
         assert_eq!(req.ttl, Some(ttl));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn auth_request_token_with_key() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        // Get the server time.
+        let server_time = client.time().await?;
+
+        // Request a token.
+        let token = client.auth.request_token().send().await?;
+
+        // Check the token details.
+        assert!(token.token.len() > 0, "Expected token to be set");
+        let issued = token.issued.expect("Expected issued to be set");
+        let expires = token.expires.expect("Expected expires to be set");
+        assert!(
+            issued >= server_time,
+            "Expected issued ({}) to be after server time ({})",
+            issued,
+            server_time
+        );
+        assert!(
+            expires > issued,
+            "Expected expires ({}) to be after issued ({})",
+            expires,
+            issued
+        );
+        let capability = token.capability.unwrap();
+        assert_eq!(
+            capability, r#"{"*":["*"]}"#,
+            r#"Expected default capability '{{"*":["*"]}}', got {}"#,
+            capability
+        );
+        assert_eq!(
+            token.client_id,
+            None,
+            "Expected client_id to be null, got {}",
+            token.client_id.as_ref().unwrap()
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn auth_request_token_with_auth_url() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        // Generate an authUrl.
+        let key = app.key();
+        let auth_url = Url::parse_with_params(
+            "https://echo.ably.io/createJWT",
+            &[("keyName", key.name), ("keySecret", key.value)],
+        )
+        .unwrap();
+
+        // Request a token from the authUrl.
+        let token = client
+            .auth
+            .request_token()
+            .auth_url(auth_url)
+            .send()
+            .await?;
+
+        // Check the token details.
+        assert!(token.token.len() > 0, "Expected token to be set");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn auth_request_token_with_provider() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        // Request a token with a custom provider.
+        let token = client.auth.request_token().provider(app).send().await?;
+
+        // Check the token details.
+        assert!(token.token.len() > 0, "Expected token to be set");
 
         Ok(())
     }

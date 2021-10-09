@@ -1,12 +1,15 @@
 use std::convert::TryFrom;
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::error::ErrorInfo;
-use crate::Result;
+use crate::http::Method;
+use crate::{HttpClient, Result};
 use chrono::prelude::*;
 use hmac::{Hmac, Mac, NewMac};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 /// An enum representing either an API key or a token.
@@ -50,20 +53,46 @@ impl TryFrom<&str> for Key {
     }
 }
 
+impl Key {
+    async fn sign(&self, params: TokenParams) -> Result<TokenResponse> {
+        let req = params.sign(self)?;
+
+        Ok(TokenResponse::Request(req))
+    }
+}
+
+impl TokenProvider for Key {
+    fn provide_token<'a>(&'a self, params: TokenParams) -> TokenProviderFuture<'a> {
+        Box::pin(self.sign(params))
+    }
+}
+
 /// Provides functions relating to Ably API authentication.
 #[derive(Clone, Debug)]
 pub struct Auth {
-    key: Option<Key>,
+    client: HttpClient,
+    key:    Option<Key>,
 }
 
 impl Auth {
-    pub fn new(key: Option<Key>) -> Auth {
-        Auth { key }
+    pub fn new(client: HttpClient, key: Option<Key>) -> Auth {
+        Auth { client, key }
     }
 
     /// Start building a TokenRequest to be signed by a local API key.
     pub fn create_token_request(&self) -> CreateTokenRequestBuilder {
         let mut builder = CreateTokenRequestBuilder::new();
+
+        if let Some(ref key) = self.key {
+            builder = builder.key(key.clone());
+        }
+
+        builder
+    }
+
+    /// Start building a request for a token.
+    pub fn request_token(&self) -> RequestTokenBuilder {
+        let mut builder = RequestTokenBuilder::new(self.client.clone());
 
         if let Some(ref key) = self.key {
             builder = builder.key(key.clone());
@@ -169,7 +198,7 @@ impl CreateTokenRequestBuilder {
 
     /// Sign and return the TokenRequest.
     pub fn sign(self) -> Result<TokenRequest> {
-        let key = self.key.ok_or(error!(
+        let key = self.key.as_ref().ok_or(error!(
             40106,
             "API key is required to create signed token requests"
         ))?;
@@ -177,10 +206,150 @@ impl CreateTokenRequestBuilder {
     }
 }
 
+/// A builder to request a token.
+pub struct RequestTokenBuilder {
+    client:   HttpClient,
+    provider: Option<Box<dyn TokenProvider>>,
+    params:   TokenParams,
+}
+
+impl RequestTokenBuilder {
+    fn new(client: HttpClient) -> RequestTokenBuilder {
+        RequestTokenBuilder {
+            client,
+            provider: None,
+            params: TokenParams::default(),
+        }
+    }
+
+    /// Use a key as the TokenProvider.
+    pub fn key(self, key: Key) -> RequestTokenBuilder {
+        self.provider(key)
+    }
+
+    /// Use a URL as the TokenProvider.
+    pub fn auth_url(self, url: reqwest::Url) -> RequestTokenBuilder {
+        let provider = UrlTokenProvider::new(self.client.clone(), url);
+        self.provider(provider)
+    }
+
+    /// Use a custom TokenProvider.
+    pub fn provider(mut self, provider: impl TokenProvider + 'static) -> RequestTokenBuilder {
+        self.provider = Some(Box::new(provider));
+        self
+    }
+
+    /// Set the desired capability.
+    pub fn capability(mut self, capability: &str) -> RequestTokenBuilder {
+        self.params.capability = Some(capability.to_string());
+        self
+    }
+
+    /// Set the desired client_id.
+    pub fn client_id(mut self, client_id: &str) -> RequestTokenBuilder {
+        self.params.client_id = Some(client_id.to_string());
+        self
+    }
+
+    /// Set the desired TTL.
+    pub fn ttl(mut self, ttl: i64) -> RequestTokenBuilder {
+        self.params.ttl = Some(ttl);
+        self
+    }
+
+    /// Request a response from the configured TokenProvider.
+    ///
+    /// If the response is a TokenRequest, exchange it for a token.
+    pub async fn send(self) -> Result<TokenDetails> {
+        let provider = self
+            .provider
+            .as_ref()
+            .ok_or(error!(40171, "no means provided to renew auth token"))?;
+
+        // The provider may either:
+        // - return a TokenRequest which we'll exchange for a TokenDetails
+        // - return a token string which we'll wrap in a TokenDetails
+        // - return a TokenDetails which we'll just return as is
+        match provider.provide_token(self.params.clone()).await? {
+            TokenResponse::Request(req) => self.exchange(&req).await,
+            TokenResponse::Token(token) => Ok(TokenDetails::from(token)),
+            TokenResponse::Details(details) => Ok(details),
+        }
+    }
+
+    /// Exchange a TokenRequest for a token by making a HTTP request to the
+    /// [requestToken endpoint] in the Ably REST API.
+    ///
+    /// [requestToken endpoint]: https://docs.ably.io/rest-api/#request-token
+    async fn exchange(&self, req: &TokenRequest) -> Result<TokenDetails> {
+        self.client
+            .request(
+                Method::POST,
+                format!("/keys/{}/requestToken", req.key_name).as_ref(),
+            )
+            .body(req)
+            .send()
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+}
+
+/// A TokenProvider which requests tokens from a URL.
+pub struct UrlTokenProvider {
+    client: HttpClient,
+    url:    reqwest::Url,
+}
+
+impl UrlTokenProvider {
+    fn new(client: HttpClient, url: reqwest::Url) -> UrlTokenProvider {
+        UrlTokenProvider { client, url }
+    }
+
+    /// Request a token from the URL.
+    async fn request(&self, _params: TokenParams) -> Result<TokenResponse> {
+        let res = self
+            .client
+            .request_url(Method::GET, self.url.clone())
+            .send()
+            .await?;
+
+        // Parse the token response based on the Content-Type header.
+        let content_type = res.content_type().ok_or(error!(
+            40170,
+            "authUrl response is missing a content-type header"
+        ))?;
+        match content_type.essence_str() {
+            "application/json" => {
+                // Expect a JSON encoded TokenRequest or TokenDetails, and just
+                // let serde figure out which TokenResponse variant to decode
+                // the JSON response into.
+                res.json().await
+            },
+
+            "text/plain" | "application/jwt" => {
+                // Expect a literal token string.
+                let token = res.text().await?;
+                Ok(TokenResponse::Token(token))
+            },
+
+            // Anything else is an error.
+            _ => Err(error!(40170, format!("authUrl responded with unacceptable content-type {}, should be either text/plain, application/jwt or application/json", content_type))),
+        }
+    }
+}
+
+impl TokenProvider for UrlTokenProvider {
+    fn provide_token<'a>(&'a self, params: TokenParams) -> TokenProviderFuture<'a> {
+        Box::pin(self.request(params))
+    }
+}
+
 /// An Ably [TokenParams] object.
 ///
 /// [TokenParams]: https://docs.ably.io/realtime/types/#token-params
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct TokenParams {
     pub capability: Option<String>,
     pub client_id:  Option<String>,
@@ -194,7 +363,7 @@ impl TokenParams {
     /// described in the [REST API Token Request Spec].
     ///
     /// [REST API Token Request Spec]: https://ably.com/documentation/rest-api/token-request-spec
-    pub fn sign(self, key: Key) -> Result<TokenRequest> {
+    pub fn sign(self, key: &Key) -> Result<TokenRequest> {
         // if client_id is set, it must be a non-empty string
         if let Some(ref client_id) = self.client_id {
             if client_id.is_empty() {
@@ -212,7 +381,7 @@ impl TokenParams {
             mac:        None,
         };
 
-        req.mac = Some(Auth::compute_mac(&key, &req)?);
+        req.mac = Some(Auth::compute_mac(key, &req)?);
 
         Ok(req)
     }
@@ -221,12 +390,66 @@ impl TokenParams {
 /// An Ably [TokenRequest] object.
 ///
 /// [TokenRequest]: https://docs.ably.io/realtime/types/#token-request
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TokenRequest {
     pub key_name:   String,
+    #[serde(with = "chrono::serde::ts_milliseconds")]
     pub timestamp:  DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub capability: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id:  Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mac:        Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub nonce:      String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ttl:        Option<i64>,
+}
+
+/// The token details returned in a successful response from the [REST
+/// requestToken endpoint].
+///
+/// [REST requestToken endpoint]: https://docs.ably.io/rest-api/#request-token
+#[derive(Default, Deserialize)]
+pub struct TokenDetails {
+    pub token:      String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(with = "chrono::serde::ts_milliseconds_option")]
+    pub expires:    Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(with = "chrono::serde::ts_milliseconds_option")]
+    pub issued:     Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id:  Option<String>,
+}
+
+impl From<String> for TokenDetails {
+    fn from(token: String) -> Self {
+        TokenDetails {
+            token,
+            ..Default::default()
+        }
+    }
+}
+
+/// A future returned from a TokenProvider which resolves to a TokenResponse.
+pub type TokenProviderFuture<'a> = Pin<Box<dyn Future<Output = Result<TokenResponse>> + Send + 'a>>;
+
+/// A TokenProvider is used to provide a TokenResponse during a call to
+/// auth::request_token.
+pub trait TokenProvider {
+    fn provide_token<'a>(&'a self, params: TokenParams) -> TokenProviderFuture<'a>;
+}
+
+/// A response from requesting a token from a TokenProvider.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum TokenResponse {
+    Request(TokenRequest),
+    Details(TokenDetails),
+    Token(String),
 }
