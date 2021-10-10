@@ -25,7 +25,7 @@ pub type Result<T> = std::result::Result<T, ErrorInfo>;
 ///
 /// [Ably REST API]: https://ably.com/documentation/rest-api
 #[derive(Clone, Debug)]
-pub struct RestClient {
+pub struct Rest {
     pub auth:       auth::Auth,
     pub credential: auth::Credential,
     pub channels:   Channels,
@@ -33,7 +33,7 @@ pub struct RestClient {
     url:            reqwest::Url,
 }
 
-impl RestClient {
+impl Rest {
     /// Start building a GET request to /stats.
     ///
     /// Returns a StatsBuilder which is used to set parameters before sending
@@ -45,7 +45,7 @@ impl RestClient {
     /// # async fn run() -> ably::Result<()> {
     /// use ably::stats::Stats;
     ///
-    /// let client = ably::RestClient::from("<api_key>");
+    /// let client = ably::Rest::from("<api_key>");
     ///
     /// let res = client
     ///     .stats()
@@ -69,7 +69,7 @@ impl RestClient {
     ///
     /// ```
     /// # async fn run() -> ably::Result<()> {
-    /// let client = ably::RestClient::from("<api_key>");
+    /// let client = ably::Rest::from("<api_key>");
     ///
     /// let time = client.time().await?;
     /// # Ok(())
@@ -101,7 +101,7 @@ impl RestClient {
     /// # async fn run() -> ably::Result<()> {
     /// use ably::http::{HeaderMap,Method};
     ///
-    /// let client = ably::RestClient::from("<api_key>");
+    /// let client = ably::Rest::from("<api_key>");
     ///
     /// let mut headers = HeaderMap::new();
     /// headers.insert("Foo", "Bar".parse().unwrap());
@@ -313,20 +313,20 @@ impl Response {
     }
 }
 
-impl From<&str> for RestClient {
-    /// Returns a RestClient initialised with an API key or token contained
+impl From<&str> for Rest {
+    /// Returns a Rest client initialised with an API key or token contained
     /// in the given string.
     ///
     /// # Example
     ///
     /// ```
-    /// // Initialise a RestClient with an API key.
-    /// let client = ably::RestClient::from("<api_key>");
+    /// // Initialise a Rest client with an API key.
+    /// let client = ably::Rest::from("<api_key>");
     /// ```
     ///
     /// ```
-    /// // Initialise a RestClient with a token.
-    /// let client = ably::RestClient::from("<token>");
+    /// // Initialise a Rest client with a token.
+    /// let client = ably::Rest::from("<token>");
     /// ```
     fn from(s: &str) -> Self {
         // unwrap the result since we're guaranteed to have a valid client when
@@ -496,7 +496,7 @@ impl ClientOptions {
         self
     }
 
-    /// Returns a RestClient using the ClientOptions.
+    /// Returns a Rest client using the ClientOptions.
     ///
     /// # Errors
     ///
@@ -506,13 +506,13 @@ impl ClientOptions {
     /// - the REST API URL must be valid
     ///
     /// [RSC1b]: https://docs.ably.io/client-lib-development-guide/features/#RSC1b
-    pub fn client(self) -> Result<RestClient> {
+    pub fn client(self) -> Result<Rest> {
         let credential = self.credential?;
         let url = self.rest_url.clone()?;
         let client = HttpClient::new(credential.clone(), url.clone());
         let channels = Channels::new(client.clone());
 
-        Ok(RestClient {
+        Ok(Rest {
             auth: auth::Auth::new(client.clone(), credential.key()),
             credential,
             channels,
@@ -661,7 +661,7 @@ mod tests {
     #[test]
     fn rest_client_from_sets_key_credential_with_string_with_colon() {
         let s = "appID.keyID:keySecret";
-        let client = RestClient::from(s);
+        let client = Rest::from(s);
         assert!(client.key().is_some());
         assert!(client.token().is_none());
     }
@@ -669,7 +669,7 @@ mod tests {
     #[test]
     fn rest_client_from_sets_token_credential_with_string_without_colon() {
         let s = "appID.tokenID";
-        let client = RestClient::from(s);
+        let client = Rest::from(s);
         assert!(client.token().is_some());
         assert!(client.key().is_none());
     }
@@ -686,7 +686,7 @@ mod tests {
         ClientOptions::from("aaaaaa.bbbbbb:cccccc").environment("sandbox")
     }
 
-    fn test_client() -> RestClient {
+    fn test_client() -> Rest {
         test_client_options().client().unwrap()
     }
 
@@ -711,8 +711,8 @@ mod tests {
                 .await
         }
 
-        /// Returns a RestClient with the test app's key.
-        fn client(&self) -> RestClient {
+        /// Returns a Rest client with the test app's key.
+        fn client(&self) -> Rest {
             ClientOptions::new()
                 .key(self.key())
                 .environment("sandbox")
