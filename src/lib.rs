@@ -28,6 +28,7 @@ pub type Result<T> = std::result::Result<T, ErrorInfo>;
 pub struct RestClient {
     pub auth:       auth::Auth,
     pub credential: auth::Credential,
+    pub channels:   Channels,
     client:         HttpClient,
     url:            reqwest::Url,
 }
@@ -122,19 +123,7 @@ impl RestClient {
     /// response is unsuccessful (i.e. the status code is not in the 200-299
     /// range).
     pub fn request(&self, method: http::Method, path: &str) -> RequestBuilder {
-        let mut req = self.client.request(method, path);
-
-        // Set the Authorization header
-        match &self.credential {
-            auth::Credential::Key(key) => {
-                req = req.basic_auth(&key.name, Some(&key.value));
-            }
-            auth::Credential::Token(token) => {
-                req = req.bearer_auth(&token);
-            }
-        }
-
-        req
+        self.client.request(method, path)
     }
 
     /// Returns the API key from the ClientOptions.
@@ -159,14 +148,16 @@ impl RestClient {
 /// [Ably REST API]: https://ably.com/documentation/rest-api
 #[derive(Clone, Debug)]
 pub struct HttpClient {
-    client:   reqwest::Client,
-    rest_url: reqwest::Url,
+    client:     reqwest::Client,
+    credential: auth::Credential,
+    rest_url:   reqwest::Url,
 }
 
 impl HttpClient {
-    fn new(rest_url: reqwest::Url) -> HttpClient {
+    fn new(credential: auth::Credential, rest_url: reqwest::Url) -> HttpClient {
         HttpClient {
             client: reqwest::Client::new(),
+            credential,
             rest_url,
         }
     }
@@ -178,7 +169,20 @@ impl HttpClient {
     pub fn request(&self, method: http::Method, path: &str) -> RequestBuilder {
         let mut url = self.rest_url.clone();
         url.set_path(path);
-        self.request_url(method, url)
+
+        let mut req = self.request_url(method, url);
+
+        // Set the Authorization header
+        match &self.credential {
+            auth::Credential::Key(key) => {
+                req = req.basic_auth(&key.name, Some(&key.value));
+            }
+            auth::Credential::Token(token) => {
+                req = req.bearer_auth(&token);
+            }
+        }
+
+        req
     }
 
     /// Start building a HTTP request to the given URL.
@@ -505,11 +509,13 @@ impl ClientOptions {
     pub fn client(self) -> Result<RestClient> {
         let credential = self.credential?;
         let url = self.rest_url.clone()?;
-        let client = HttpClient::new(url.clone());
+        let client = HttpClient::new(credential.clone(), url.clone());
+        let channels = Channels::new(client.clone());
 
         Ok(RestClient {
             auth: auth::Auth::new(client.clone(), credential.key()),
             credential,
+            channels,
             client,
             url,
         })
@@ -544,6 +550,91 @@ impl From<&str> for ClientOptions {
             None => options.token(s),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct Channels {
+    client: HttpClient,
+}
+
+impl Channels {
+    fn new(client: HttpClient) -> Channels {
+        Channels { client }
+    }
+
+    pub fn get(&self, name: impl Into<String>) -> Channel {
+        Channel {
+            name:   name.into(),
+            client: self.client.clone(),
+        }
+    }
+}
+
+pub struct Channel {
+    pub name: String,
+    client:   HttpClient,
+}
+
+impl Channel {
+    pub fn publish(&self) -> ChannelPublishBuilder {
+        ChannelPublishBuilder::new(self.client.clone(), self.name.clone())
+    }
+}
+
+pub struct ChannelPublishBuilder {
+    client:  HttpClient,
+    channel: String,
+    event:   Option<String>,
+    data:    Option<String>,
+}
+
+impl ChannelPublishBuilder {
+    fn new(client: HttpClient, channel: String) -> ChannelPublishBuilder {
+        ChannelPublishBuilder {
+            client,
+            channel,
+            event: None,
+            data: None,
+        }
+    }
+
+    pub fn event(mut self, event: impl Into<String>) -> ChannelPublishBuilder {
+        self.event = Some(event.into());
+        self
+    }
+
+    pub fn data(mut self, data: impl Into<String>) -> ChannelPublishBuilder {
+        self.data = Some(data.into());
+        self
+    }
+
+    pub async fn send(self) -> Result<()> {
+        let data = self
+            .data
+            .ok_or(error!(40013, "message data must be provided"))?;
+
+        let msg = Message {
+            event: self.event,
+            data,
+        };
+
+        self.client
+            .request(
+                http::Method::POST,
+                format!("/channels/{}/messages", self.channel).as_ref(),
+            )
+            .body(&msg)
+            .send()
+            .await
+            .map(|_| ())
+    }
+}
+
+#[derive(Serialize)]
+pub struct Message {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event: Option<String>,
+    data:  String,
 }
 
 /// Encapsulate HTTP related types in the http module.
@@ -930,6 +1021,20 @@ mod tests {
 
         // Check the token details.
         assert!(token.token.len() > 0, "Expected token to be set");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn channel_publish_string() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        // Publish a message.
+        let channel = client.channels.get("test_channel_publish_string");
+        let data = "a string";
+        channel.publish().event("event").data(data).send().await?;
 
         Ok(())
     }
