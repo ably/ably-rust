@@ -31,8 +31,9 @@ mod tests {
     use chrono::prelude::*;
     use chrono::Duration;
     use reqwest::Url;
-    use serde::Deserialize;
+    use serde::{Deserialize,Serialize};
     use serde_json::json;
+    use std::collections::HashMap;
 
     #[test]
     fn rest_client_from_sets_key_credential_with_string_with_colon() {
@@ -405,9 +406,37 @@ mod tests {
         let app = TestApp::create().await?;
         let client = app.client();
 
-        // Publish a message.
+        // Publish a message with string data.
         let channel = client.channels.get("test_channel_publish_string");
         let data = "a string";
+        channel.publish().event("event").data(data).send().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn channel_publish_json_object() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        // Publish a message with JSON serializable data.
+        let channel = client.channels.get("test_channel_publish_json_object");
+        #[derive(Serialize)]
+        struct TestData<'a> {
+            b: bool,
+            i: i64,
+            s: &'a str,
+            o: HashMap<&'a str, &'a str>,
+            v: Vec<i64>,
+        }
+        let data = TestData {
+            b: true,
+            i: 42,
+            s: "a string",
+            o: [("x", "1"), ("y", "2")].iter().cloned().collect(),
+            v: vec![1, 2, 3],
+        };
         channel.publish().event("event").data(data).send().await?;
 
         Ok(())

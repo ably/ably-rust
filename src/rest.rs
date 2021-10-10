@@ -174,25 +174,31 @@ pub struct Channel {
 }
 
 impl Channel {
-    pub fn publish(&self) -> ChannelPublishBuilder {
-        ChannelPublishBuilder::new(self.client.clone(), self.name.clone())
+    pub fn publish<T>(&self) -> ChannelPublishBuilder<T>
+    where
+        T: serde::Serialize
+    {
+        ChannelPublishBuilder::<T>::new(self.client.clone(), self.name.clone())
     }
 }
 
-pub struct ChannelPublishBuilder {
+pub struct ChannelPublishBuilder<T> {
     client:  Client,
     channel: String,
+    data:    Option<T>,
     event:   Option<String>,
-    data:    Option<String>,
 }
 
-impl ChannelPublishBuilder {
+impl<T> ChannelPublishBuilder<T>
+where
+    T: serde::Serialize
+{
     fn new(client: Client, channel: String) -> Self {
         Self {
             client,
             channel,
-            event: None,
             data: None,
+            event: None,
         }
     }
 
@@ -201,8 +207,8 @@ impl ChannelPublishBuilder {
         self
     }
 
-    pub fn data(mut self, data: impl Into<String>) -> Self {
-        self.data = Some(data.into());
+    pub fn data(mut self, data: T) -> Self {
+        self.data = Some(data);
         self
     }
 
@@ -213,7 +219,7 @@ impl ChannelPublishBuilder {
 
         let msg = Message {
             event: self.event,
-            data,
+            data: data,
         };
 
         self.client
@@ -229,8 +235,8 @@ impl ChannelPublishBuilder {
 }
 
 #[derive(Serialize)]
-pub struct Message {
+pub struct Message<T: serde::Serialize> {
     #[serde(skip_serializing_if = "Option::is_none")]
     event: Option<String>,
-    data:  String,
+    data:  T,
 }
