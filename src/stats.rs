@@ -174,21 +174,21 @@ pub struct StatsBuilder {
 }
 
 impl StatsBuilder {
-    pub fn new(req: RequestBuilder) -> StatsBuilder {
-        StatsBuilder { req }
+    pub fn new(req: RequestBuilder) -> Self {
+        Self { req }
     }
 
-    pub fn start(mut self, interval: &str) -> StatsBuilder {
+    pub fn start(mut self, interval: &str) -> Self {
         self.req = self.req.params(&[("start", interval)]);
         self
     }
 
-    pub fn end(mut self, interval: &str) -> StatsBuilder {
+    pub fn end(mut self, interval: &str) -> Self {
         self.req = self.req.params(&[("end", interval)]);
         self
     }
 
-    pub fn forwards(mut self) -> StatsBuilder {
+    pub fn forwards(mut self) -> Self {
         self.req = self.req.params(&[("direction", "forwards")]);
         self
     }

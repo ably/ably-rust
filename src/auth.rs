@@ -89,8 +89,8 @@ pub struct Auth {
 }
 
 impl Auth {
-    pub fn new(credential: Credential, client: http::Client) -> Auth {
-        Auth { credential, client }
+    pub fn new(credential: Credential, client: http::Client) -> Self {
+        Self { credential, client }
     }
 
     /// Start building a TokenRequest to be signed by a local API key.
@@ -179,33 +179,33 @@ pub struct CreateTokenRequestBuilder {
 }
 
 impl CreateTokenRequestBuilder {
-    fn new() -> CreateTokenRequestBuilder {
-        CreateTokenRequestBuilder {
+    fn new() -> Self {
+        Self {
             key:    None,
             params: TokenParams::default(),
         }
     }
 
     /// Set the key to use to sign the TokenRequest.
-    pub fn key(mut self, key: Key) -> CreateTokenRequestBuilder {
+    pub fn key(mut self, key: Key) -> Self {
         self.key = Some(key);
         self
     }
 
     /// Set the desired capability.
-    pub fn capability(mut self, capability: &str) -> CreateTokenRequestBuilder {
+    pub fn capability(mut self, capability: &str) -> Self {
         self.params.capability = Some(capability.to_string());
         self
     }
 
     /// Set the desired client_id.
-    pub fn client_id(mut self, client_id: &str) -> CreateTokenRequestBuilder {
+    pub fn client_id(mut self, client_id: &str) -> Self {
         self.params.client_id = Some(client_id.to_string());
         self
     }
 
     /// Set the desired TTL.
-    pub fn ttl(mut self, ttl: i64) -> CreateTokenRequestBuilder {
+    pub fn ttl(mut self, ttl: i64) -> Self {
         self.params.ttl = Some(ttl);
         self
     }
@@ -228,8 +228,8 @@ pub struct RequestTokenBuilder {
 }
 
 impl RequestTokenBuilder {
-    fn new(client: http::Client) -> RequestTokenBuilder {
-        RequestTokenBuilder {
+    fn new(client: http::Client) -> Self {
+        Self {
             client,
             provider: None,
             params: TokenParams::default(),
@@ -237,36 +237,36 @@ impl RequestTokenBuilder {
     }
 
     /// Use a key as the TokenProvider.
-    pub fn key(self, key: Key) -> RequestTokenBuilder {
+    pub fn key(self, key: Key) -> Self {
         self.provider(key)
     }
 
     /// Use a URL as the TokenProvider.
-    pub fn auth_url(self, url: reqwest::Url) -> RequestTokenBuilder {
+    pub fn auth_url(self, url: reqwest::Url) -> Self {
         let provider = UrlTokenProvider::new(self.client.clone(), url);
         self.provider(provider)
     }
 
     /// Use a custom TokenProvider.
-    pub fn provider(mut self, provider: impl TokenProvider + 'static) -> RequestTokenBuilder {
+    pub fn provider(mut self, provider: impl TokenProvider + 'static) -> Self {
         self.provider = Some(Box::new(provider));
         self
     }
 
     /// Set the desired capability.
-    pub fn capability(mut self, capability: &str) -> RequestTokenBuilder {
+    pub fn capability(mut self, capability: &str) -> Self {
         self.params.capability = Some(capability.to_string());
         self
     }
 
     /// Set the desired client_id.
-    pub fn client_id(mut self, client_id: &str) -> RequestTokenBuilder {
+    pub fn client_id(mut self, client_id: &str) -> Self {
         self.params.client_id = Some(client_id.to_string());
         self
     }
 
     /// Set the desired TTL.
-    pub fn ttl(mut self, ttl: i64) -> RequestTokenBuilder {
+    pub fn ttl(mut self, ttl: i64) -> Self {
         self.params.ttl = Some(ttl);
         self
     }
@@ -317,8 +317,8 @@ pub struct UrlTokenProvider {
 }
 
 impl UrlTokenProvider {
-    fn new(client: http::Client, url: reqwest::Url) -> UrlTokenProvider {
-        UrlTokenProvider { client, url }
+    fn new(client: http::Client, url: reqwest::Url) -> Self {
+        Self { client, url }
     }
 
     /// Request a token from the URL.
@@ -443,7 +443,7 @@ pub struct TokenDetails {
 
 impl From<String> for TokenDetails {
     fn from(token: String) -> Self {
-        TokenDetails {
+        Self {
             token,
             ..Default::default()
         }

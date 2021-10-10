@@ -25,7 +25,7 @@ pub struct ClientOptions {
 impl ClientOptions {
     /// Returns ClientOptions with default values.
     pub fn new() -> Self {
-        ClientOptions {
+        Self {
             credential:  Err(error!(40106, "must provide either an API key or a token")),
             environment: None,
             rest_host:   None,

@@ -17,8 +17,8 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(rest_url: reqwest::Url) -> Client {
-        Client {
+    pub fn new(rest_url: reqwest::Url) -> Self {
+        Self {
             inner: reqwest::Client::new(),
             rest_url,
         }
@@ -52,29 +52,29 @@ pub struct RequestBuilder {
 }
 
 impl RequestBuilder {
-    fn new(inner: reqwest::RequestBuilder) -> RequestBuilder {
-        RequestBuilder { inner, auth: None }
+    fn new(inner: reqwest::RequestBuilder) -> Self {
+        Self { inner, auth: None }
     }
 
     /// Modify the query params of the request, adding the parameters provided.
-    pub fn params<T: Serialize + ?Sized>(mut self, params: &T) -> RequestBuilder {
+    pub fn params<T: Serialize + ?Sized>(mut self, params: &T) -> Self {
         self.inner = self.inner.query(params);
         self
     }
 
     /// Modify the JSON request body.
-    pub fn body<T: Serialize + ?Sized>(mut self, body: &T) -> RequestBuilder {
+    pub fn body<T: Serialize + ?Sized>(mut self, body: &T) -> Self {
         self.inner = self.inner.json(body);
         self
     }
 
     /// Add a set of HTTP headers to the request.
-    pub fn headers(mut self, headers: HeaderMap) -> RequestBuilder {
+    pub fn headers(mut self, headers: HeaderMap) -> Self {
         self.inner = self.inner.headers(headers);
         self
     }
 
-    pub fn auth(mut self, auth: auth::Auth) -> RequestBuilder {
+    pub fn auth(mut self, auth: auth::Auth) -> Self {
         self.auth = Some(auth);
         self
     }
@@ -129,8 +129,8 @@ pub struct Response {
 }
 
 impl Response {
-    fn new(response: reqwest::Response) -> Response {
-        Response { inner: response }
+    fn new(response: reqwest::Response) -> Self {
+        Self { inner: response }
     }
 
     /// Returns the response Content-Type.

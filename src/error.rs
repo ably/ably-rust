@@ -37,7 +37,7 @@ pub struct ErrorInfo {
 impl ErrorInfo {
     /// Returns an ErrorInfo with the given code, message, and status_code.
     pub fn new<S: Into<String>>(code: u32, message: S, status_code: Option<u32>) -> Self {
-        ErrorInfo {
+        Self {
             code,
             message: message.into(),
             status_code,

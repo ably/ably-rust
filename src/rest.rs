@@ -139,8 +139,8 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(auth: auth::Auth, http: http::Client) -> Client {
-        Client { auth, http }
+    pub fn new(auth: auth::Auth, http: http::Client) -> Self {
+        Self { auth, http }
     }
 
     pub fn request(&self, method: http::Method, path: impl Into<String>) -> http::RequestBuilder {
@@ -156,8 +156,8 @@ pub struct Channels {
 }
 
 impl Channels {
-    pub fn new(client: Client) -> Channels {
-        Channels { client }
+    pub fn new(client: Client) -> Self {
+        Self { client }
     }
 
     pub fn get(&self, name: impl Into<String>) -> Channel {
@@ -187,8 +187,8 @@ pub struct ChannelPublishBuilder {
 }
 
 impl ChannelPublishBuilder {
-    fn new(client: Client, channel: String) -> ChannelPublishBuilder {
-        ChannelPublishBuilder {
+    fn new(client: Client, channel: String) -> Self {
+        Self {
             client,
             channel,
             event: None,
@@ -196,12 +196,12 @@ impl ChannelPublishBuilder {
         }
     }
 
-    pub fn event(mut self, event: impl Into<String>) -> ChannelPublishBuilder {
+    pub fn event(mut self, event: impl Into<String>) -> Self {
         self.event = Some(event.into());
         self
     }
 
-    pub fn data(mut self, data: impl Into<String>) -> ChannelPublishBuilder {
+    pub fn data(mut self, data: impl Into<String>) -> Self {
         self.data = Some(data.into());
         self
     }
