@@ -3,8 +3,8 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::error::ErrorInfo;
-use crate::http::Method;
-use crate::{HttpClient, Result};
+use crate::http;
+use crate::Result;
 use chrono::prelude::*;
 use hmac::{Hmac, Mac, NewMac};
 use rand::distributions::Alphanumeric;
@@ -20,6 +20,20 @@ pub enum Credential {
 }
 
 impl Credential {
+    pub fn is_key(&self) -> bool {
+        match self {
+            Self::Key(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_token(&self) -> bool {
+        match self {
+            Self::Token(_) => true,
+            _ => false,
+        }
+    }
+
     /// Returns the API key if the credential is a Credential::Key
     pub fn key(&self) -> Option<Key> {
         match self {
@@ -70,21 +84,21 @@ impl TokenProvider for Key {
 /// Provides functions relating to Ably API authentication.
 #[derive(Clone, Debug)]
 pub struct Auth {
-    client: HttpClient,
-    key:    Option<Key>,
+    pub credential: Credential,
+    client:         http::Client,
 }
 
 impl Auth {
-    pub fn new(client: HttpClient, key: Option<Key>) -> Auth {
-        Auth { client, key }
+    pub fn new(credential: Credential, client: http::Client) -> Auth {
+        Auth { credential, client }
     }
 
     /// Start building a TokenRequest to be signed by a local API key.
     pub fn create_token_request(&self) -> CreateTokenRequestBuilder {
         let mut builder = CreateTokenRequestBuilder::new();
 
-        if let Some(ref key) = self.key {
-            builder = builder.key(key.clone());
+        if let Some(key) = self.credential.key() {
+            builder = builder.key(key);
         }
 
         builder
@@ -94,8 +108,8 @@ impl Auth {
     pub fn request_token(&self) -> RequestTokenBuilder {
         let mut builder = RequestTokenBuilder::new(self.client.clone());
 
-        if let Some(ref key) = self.key {
-            builder = builder.key(key.clone());
+        if let Some(key) = self.credential.key() {
+            builder = builder.key(key);
         }
 
         builder
@@ -208,13 +222,13 @@ impl CreateTokenRequestBuilder {
 
 /// A builder to request a token.
 pub struct RequestTokenBuilder {
-    client:   HttpClient,
+    client:   http::Client,
     provider: Option<Box<dyn TokenProvider>>,
     params:   TokenParams,
 }
 
 impl RequestTokenBuilder {
-    fn new(client: HttpClient) -> RequestTokenBuilder {
+    fn new(client: http::Client) -> RequestTokenBuilder {
         RequestTokenBuilder {
             client,
             provider: None,
@@ -284,8 +298,8 @@ impl RequestTokenBuilder {
     async fn exchange(&self, req: &TokenRequest) -> Result<TokenDetails> {
         self.client
             .request(
-                Method::POST,
-                format!("/keys/{}/requestToken", req.key_name).as_ref(),
+                http::Method::POST,
+                format!("/keys/{}/requestToken", req.key_name),
             )
             .body(req)
             .send()
@@ -298,12 +312,12 @@ impl RequestTokenBuilder {
 
 /// A TokenProvider which requests tokens from a URL.
 pub struct UrlTokenProvider {
-    client: HttpClient,
+    client: http::Client,
     url:    reqwest::Url,
 }
 
 impl UrlTokenProvider {
-    fn new(client: HttpClient, url: reqwest::Url) -> UrlTokenProvider {
+    fn new(client: http::Client, url: reqwest::Url) -> UrlTokenProvider {
         UrlTokenProvider { client, url }
     }
 
@@ -311,7 +325,7 @@ impl UrlTokenProvider {
     async fn request(&self, _params: TokenParams) -> Result<TokenResponse> {
         let res = self
             .client
-            .request_url(Method::GET, self.url.clone())
+            .request_url(http::Method::GET, self.url.clone())
             .send()
             .await?;
 

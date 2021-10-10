@@ -1,4 +1,5 @@
-use super::{RequestBuilder, Response, Result};
+use super::http::{RequestBuilder, Response};
+use super::Result;
 use serde::Deserialize;
 
 /// Ably Application statistics retrieved from [REST stats endpoint].
