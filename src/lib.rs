@@ -82,10 +82,11 @@ impl RestClient {
             .json()
             .await?;
 
-        match res.pop() {
-            Some(time) => Ok(Utc.timestamp(time / 1000, time as u32 % 1000)),
-            None => Err(error!(40000, "Invalid response from /time")),
-        }
+        let time = res
+            .pop()
+            .ok_or(error!(40000, "Invalid response from /time"))?;
+
+        Ok(Utc.timestamp(time / 1000, time as u32 % 1000))
     }
 
     /// Start building a HTTP request to the Ably REST API.
