@@ -1,4 +1,4 @@
-use super::http::{RequestBuilder, Response};
+use super::http;
 use super::Result;
 use serde::Deserialize;
 
@@ -169,12 +169,12 @@ pub struct ReactorRates {
 }
 
 /// A builder to construct a REST stats request.
-pub struct StatsBuilder {
-    req: RequestBuilder,
+pub struct RequestBuilder {
+    req: http::RequestBuilder,
 }
 
-impl StatsBuilder {
-    pub fn new(req: RequestBuilder) -> Self {
+impl RequestBuilder {
+    pub fn new(req: http::RequestBuilder) -> Self {
         Self { req }
     }
 
@@ -193,7 +193,7 @@ impl StatsBuilder {
         self
     }
 
-    pub async fn send(self) -> Result<Response> {
+    pub async fn send(self) -> Result<http::Response> {
         self.req.send().await
     }
 }

@@ -18,8 +18,8 @@ pub struct Rest {
 impl Rest {
     /// Start building a GET request to /stats.
     ///
-    /// Returns a StatsBuilder which is used to set parameters before sending
-    /// the stats request.
+    /// Returns a stats::RequestBuilder which is used to set parameters before
+    /// sending the stats request.
     ///
     /// # Example
     ///
@@ -40,9 +40,9 @@ impl Rest {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn stats(&self) -> stats::StatsBuilder {
+    pub fn stats(&self) -> stats::RequestBuilder {
         let req = self.client.request(http::Method::GET, "/stats");
-        stats::StatsBuilder::new(req)
+        stats::RequestBuilder::new(req)
     }
 
     /// Sends a GET request to /time and returns the server time in UTC.
