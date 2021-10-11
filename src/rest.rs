@@ -234,9 +234,16 @@ impl ChannelPublishBuilder {
     }
 
     pub async fn send(self) -> Result<()> {
-        let msg = Message {
-            event: self.event,
-            data:  self.data.transpose()?,
+        let mut msg = Message {
+            event:    self.event,
+            data:     self.data.transpose()?,
+            encoding: None,
+        };
+
+        msg.encoding = match msg.data {
+            Some(MessageData::JSON(_)) => Some(String::from("json")),
+            Some(MessageData::Binary(_)) => Some(String::from("base64")),
+            _ => None,
         };
 
         self.client
@@ -264,7 +271,9 @@ pub enum MessageData {
 #[derive(Deserialize, Serialize)]
 pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub event: Option<String>,
+    pub event:    Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub data:  Option<MessageData>,
+    pub data:     Option<MessageData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
 }

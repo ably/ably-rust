@@ -453,17 +453,14 @@ mod tests {
         let res = channel.history().send().await?;
         let mut history: Vec<rest::Message> = res.items().await?;
         let message = history.pop().expect("Expected a history message");
-        // let json = serde_json::json!({
-        //     "b": true,
-        //     "i": 42,
-        //     "s": "a string",
-        //     "o": {"x": "1", "y": "2"},
-        //     "v": [1, 2, 3]
-        // });
-        // assert_eq!(message.data, Some(rest::MessageData::JSON(json)));
-        let json =
-            String::from(r#"{"b":true,"i":42,"o":{"x":"1","y":"2"},"s":"a string","v":[1,2,3]}"#);
-        assert_eq!(message.data, Some(rest::MessageData::String(json)));
+        let json = serde_json::json!({
+            "b": true,
+            "i": 42,
+            "s": "a string",
+            "o": {"x": "1", "y": "2"},
+            "v": [1, 2, 3]
+        });
+        assert_eq!(message.data, Some(rest::MessageData::JSON(json)));
 
         Ok(())
     }
