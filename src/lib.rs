@@ -9,6 +9,7 @@
 #[macro_use]
 pub mod error;
 pub mod auth;
+pub mod history;
 pub mod http;
 pub mod options;
 pub mod rest;
@@ -411,6 +412,15 @@ mod tests {
         let data = "a string";
         channel.publish().event("event").string(data).send().await?;
 
+        // Retrieve the message from history.
+        let res = channel.history().send().await?;
+        let mut history: Vec<rest::Message> = res.items().await?;
+        let message = history.pop().expect("Expected a history message");
+        assert_eq!(
+            message.data,
+            Some(rest::MessageData::String(data.to_string()))
+        );
+
         Ok(())
     }
 
@@ -438,6 +448,22 @@ mod tests {
             v: vec![1, 2, 3],
         };
         channel.publish().event("event").json(data).send().await?;
+
+        // Retrieve the message from history.
+        let res = channel.history().send().await?;
+        let mut history: Vec<rest::Message> = res.items().await?;
+        let message = history.pop().expect("Expected a history message");
+        // let json = serde_json::json!({
+        //     "b": true,
+        //     "i": 42,
+        //     "s": "a string",
+        //     "o": {"x": "1", "y": "2"},
+        //     "v": [1, 2, 3]
+        // });
+        // assert_eq!(message.data, Some(rest::MessageData::JSON(json)));
+        let json =
+            String::from(r#"{"b":true,"i":42,"o":{"x":"1","y":"2"},"s":"a string","v":[1,2,3]}"#);
+        assert_eq!(message.data, Some(rest::MessageData::String(json)));
 
         Ok(())
     }

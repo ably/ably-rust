@@ -1,6 +1,6 @@
 use crate::error::*;
 use crate::options::ClientOptions;
-use crate::{auth, http, stats, Result};
+use crate::{auth, history, http, stats, Result};
 
 use chrono::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -176,6 +176,19 @@ pub struct Channel {
 impl Channel {
     pub fn publish(&self) -> ChannelPublishBuilder {
         ChannelPublishBuilder::new(self.client.clone(), self.name.clone())
+    }
+
+    /// Start building a history request for the channel.
+    ///
+    /// Returns a history::RequestBuilder which is used to set parameters
+    /// before sending the history request.
+    ///
+    pub fn history(&self) -> history::RequestBuilder {
+        let req = self.client.request(
+            http::Method::GET,
+            format!("/channels/{}/history", self.name),
+        );
+        history::RequestBuilder::new(req)
     }
 }
 
