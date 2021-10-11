@@ -3,7 +3,7 @@ use crate::options::ClientOptions;
 use crate::{auth, http, stats, Result};
 
 use chrono::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// A client for the [Ably REST API].
 ///
@@ -174,25 +174,19 @@ pub struct Channel {
 }
 
 impl Channel {
-    pub fn publish<T>(&self) -> ChannelPublishBuilder<T>
-    where
-        T: serde::Serialize
-    {
-        ChannelPublishBuilder::<T>::new(self.client.clone(), self.name.clone())
+    pub fn publish(&self) -> ChannelPublishBuilder {
+        ChannelPublishBuilder::new(self.client.clone(), self.name.clone())
     }
 }
 
-pub struct ChannelPublishBuilder<T> {
+pub struct ChannelPublishBuilder {
     client:  Client,
     channel: String,
-    data:    Option<T>,
+    data:    Option<Result<MessageData>>,
     event:   Option<String>,
 }
 
-impl<T> ChannelPublishBuilder<T>
-where
-    T: serde::Serialize
-{
+impl ChannelPublishBuilder {
     fn new(client: Client, channel: String) -> Self {
         Self {
             client,
@@ -207,19 +201,29 @@ where
         self
     }
 
-    pub fn data(mut self, data: T) -> Self {
-        self.data = Some(data);
+    pub fn string(mut self, data: impl Into<String>) -> Self {
+        self.data = Some(Ok(MessageData::String(data.into())));
+        self
+    }
+
+    pub fn json(mut self, data: impl serde::Serialize) -> Self {
+        let res = data
+            .serialize(serde_json::value::Serializer)
+            .map(|v| MessageData::JSON(v))
+            .map_err(|err| error!(40013, format!("Invalid message data: {}", err)));
+        self.data = Some(res);
+        self
+    }
+
+    pub fn binary(mut self, data: Vec<u8>) -> Self {
+        self.data = Some(Ok(MessageData::Binary(data)));
         self
     }
 
     pub async fn send(self) -> Result<()> {
-        let data = self
-            .data
-            .ok_or(error!(40013, "message data must be provided"))?;
-
         let msg = Message {
             event: self.event,
-            data: data,
+            data:  self.data.transpose()?,
         };
 
         self.client
@@ -234,9 +238,20 @@ where
     }
 }
 
-#[derive(Serialize)]
-pub struct Message<T: serde::Serialize> {
+/// MessageData is the payload of a message which can either be a utf-8 encoded
+/// string, a JSON serializable object, or a binary array.
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum MessageData {
+    String(String),
+    JSON(serde_json::Value),
+    Binary(Vec<u8>),
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
-    event: Option<String>,
-    data:  T,
+    pub event: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data:  Option<MessageData>,
 }

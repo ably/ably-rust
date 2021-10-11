@@ -31,7 +31,7 @@ mod tests {
     use chrono::prelude::*;
     use chrono::Duration;
     use reqwest::Url;
-    use serde::{Deserialize,Serialize};
+    use serde::{Deserialize, Serialize};
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -409,7 +409,7 @@ mod tests {
         // Publish a message with string data.
         let channel = client.channels.get("test_channel_publish_string");
         let data = "a string";
-        channel.publish().event("event").data(data).send().await?;
+        channel.publish().event("event").string(data).send().await?;
 
         Ok(())
     }
@@ -437,7 +437,21 @@ mod tests {
             o: [("x", "1"), ("y", "2")].iter().cloned().collect(),
             v: vec![1, 2, 3],
         };
-        channel.publish().event("event").data(data).send().await?;
+        channel.publish().event("event").json(data).send().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn channel_publish_binary() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        // Publish a message with binary data.
+        let channel = client.channels.get("test_channel_publish_binary");
+        let data = vec![0x1, 0x2, 0x3, 0x4];
+        channel.publish().event("event").binary(data).send().await?;
 
         Ok(())
     }
