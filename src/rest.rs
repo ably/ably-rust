@@ -174,8 +174,8 @@ pub struct Channel {
 }
 
 impl Channel {
-    pub fn publish(&self) -> ChannelPublishBuilder {
-        ChannelPublishBuilder::new(self.client.clone(), self.name.clone())
+    pub fn publish(&self) -> PublishBuilder {
+        PublishBuilder::new(self.client.clone(), self.name.clone())
     }
 
     /// Start building a history request for the channel.
@@ -192,7 +192,7 @@ impl Channel {
     }
 }
 
-pub struct ChannelPublishBuilder {
+pub struct PublishBuilder {
     client:   Client,
     channel:  String,
     data:     Result<Data>,
@@ -200,7 +200,7 @@ pub struct ChannelPublishBuilder {
     event:    Option<String>,
 }
 
-impl ChannelPublishBuilder {
+impl PublishBuilder {
     fn new(client: Client, channel: String) -> Self {
         Self {
             client,
