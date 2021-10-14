@@ -9,6 +9,7 @@
 #[macro_use]
 pub mod error;
 pub mod auth;
+pub mod base64;
 pub mod history;
 pub mod http;
 pub mod options;
@@ -416,10 +417,7 @@ mod tests {
         let res = channel.history().send().await?;
         let mut history: Vec<rest::Message> = res.items().await?;
         let message = history.pop().expect("Expected a history message");
-        assert_eq!(
-            message.data,
-            Some(rest::MessageData::String(data.to_string()))
-        );
+        assert_eq!(message.data()?, rest::Data::String(data.to_string()));
 
         Ok(())
     }
@@ -460,7 +458,7 @@ mod tests {
             "o": {"x": "1", "y": "2"},
             "v": [1, 2, 3]
         });
-        assert_eq!(message.data, Some(rest::MessageData::JSON(json)));
+        assert_eq!(message.data()?, rest::Data::JSON(json));
 
         Ok(())
     }
@@ -475,6 +473,15 @@ mod tests {
         let channel = client.channels.get("test_channel_publish_binary");
         let data = vec![0x1, 0x2, 0x3, 0x4];
         channel.publish().event("event").binary(data).send().await?;
+
+        // Retrieve the message from history.
+        let res = channel.history().send().await?;
+        let mut history: Vec<rest::Message> = res.items().await?;
+        let message = history.pop().expect("Expected a history message");
+        assert_eq!(
+            message.data()?,
+            rest::Data::Binary(vec![0x1, 0x2, 0x3, 0x4])
+        );
 
         Ok(())
     }

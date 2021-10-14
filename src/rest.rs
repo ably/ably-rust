@@ -1,6 +1,6 @@
 use crate::error::*;
 use crate::options::ClientOptions;
-use crate::{auth, history, http, stats, Result};
+use crate::{auth, base64, history, http, stats, Result};
 
 use chrono::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -193,10 +193,11 @@ impl Channel {
 }
 
 pub struct ChannelPublishBuilder {
-    client:  Client,
-    channel: String,
-    data:    Option<Result<MessageData>>,
-    event:   Option<String>,
+    client:   Client,
+    channel:  String,
+    data:     Result<Data>,
+    encoding: Encoding,
+    event:    Option<String>,
 }
 
 impl ChannelPublishBuilder {
@@ -204,7 +205,8 @@ impl ChannelPublishBuilder {
         Self {
             client,
             channel,
-            data: None,
+            data: Ok(Data::None),
+            encoding: Encoding::None,
             event: None,
         }
     }
@@ -215,35 +217,30 @@ impl ChannelPublishBuilder {
     }
 
     pub fn string(mut self, data: impl Into<String>) -> Self {
-        self.data = Some(Ok(MessageData::String(data.into())));
+        self.data = Ok(Data::String(data.into()));
         self
     }
 
     pub fn json(mut self, data: impl serde::Serialize) -> Self {
-        let res = data
+        self.data = data
             .serialize(serde_json::value::Serializer)
-            .map(|v| MessageData::JSON(v))
-            .map_err(|err| error!(40013, format!("Invalid message data: {}", err)));
-        self.data = Some(res);
+            .map(Into::into)
+            .map_err(|err| error!(40013, format!("invalid message data: {}", err)));
+        self.encoding = Encoding::JSON;
         self
     }
 
     pub fn binary(mut self, data: Vec<u8>) -> Self {
-        self.data = Some(Ok(MessageData::Binary(data)));
+        self.data = Ok(data.into());
+        self.encoding = Encoding::Base64;
         self
     }
 
     pub async fn send(self) -> Result<()> {
-        let mut msg = Message {
+        let msg = Message {
             event:    self.event,
-            data:     self.data.transpose()?,
-            encoding: None,
-        };
-
-        msg.encoding = match msg.data {
-            Some(MessageData::JSON(_)) => Some(String::from("json")),
-            Some(MessageData::Binary(_)) => Some(String::from("base64")),
-            _ => None,
+            raw_data: self.data?,
+            encoding: self.encoding,
         };
 
         self.client
@@ -258,22 +255,95 @@ impl ChannelPublishBuilder {
     }
 }
 
-/// MessageData is the payload of a message which can either be a utf-8 encoded
+/// Data is the payload of a message which can either be a utf-8 encoded
 /// string, a JSON serializable object, or a binary array.
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(untagged)]
-pub enum MessageData {
+pub enum Data {
     String(String),
     JSON(serde_json::Value),
+    #[serde(with = "base64")]
     Binary(Vec<u8>),
+    None,
+}
+
+impl Data {
+    fn is_none(&self) -> bool {
+        match self {
+            Self::None => true,
+            _ => false,
+        }
+    }
+}
+
+impl From<String> for Data {
+    fn from(s: String) -> Self {
+        Self::String(s)
+    }
+}
+
+impl From<Vec<u8>> for Data {
+    fn from(v: Vec<u8>) -> Self {
+        Self::Binary(v)
+    }
+}
+
+impl From<serde_json::Value> for Data {
+    fn from(v: serde_json::Value) -> Self {
+        Self::JSON(v)
+    }
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub event:    Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data:     Option<MessageData>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub encoding: Option<String>,
+    pub event: Option<String>,
+    #[serde(skip_serializing_if = "Data::is_none")]
+    #[serde(rename = "data")]
+    raw_data:  Data,
+    #[serde(skip_serializing_if = "Encoding::is_none")]
+    #[serde(default = "Encoding::none")]
+    encoding:  Encoding,
+}
+
+impl Message {
+    /// Returns the decoded message data.
+    pub fn data(&self) -> Result<Data> {
+        match self.encoding {
+            Encoding::None => match &self.raw_data {
+                Data::None => Ok(Data::None),
+                Data::String(_) => Ok(self.raw_data.clone()),
+                _ => Err(error!(40013, "invalid message encoding")),
+            },
+            Encoding::JSON => match &self.raw_data {
+                Data::JSON(_) => Ok(self.raw_data.clone()),
+                _ => Err(error!(40013, "invalid JSON message data")),
+            },
+            Encoding::Base64 => match &self.raw_data {
+                Data::String(s) => base64::decode(s).map(Into::into).map_err(Into::into),
+                _ => Err(error!(40013, "invalid base64 message data")),
+            },
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Encoding {
+    JSON,
+    Base64,
+    None,
+}
+
+impl Encoding {
+    fn is_none(&self) -> bool {
+        match self {
+            Self::None => true,
+            _ => false,
+        }
+    }
+
+    fn none() -> Self {
+        Self::None
+    }
 }

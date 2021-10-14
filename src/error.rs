@@ -65,6 +65,12 @@ impl From<hmac::crypto_mac::InvalidKeyLength> for ErrorInfo {
     }
 }
 
+impl From<base64::DecodeError> for ErrorInfo {
+    fn from(err: base64::DecodeError) -> Self {
+        error!(40013, format!("invalid base64 data: {}", err))
+    }
+}
+
 /// Implement From<Infallible> to support ErrorInfo being the associated
 /// type for the TryInto trait bound in ClientOptions#key.
 impl From<Infallible> for ErrorInfo {
