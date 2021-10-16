@@ -84,7 +84,7 @@ mod tests {
                 .body(&spec)
                 .send()
                 .await?
-                .json()
+                .body()
                 .await
         }
 

@@ -1,7 +1,7 @@
-use super::auth;
 use super::error::{ErrorInfo, WrappedError};
 use super::Result;
-pub use reqwest::header::HeaderMap;
+use super::{auth, rest};
+pub use reqwest::header::{HeaderMap, HeaderValue};
 pub use reqwest::Method;
 
 use serde::de::DeserializeOwned;
@@ -47,30 +47,71 @@ impl Client {
 ///
 /// [Ably REST API]: https://ably.com/documentation/rest-api
 pub struct RequestBuilder {
-    inner: reqwest::RequestBuilder,
-    auth:  Option<auth::Auth>,
+    inner:  Result<reqwest::RequestBuilder>,
+    auth:   Option<auth::Auth>,
+    format: rest::Format,
 }
 
 impl RequestBuilder {
     fn new(inner: reqwest::RequestBuilder) -> Self {
-        Self { inner, auth: None }
+        Self {
+            inner:  Ok(inner),
+            auth:   None,
+            format: rest::DEFAULT_FORMAT,
+        }
+    }
+
+    /// Set the request format.
+    pub fn format(mut self, format: rest::Format) -> Self {
+        self.format = format;
+        self
     }
 
     /// Modify the query params of the request, adding the parameters provided.
     pub fn params<T: Serialize + ?Sized>(mut self, params: &T) -> Self {
-        self.inner = self.inner.query(params);
+        if let Ok(req) = self.inner {
+            self.inner = Ok(req.query(params));
+        }
         self
     }
 
-    /// Modify the JSON request body.
-    pub fn body<T: Serialize + ?Sized>(mut self, body: &T) -> Self {
-        self.inner = self.inner.json(body);
+    /// Set the request body.
+    pub fn body<T: Serialize + ?Sized>(self, body: &T) -> Self {
+        match self.format {
+            rest::Format::MessagePack => self.msgpack(body),
+            rest::Format::JSON => self.json(body),
+        }
+    }
+
+    /// Set the JSON request body.
+    fn json<T: Serialize + ?Sized>(mut self, body: &T) -> Self {
+        if let Ok(req) = self.inner {
+            self.inner = Ok(req.json(body));
+        }
+        self
+    }
+
+    /// Set the MessagePack request body.
+    fn msgpack<T: Serialize + ?Sized>(mut self, body: &T) -> Self {
+        if let Ok(req) = self.inner {
+            self.inner = rmp_serde::to_vec_named(body)
+                .map(|data| {
+                    req.header(
+                        reqwest::header::CONTENT_TYPE,
+                        HeaderValue::from_static("application/x-msgpack"),
+                    )
+                    .body(data)
+                })
+                .map_err(Into::into)
+        }
         self
     }
 
     /// Add a set of HTTP headers to the request.
     pub fn headers(mut self, headers: HeaderMap) -> Self {
-        self.inner = self.inner.headers(headers);
+        if let Ok(req) = self.inner {
+            self.inner = Ok(req.headers(headers));
+        }
         self
     }
 
@@ -81,7 +122,7 @@ impl RequestBuilder {
 
     /// Send the request to the Ably REST API.
     pub async fn send(self) -> Result<Response> {
-        let mut req = self.inner;
+        let mut req = self.inner?;
 
         // Set the Authorization header.
         if let Some(auth) = self.auth {
@@ -146,12 +187,35 @@ impl Response {
 
     /// Returns the list of items from the body of a paginated response.
     pub async fn items<T: DeserializeOwned>(self) -> Result<Vec<T>> {
-        self.inner.json().await.map_err(Into::into)
+        self.body().await.map_err(Into::into)
+    }
+
+    /// Deserialize the response body.
+    pub async fn body<T: DeserializeOwned>(self) -> Result<T> {
+        let content_type = self
+            .content_type()
+            .ok_or(error!(40001, "missing content-type"))?;
+
+        match content_type.essence_str() {
+            "application/json" => self.json().await,
+            "application/x-msgpack" => self.msgpack().await,
+            _ => Err(error!(
+                40001,
+                format!("invalid response content-type: {}", content_type)
+            )),
+        }
     }
 
     /// Deserialize the response body as JSON.
     pub async fn json<T: DeserializeOwned>(self) -> Result<T> {
         self.inner.json().await.map_err(Into::into)
+    }
+
+    /// Deserialize the response body as MessagePack.
+    pub async fn msgpack<T: DeserializeOwned>(self) -> Result<T> {
+        let data = self.inner.bytes().await?;
+
+        rmp_serde::from_read(&*data).map_err(Into::into)
     }
 
     /// Return the response body as a String.

@@ -304,7 +304,7 @@ impl RequestTokenBuilder {
             .body(req)
             .send()
             .await?
-            .json()
+            .body()
             .await
             .map_err(Into::into)
     }

@@ -11,6 +11,9 @@ pub struct ClientOptions {
     /// Holds either an API key or a token.
     credential: Result<auth::Credential>,
 
+    /// The message format (either MessagePack or JSON).
+    format: rest::Format,
+
     /// An optional custom environment used to construct the endpoint URLs.
     environment: Option<String>,
 
@@ -27,6 +30,7 @@ impl ClientOptions {
     pub fn new() -> Self {
         Self {
             credential:  Err(error!(40106, "must provide either an API key or a token")),
+            format:      rest::DEFAULT_FORMAT,
             environment: None,
             rest_host:   None,
             rest_url:    Ok(reqwest::Url::parse("https://rest.ably.io").unwrap()),
@@ -120,6 +124,17 @@ impl ClientOptions {
         self
     }
 
+    /// Sets the message format to MessagePack if the argument is true, or JSON
+    /// if the argument is false.
+    pub fn use_binary_protocol(mut self, binary: bool) -> Self {
+        if binary {
+            self.format = rest::Format::MessagePack;
+        } else {
+            self.format = rest::Format::JSON;
+        }
+        self
+    }
+
     /// Sets the rest_host. See [TO3k2].
     ///
     /// # Example
@@ -179,7 +194,7 @@ impl ClientOptions {
         let url = self.rest_url.clone()?;
         let http = http::Client::new(url.clone());
         let auth = auth::Auth::new(credential, http.clone());
-        let client = rest::Client::new(auth.clone(), http);
+        let client = rest::Client::new(auth.clone(), http, self.format);
         let channels = rest::Channels::new(client.clone());
 
         Ok(rest::Rest {

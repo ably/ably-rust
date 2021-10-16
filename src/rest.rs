@@ -63,7 +63,7 @@ impl Rest {
             .request(http::Method::GET, "/time")
             .send()
             .await?
-            .json()
+            .body()
             .await?;
 
         let time = res
@@ -134,13 +134,14 @@ impl From<&str> for Rest {
 
 #[derive(Clone, Debug)]
 pub struct Client {
-    auth: auth::Auth,
-    http: http::Client,
+    auth:   auth::Auth,
+    http:   http::Client,
+    format: Format,
 }
 
 impl Client {
-    pub fn new(auth: auth::Auth, http: http::Client) -> Self {
-        Self { auth, http }
+    pub fn new(auth: auth::Auth, http: http::Client, format: Format) -> Self {
+        Self { auth, http, format }
     }
 
     pub fn request(&self, method: http::Method, path: impl Into<String>) -> http::RequestBuilder {
@@ -274,6 +275,10 @@ impl Data {
             _ => false,
         }
     }
+
+    fn none() -> Self {
+        Self::None
+    }
 }
 
 impl From<String> for Data {
@@ -299,7 +304,7 @@ pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event: Option<String>,
     #[serde(skip_serializing_if = "Data::is_none")]
-    #[serde(rename = "data")]
+    #[serde(rename = "data", default = "Data::none")]
     raw_data:  Data,
     #[serde(skip_serializing_if = "Encoding::is_none")]
     #[serde(default = "Encoding::none")]
@@ -327,8 +332,6 @@ impl Message {
     }
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
 enum Encoding {
     JSON,
     Base64,
@@ -347,3 +350,42 @@ impl Encoding {
         Self::None
     }
 }
+
+// Explicitly implement Serialize for Encoding so that rmp-serde serializes
+// enum variants as strings rather than maps with integer or string keys.
+impl Serialize for Encoding {
+    fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(match *self {
+            Self::JSON => "json",
+            Self::Base64 => "base64",
+            Self::None => "",
+        })
+    }
+}
+
+// Explicitly implement Deserialize for Encoding so that rmp-serde deserializes
+// enum variants from strings rather than from maps with integer or string keys.
+impl<'de> Deserialize<'de> for Encoding {
+    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.as_str() {
+            "json" => Encoding::JSON,
+            "base64" => Encoding::Base64,
+            _ => Encoding::None,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum Format {
+    MessagePack,
+    JSON,
+}
+
+pub const DEFAULT_FORMAT: Format = Format::MessagePack;
