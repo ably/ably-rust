@@ -1,9 +1,10 @@
 use crate::error::*;
 use crate::options::ClientOptions;
-use crate::{auth, base64, history, http, stats, Result};
+use crate::{auth, base64, history, http, presence, stats, Result};
 
 use chrono::prelude::*;
 use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 
 /// A client for the [Ably REST API].
 ///
@@ -162,16 +163,19 @@ impl Channels {
     }
 
     pub fn get(&self, name: impl Into<String>) -> Channel {
+        let name = name.into();
         Channel {
-            name:   name.into(),
-            client: self.client.clone(),
+            name:     name.clone(),
+            presence: Presence::new(name.clone(), self.client.clone()),
+            client:   self.client.clone(),
         }
     }
 }
 
 pub struct Channel {
-    pub name: String,
-    client:   Client,
+    pub name:     String,
+    pub presence: Presence,
+    client:       Client,
 }
 
 impl Channel {
@@ -190,6 +194,25 @@ impl Channel {
             format!("/channels/{}/history", self.name),
         );
         history::RequestBuilder::new(req)
+    }
+}
+
+pub struct Presence {
+    name:   String,
+    client: Client,
+}
+
+impl Presence {
+    fn new(name: String, client: Client) -> Self {
+        Self { name, client }
+    }
+
+    pub fn get(&self) -> presence::RequestBuilder {
+        let req = self.client.request(
+            http::Method::GET,
+            format!("/channels/{}/presence", self.name),
+        );
+        presence::RequestBuilder::new(req)
     }
 }
 
@@ -314,22 +337,58 @@ pub struct Message {
 impl Message {
     /// Returns the decoded message data.
     pub fn data(&self) -> Result<Data> {
-        match self.encoding {
-            Encoding::None => match &self.raw_data {
-                Data::None => Ok(Data::None),
-                Data::String(_) => Ok(self.raw_data.clone()),
-                _ => Err(error!(40013, "invalid message encoding")),
-            },
-            Encoding::JSON => match &self.raw_data {
-                Data::JSON(_) => Ok(self.raw_data.clone()),
-                _ => Err(error!(40013, "invalid JSON message data")),
-            },
-            Encoding::Base64 => match &self.raw_data {
-                Data::String(s) => base64::decode(s).map(Into::into).map_err(Into::into),
-                _ => Err(error!(40013, "invalid base64 message data")),
-            },
-        }
+        decode(&self.raw_data, &self.encoding)
     }
+}
+
+fn decode(data: &Data, encoding: &Encoding) -> Result<Data> {
+    match encoding {
+        Encoding::None => match data {
+            Data::None => Ok(Data::None),
+            Data::String(_) => Ok(data.clone()),
+            _ => Err(error!(40013, "invalid message encoding")),
+        },
+        Encoding::JSON => match data {
+            Data::JSON(_) => Ok(data.clone()),
+            _ => Err(error!(40013, "invalid JSON message data")),
+        },
+        Encoding::Base64 => match data {
+            Data::String(s) => base64::decode(s).map(Into::into).map_err(Into::into),
+            _ => Err(error!(40013, "invalid base64 message data")),
+        },
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresenceMessage {
+    pub action:        PresenceAction,
+    pub client_id:     String,
+    pub connection_id: String,
+    #[serde(skip_serializing_if = "Data::is_none")]
+    #[serde(rename = "data", default = "Data::none")]
+    raw_data:          Data,
+    #[serde(skip_serializing_if = "Encoding::is_none")]
+    #[serde(default = "Encoding::none")]
+    encoding:          Encoding,
+}
+
+impl PresenceMessage {
+    /// Returns the decoded message data.
+    pub fn data(&self) -> Result<Data> {
+        decode(&self.raw_data, &self.encoding)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize_repr, PartialEq, Serialize_repr)]
+#[serde(untagged)]
+#[repr(u8)]
+pub enum PresenceAction {
+    Absent,
+    Present,
+    Enter,
+    Leave,
+    Update,
 }
 
 enum Encoding {

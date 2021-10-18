@@ -13,6 +13,7 @@ pub mod base64;
 pub mod history;
 pub mod http;
 pub mod options;
+pub mod presence;
 pub mod rest;
 pub mod stats;
 
@@ -77,7 +78,36 @@ mod tests {
         /// Creates a test app in the Ably Sandbox environment with a single
         /// API key.
         async fn create() -> Result<Self> {
-            let spec = json!({"keys":[{}]});
+            let spec = json!({
+                "keys": [
+                    {}
+                ],
+                "namespaces": [
+                    { "id": "persisted", "persisted": true },
+                    { "id": "pushenabled", "pushEnabled": true }
+                ],
+                "channels": [
+                    {
+                        "name": "persisted:presence_fixtures",
+                        "presence": [
+                            {
+                                "clientId": "client_string",
+                                "data": "some presence data"
+                            },
+                            {
+                                "clientId": "client_json",
+                                "data": {"some":"presence data"},
+                                "encoding": "json"
+                            },
+                            {
+                                "clientId": "client_binary",
+                                "data": "c29tZSBwcmVzZW5jZSBkYXRh",
+                                "encoding": "base64"
+                            }
+                        ]
+                    }
+                ]
+            });
 
             test_client()
                 .request(Method::POST, "/apps")
@@ -481,6 +511,33 @@ mod tests {
         assert_eq!(
             message.data()?,
             rest::Data::Binary(vec![0x1, 0x2, 0x3, 0x4])
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn channel_presence_get() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        // Retrieve the presence set
+        let channel = client.channels.get("persisted:presence_fixtures");
+        let res = channel.presence.get().send().await?;
+        let presence: Vec<rest::PresenceMessage> = res.items().await?;
+        assert_eq!(presence.len(), 3);
+        assert_eq!(
+            presence[0].data()?,
+            rest::Data::Binary("some presence data".as_bytes().into())
+        );
+        assert_eq!(
+            presence[1].data()?,
+            rest::Data::JSON(serde_json::json!({"some":"presence data"}))
+        );
+        assert_eq!(
+            presence[2].data()?,
+            rest::Data::String("some presence data".to_string())
         );
 
         Ok(())
