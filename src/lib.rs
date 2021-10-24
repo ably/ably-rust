@@ -542,4 +542,31 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn channel_presence_history() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        // Retrieve the presence history
+        let channel = client.channels.get("persisted:presence_fixtures");
+        let res = channel.presence.history().send().await?;
+        let presence: Vec<rest::PresenceMessage> = res.items().await?;
+        assert_eq!(presence.len(), 3);
+        assert_eq!(
+            presence[0].data()?,
+            rest::Data::Binary("some presence data".as_bytes().into())
+        );
+        assert_eq!(
+            presence[1].data()?,
+            rest::Data::JSON(serde_json::json!({"some":"presence data"}))
+        );
+        assert_eq!(
+            presence[2].data()?,
+            rest::Data::String("some presence data".to_string())
+        );
+
+        Ok(())
+    }
 }

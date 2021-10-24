@@ -214,6 +214,19 @@ impl Presence {
         );
         presence::RequestBuilder::new(req)
     }
+
+    /// Start building a presence history request for the channel.
+    ///
+    /// Returns a history::RequestBuilder which is used to set parameters
+    /// before sending the history request.
+    ///
+    pub fn history(&self) -> history::RequestBuilder {
+        let req = self.client.request(
+            http::Method::GET,
+            format!("/channels/{}/presence/history", self.name),
+        );
+        history::RequestBuilder::new(req)
+    }
 }
 
 pub struct PublishBuilder {
