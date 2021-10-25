@@ -234,7 +234,8 @@ pub struct PublishBuilder {
     channel:  String,
     data:     Result<Data>,
     encoding: Encoding,
-    event:    Option<String>,
+    id:       Option<String>,
+    name:     Option<String>,
 }
 
 impl PublishBuilder {
@@ -244,12 +245,18 @@ impl PublishBuilder {
             channel,
             data: Ok(Data::None),
             encoding: Encoding::None,
-            event: None,
+            id: None,
+            name: None,
         }
     }
 
-    pub fn event(mut self, event: impl Into<String>) -> Self {
-        self.event = Some(event.into());
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
         self
     }
 
@@ -275,7 +282,8 @@ impl PublishBuilder {
 
     pub async fn send(self) -> Result<()> {
         let msg = Message {
-            event:    self.event,
+            id:       self.id,
+            name:     self.name,
             raw_data: self.data?,
             encoding: self.encoding,
         };
@@ -338,13 +346,15 @@ impl From<serde_json::Value> for Data {
 #[derive(Deserialize, Serialize)]
 pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub event: Option<String>,
+    pub id:   Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(skip_serializing_if = "Data::is_none")]
     #[serde(rename = "data", default = "Data::none")]
-    raw_data:  Data,
+    raw_data: Data,
     #[serde(skip_serializing_if = "Encoding::is_none")]
     #[serde(default = "Encoding::none")]
-    encoding:  Encoding,
+    encoding: Encoding,
 }
 
 impl Message {

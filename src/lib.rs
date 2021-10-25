@@ -441,7 +441,7 @@ mod tests {
         // Publish a message with string data.
         let channel = client.channels.get("test_channel_publish_string");
         let data = "a string";
-        channel.publish().event("event").string(data).send().await?;
+        channel.publish().name("name").string(data).send().await?;
 
         // Retrieve the message from history.
         let res = channel.history().send().await?;
@@ -475,7 +475,7 @@ mod tests {
             o: [("x", "1"), ("y", "2")].iter().cloned().collect(),
             v: vec![1, 2, 3],
         };
-        channel.publish().event("event").json(data).send().await?;
+        channel.publish().name("name").json(data).send().await?;
 
         // Retrieve the message from history.
         let res = channel.history().send().await?;
@@ -502,7 +502,7 @@ mod tests {
         // Publish a message with binary data.
         let channel = client.channels.get("test_channel_publish_binary");
         let data = vec![0x1, 0x2, 0x3, 0x4];
-        channel.publish().event("event").binary(data).send().await?;
+        channel.publish().name("name").binary(data).send().await?;
 
         // Retrieve the message from history.
         let res = channel.history().send().await?;
