@@ -1,5 +1,6 @@
 use crate::http;
 use crate::Result;
+use futures::stream::Stream;
 
 /// A builder to construct a REST history request.
 pub struct RequestBuilder {
@@ -34,6 +35,10 @@ impl RequestBuilder {
     pub fn limit(mut self, limit: u32) -> Self {
         self.req = self.req.params(&[("limit", limit.to_string())]);
         self
+    }
+
+    pub fn pages(self) -> impl Stream<Item = Result<http::Response>> {
+        self.req.pages()
     }
 
     pub async fn send(self) -> Result<http::Response> {

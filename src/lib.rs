@@ -33,10 +33,12 @@ mod tests {
     use super::*;
     use chrono::prelude::*;
     use chrono::Duration;
+    use futures::TryStreamExt;
     use reqwest::Url;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
+    use std::iter::FromIterator;
 
     #[test]
     fn rest_client_from_sets_key_credential_with_string_with_colon() {
@@ -169,6 +171,27 @@ mod tests {
         let res = client.request(Method::GET, "/time").send().await?;
 
         let items: Vec<u64> = res.items().await?;
+
+        assert_eq!(items.len(), 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn custom_request_returns_pages() -> Result<()> {
+        let client = test_client();
+
+        let mut pages = client
+            .request(Method::GET, "/time")
+            .pages()
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        assert_eq!(pages.len(), 1);
+
+        let page = pages.pop().expect("Expected a page");
+
+        let items: Vec<u64> = page.items().await?;
 
         assert_eq!(items.len(), 1);
 
@@ -566,6 +589,167 @@ mod tests {
             presence[2].data()?,
             rest::Data::String("some presence data".to_string())
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn channel_history_count() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        // Publish some messages.
+        let channel = client.channels.get("persisted:history_count");
+        futures::try_join!(
+            channel.publish().name("event0").string("some data").send(),
+            channel
+                .publish()
+                .name("event1")
+                .string("some more data")
+                .send(),
+            channel.publish().name("event2").string("and more").send(),
+            channel.publish().name("event3").string("and more").send(),
+            channel.publish().name("event4").json(vec![1, 2, 3]).send(),
+            channel
+                .publish()
+                .name("event5")
+                .json(json!({"one": 1, "two": 2, "three": 3}))
+                .send(),
+            channel
+                .publish()
+                .name("event6")
+                .json(json!({"foo": "bar"}))
+                .send(),
+        )?;
+
+        // Wait a second.
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
+        // Retrieve the channel history.
+        let mut pages = channel.history().pages().try_collect::<Vec<_>>().await?;
+        assert_eq!(pages.len(), 1);
+        let history: Vec<rest::Message> = pages.pop().unwrap().items().await?;
+        assert_eq!(history.len(), 7, "Expected 7 history messages");
+
+        // Check message IDs are unique.
+        let ids = HashSet::<_>::from_iter(history.iter().map(|msg| msg.id.as_ref().unwrap()));
+        assert_eq!(ids.len(), 7, "Expected 7 unique ids");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn channel_history_paginate_backwards() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        // Publish some messages.
+        let channel = client.channels.get("persisted:history_paginate_backwards");
+        channel
+            .publish()
+            .name("event0")
+            .string("some data")
+            .send()
+            .await?;
+        channel
+            .publish()
+            .name("event1")
+            .string("some more data")
+            .send()
+            .await?;
+        channel
+            .publish()
+            .name("event2")
+            .string("and more")
+            .send()
+            .await?;
+        channel
+            .publish()
+            .name("event3")
+            .string("and more")
+            .send()
+            .await?;
+        channel
+            .publish()
+            .name("event4")
+            .json(vec![1, 2, 3])
+            .send()
+            .await?;
+        channel
+            .publish()
+            .name("event5")
+            .json(json!({"one": 1, "two": 2, "three": 3}))
+            .send()
+            .await?;
+        channel
+            .publish()
+            .name("event6")
+            .json(json!({"foo": "bar"}))
+            .send()
+            .await?;
+
+        // Wait a second.
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
+        // Retrieve the channel history backwards one message at a time.
+        let mut pages = channel.history().backwards().limit(1).pages();
+
+        // Check each page has the expected items.
+        let assert_page = |page: Option<http::Response>, expected_name, expected_data| async move {
+            let page = page.expect("Expected a page");
+            let history: Vec<rest::Message> = page.items().await.expect("Expected history items");
+            assert_eq!(history.len(), 1, "Expected 1 history message per page");
+            let message = &history[0];
+            let name = message.name.clone().expect("Expected message name");
+            let data = message.data().expect("Expected message data");
+            assert_eq!(name, expected_name);
+            assert_eq!(data, expected_data);
+            Result::<_>::Ok(())
+        };
+        assert_page(
+            pages.try_next().await?,
+            "event6",
+            rest::Data::JSON(json!({"foo": "bar"})),
+        )
+        .await?;
+        assert_page(
+            pages.try_next().await?,
+            "event5",
+            rest::Data::JSON(json!({"one": 1, "two": 2, "three": 3})),
+        )
+        .await?;
+        assert_page(
+            pages.try_next().await?,
+            "event4",
+            rest::Data::JSON(json!([1, 2, 3])),
+        )
+        .await?;
+        assert_page(
+            pages.try_next().await?,
+            "event3",
+            rest::Data::String("and more".to_string()),
+        )
+        .await?;
+        assert_page(
+            pages.try_next().await?,
+            "event2",
+            rest::Data::String("and more".to_string()),
+        )
+        .await?;
+        assert_page(
+            pages.try_next().await?,
+            "event1",
+            rest::Data::String("some more data".to_string()),
+        )
+        .await?;
+        assert_page(
+            pages.try_next().await?,
+            "event0",
+            rest::Data::String("some data".to_string()),
+        )
+        .await?;
 
         Ok(())
     }

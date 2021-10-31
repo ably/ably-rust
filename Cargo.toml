@@ -8,9 +8,12 @@ edition = "2018"
 [dependencies]
 base64 = { version = "*" }
 chrono = { version = "*", features = ["serde"] }
+futures = { version = "*" }
 hmac = { version = "*" }
+lazy_static = { version = "*" }
 mime = { version = "*" }
 rand = { version = "*" }
+regex = { version = "*" }
 reqwest = { version = "*", features = ["json"] }
 rmp-serde = { version = "*" }
 serde = { version = "1.0", features = ["derive"] }
