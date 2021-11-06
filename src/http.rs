@@ -194,6 +194,8 @@ impl RequestBuilder {
     fn build(self) -> Result<Request> {
         let mut req = self.inner?;
 
+        req = req.header("X-Ably-Version", "1.2");
+
         // Set the Authorization header.
         if let Some(auth) = self.auth {
             match auth.credential {
