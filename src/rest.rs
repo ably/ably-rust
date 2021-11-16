@@ -232,10 +232,7 @@ impl Presence {
 pub struct PublishBuilder {
     client:   Client,
     channel:  String,
-    data:     Result<Data>,
-    encoding: Encoding,
-    id:       Option<String>,
-    name:     Option<String>,
+    msg:      Result<Message>,
 }
 
 impl PublishBuilder {
@@ -243,50 +240,59 @@ impl PublishBuilder {
         Self {
             client,
             channel,
-            data: Ok(Data::None),
-            encoding: Encoding::None,
-            id: None,
-            name: None,
+            msg: Ok(Message::default()),
         }
     }
 
     pub fn id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
+        if let Ok(msg) = self.msg.as_mut() {
+            msg.id = Some(id.into());
+        }
         self
     }
 
     pub fn name(mut self, name: impl Into<String>) -> Self {
-        self.name = Some(name.into());
+        if let Ok(msg) = self.msg.as_mut() {
+            msg.name = Some(name.into());
+        }
         self
     }
 
     pub fn string(mut self, data: impl Into<String>) -> Self {
-        self.data = Ok(Data::String(data.into()));
+        if let Ok(msg) = self.msg.as_mut() {
+            msg.data = Data::String(data.into());
+        }
         self
     }
 
     pub fn json(mut self, data: impl serde::Serialize) -> Self {
-        self.data = data
-            .serialize(serde_json::value::Serializer)
-            .map(Into::into)
-            .map_err(|err| error!(40013, format!("invalid message data: {}", err)));
-        self.encoding = Encoding::JSON;
+        if let Ok(msg) = self.msg.as_mut() {
+            let data = data
+                .serialize(serde_json::value::Serializer)
+                .map(Into::into)
+                .map_err(|err| error!(40013, format!("invalid message data: {}", err)));
+
+            match data {
+                Ok(data) => {
+                    msg.data = data;
+                    msg.encoding = Some(String::from("json"));
+                },
+                Err(err) => self.msg = Err(err),
+            }
+        }
         self
     }
 
     pub fn binary(mut self, data: Vec<u8>) -> Self {
-        self.data = Ok(data.into());
-        self.encoding = Encoding::Base64;
+        if let Ok(msg) = self.msg.as_mut() {
+            msg.data = data.into();
+            msg.encoding = Some(String::from("base64"));
+        }
         self
     }
 
     pub async fn send(self) -> Result<()> {
-        let msg = Message {
-            id:       self.id,
-            name:     self.name,
-            raw_data: self.data?,
-            encoding: self.encoding,
-        };
+        let msg = self.msg?;
 
         self.client
             .request(
@@ -302,7 +308,7 @@ impl PublishBuilder {
 
 /// Data is the payload of a message which can either be a utf-8 encoded
 /// string, a JSON serializable object, or a binary array.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum Data {
     String(String),
@@ -319,8 +325,25 @@ impl Data {
             _ => false,
         }
     }
+}
 
-    fn none() -> Self {
+impl Serialize for Data {
+    fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let s = match self {
+            Self::String(s) => return s.serialize(serializer),
+            Self::JSON(v) => serde_json::to_string(v).map_err(serde::ser::Error::custom)?,
+            Self::Binary(v) => base64::encode(v),
+            Self::None => String::from(""),
+        };
+        s.serialize(serializer)
+    }
+}
+
+impl Default for Data {
+    fn default() -> Self {
         Self::None
     }
 }
@@ -343,41 +366,48 @@ impl From<serde_json::Value> for Data {
     }
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Default, Deserialize, Serialize)]
 pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id:   Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Data::is_none")]
-    #[serde(rename = "data", default = "Data::none")]
-    raw_data: Data,
-    #[serde(skip_serializing_if = "Encoding::is_none")]
-    #[serde(default = "Encoding::none")]
-    encoding: Encoding,
+    pub data: Data,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
 }
 
 impl Message {
-    /// Returns the decoded message data.
-    pub fn data(&self) -> Result<Data> {
-        decode(&self.raw_data, &self.encoding)
+    pub fn decode(mut self) -> Result<Self> {
+        let encoding = match &self.encoding {
+            Some(enc) => enc,
+            None => return Ok(self),
+        };
+
+        let encodings = encoding.split('/').rev().collect::<Vec<&str>>();
+
+        for (_i, enc) in encodings.into_iter().enumerate() {
+            self.data = decode(&self.data, &enc)?;
+            // self.encoding = encodings[i+1..].into_iter().rev().collect::<Vec<&str>>().join('/');
+        }
+
+        Ok(self)
     }
 }
 
-fn decode(data: &Data, encoding: &Encoding) -> Result<Data> {
+fn decode(data: &Data, encoding: &str) -> Result<Data> {
     match encoding {
-        Encoding::None => match data {
-            Data::None => Ok(Data::None),
-            Data::String(_) => Ok(data.clone()),
-            _ => Err(error!(40013, "invalid message encoding")),
-        },
-        Encoding::JSON => match data {
-            Data::JSON(_) => Ok(data.clone()),
+        "json" => match data {
+            Data::String(s) => serde_json::from_str::<serde_json::Value>(s).map(Into::into).map_err(Into::into),
             _ => Err(error!(40013, "invalid JSON message data")),
         },
-        Encoding::Base64 => match data {
+        "base64" => match data {
             Data::String(s) => base64::decode(s).map(Into::into).map_err(Into::into),
             _ => Err(error!(40013, "invalid base64 message data")),
+        },
+        _ => {
+            Err(error!(40013, "invalid message encoding"))
         },
     }
 }
@@ -389,17 +419,26 @@ pub struct PresenceMessage {
     pub client_id:     String,
     pub connection_id: String,
     #[serde(skip_serializing_if = "Data::is_none")]
-    #[serde(rename = "data", default = "Data::none")]
-    raw_data:          Data,
-    #[serde(skip_serializing_if = "Encoding::is_none")]
-    #[serde(default = "Encoding::none")]
-    encoding:          Encoding,
+    pub data:          Data,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding:      Option<String>,
 }
 
 impl PresenceMessage {
-    /// Returns the decoded message data.
-    pub fn data(&self) -> Result<Data> {
-        decode(&self.raw_data, &self.encoding)
+    pub fn decode(&mut self) -> Result<&Self> {
+        let encoding = match &self.encoding {
+            Some(enc) => enc,
+            None => return Ok(self),
+        };
+
+        let encodings = encoding.split('/').rev().collect::<Vec<&str>>();
+
+        for (_i, enc) in encodings.into_iter().enumerate() {
+            self.data = decode(&self.data, &enc)?;
+            // self.encoding = encodings[i+1..].into_iter().rev().collect::<Vec<&str>>().join('/');
+        }
+
+        Ok(self)
     }
 }
 
@@ -412,56 +451,6 @@ pub enum PresenceAction {
     Enter,
     Leave,
     Update,
-}
-
-enum Encoding {
-    JSON,
-    Base64,
-    None,
-}
-
-impl Encoding {
-    fn is_none(&self) -> bool {
-        match self {
-            Self::None => true,
-            _ => false,
-        }
-    }
-
-    fn none() -> Self {
-        Self::None
-    }
-}
-
-// Explicitly implement Serialize for Encoding so that rmp-serde serializes
-// enum variants as strings rather than maps with integer or string keys.
-impl Serialize for Encoding {
-    fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(match *self {
-            Self::JSON => "json",
-            Self::Base64 => "base64",
-            Self::None => "",
-        })
-    }
-}
-
-// Explicitly implement Deserialize for Encoding so that rmp-serde deserializes
-// enum variants from strings rather than from maps with integer or string keys.
-impl<'de> Deserialize<'de> for Encoding {
-    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Ok(match s.as_str() {
-            "json" => Encoding::JSON,
-            "base64" => Encoding::Base64,
-            _ => Encoding::None,
-        })
-    }
 }
 
 #[derive(Clone, Debug)]

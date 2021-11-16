@@ -71,6 +71,12 @@ impl From<base64::DecodeError> for ErrorInfo {
     }
 }
 
+impl From<serde_json::Error> for ErrorInfo {
+    fn from(err: serde_json::Error) -> Self {
+        error!(40001, format!("invalid JSON data: {}", err))
+    }
+}
+
 impl From<rmp_serde::encode::Error> for ErrorInfo {
     fn from(err: rmp_serde::encode::Error) -> Self {
         error!(40001, format!("invalid MessagePack data: {}", err))
