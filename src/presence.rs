@@ -1,34 +1,44 @@
-use crate::http;
-use crate::Result;
+use crate::{http, rest, Result};
+use futures::stream::Stream;
+
+pub type PaginatedRequestBuilder =
+    http::PaginatedRequestBuilder<rest::PresenceMessage, rest::MessageItemHandler>;
+
+pub type PaginatedResult = http::PaginatedResult<rest::PresenceMessage, rest::MessageItemHandler>;
 
 /// A builder to construct a REST presence request.
 pub struct RequestBuilder {
-    req: http::RequestBuilder,
+    inner: PaginatedRequestBuilder,
 }
 
 impl RequestBuilder {
-    pub fn new(req: http::RequestBuilder) -> Self {
-        Self { req }
+    pub fn new(inner: PaginatedRequestBuilder) -> Self {
+        Self { inner }
     }
 
     pub fn limit(mut self, limit: u32) -> Self {
-        self.req = self.req.params(&[("limit", limit.to_string())]);
+        self.inner = self.inner.limit(limit);
         self
     }
 
     pub fn client_id(mut self, client_id: &str) -> Self {
-        self.req = self.req.params(&[("clientId", client_id.to_string())]);
+        self.inner = self.inner.params(&[("clientId", client_id.to_string())]);
         self
     }
 
     pub fn connection_id(mut self, connection_id: &str) -> Self {
-        self.req = self
-            .req
+        self.inner = self
+            .inner
             .params(&[("connectionId", connection_id.to_string())]);
         self
     }
 
-    pub async fn send(self) -> Result<http::Response> {
-        self.req.send().await
+    /// Request a stream of pages from the Ably REST API.
+    pub fn pages(self) -> impl Stream<Item = Result<PaginatedResult>> {
+        self.inner.pages()
+    }
+
+    pub async fn send(self) -> Result<PaginatedResult> {
+        self.inner.send().await
     }
 }

@@ -5,9 +5,10 @@ use regex::Regex;
 pub use reqwest::header::{HeaderMap, HeaderValue};
 pub use reqwest::Method;
 use std::convert::TryFrom;
+use std::marker::PhantomData;
 
 use futures::future::FutureExt;
-use futures::stream::{self, Stream};
+use futures::stream::{self, Stream, StreamExt};
 
 use lazy_static::lazy_static;
 
@@ -39,6 +40,15 @@ impl Client {
         let mut url = self.rest_url.clone();
         url.set_path(&path.into());
         self.request_url(method, url)
+    }
+
+    pub fn paginated_request<T: PaginatedItem, U: PaginatedItemHandler<T>>(
+        &self,
+        method: Method,
+        path: impl Into<String>,
+        handler: Option<U>,
+    ) -> PaginatedRequestBuilder<T, U> {
+        PaginatedRequestBuilder::new(self.request(method, path), handler)
     }
 
     /// Start building a HTTP request to the given URL.
@@ -129,63 +139,6 @@ impl RequestBuilder {
         self
     }
 
-    /// Request a stream of pages from the Ably REST API.
-    pub fn pages(self) -> impl Stream<Item = Result<Response>> {
-        // Use stream::unfold to create a Stream of pages where the internal
-        // state is an Option<Result<Request>> representing a potential Request
-        // for the next page, and the closure sends the Request and returns
-        // both the Response and a Request for the next page if the Response
-        // has a 'Link: ...; rel="next"' header.
-        stream::unfold(Some(self.build()), |req| {
-            async {
-                // If there is no request in the state, we're done, so unwrap
-                // the request to a Result<Request>.
-                let req = req?;
-
-                // If there was an error constructing the next Request, yield
-                // that error and set the next state to None to end the stream.
-                let req = match req {
-                    Err(err) => return Some((Err(err), None)),
-                    Ok(req) => req,
-                };
-
-                // Clone the request first so we can maintain the same headers
-                // for the next request before we consume the current request
-                // by sending it.
-                //
-                // If the Request is not cloneable, for example because it has
-                // a streamed body, map it to an error which will be yielded on
-                // the next iteration of the stream.
-                let mut next_req = req
-                    .try_clone()
-                    .ok_or(error!(40000, "not a pageable request"));
-
-                // Send the request, and if there's an error, yield it and set
-                // the next state to None to end the stream.
-                let res = match req.send().await {
-                    Err(err) => return Some((Err(err), None)),
-                    Ok(res) => res,
-                };
-
-                // If there's a next link in the response, merge its params
-                // into the next Request if we have one and use it as the next
-                // state, otherwise set the next state to None to end the
-                // stream.
-                let mut next_state = None;
-                if let Some(link) = res.next_link() {
-                    if let Ok(req) = &mut next_req {
-                        req.url_mut().set_query(Some(&link.params));
-                    }
-                    next_state = Some(next_req)
-                };
-
-                // Yield the successful Response and the next state.
-                Some((Ok(res), next_state))
-            }
-            .boxed()
-        })
-    }
-
     /// Send the request to the Ably REST API.
     pub async fn send(self) -> Result<Response> {
         self.build()?.send().await
@@ -212,6 +165,142 @@ impl RequestBuilder {
         let req = req.build()?;
 
         Ok(Request::new(self.client.clone(), req))
+    }
+}
+
+/// Internal state used with [stream::unfold] to construct a pagination stream.
+///
+/// The state holds the request for the next page in the stream, and an
+/// optional item handler which is passed to each PaginatedResult.
+///
+/// [stream::unfold]: https://docs.rs/futures/latest/futures/stream/fn.unfold.html
+struct PaginatedState<T, U: PaginatedItemHandler<T>> {
+    next_req: Option<Result<Request>>,
+    handler:  Option<U>,
+    phantom:  PhantomData<T>,
+}
+
+/// A builder to construct a paginated REST request.
+pub struct PaginatedRequestBuilder<T: PaginatedItem, U: PaginatedItemHandler<T> = ()> {
+    inner:   RequestBuilder,
+    handler: Option<U>,
+    phantom: PhantomData<T>,
+}
+
+impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U> {
+    pub fn new(inner: RequestBuilder, handler: Option<U>) -> Self {
+        Self {
+            inner,
+            handler,
+            phantom: PhantomData,
+        }
+    }
+
+    pub fn start(self, interval: &str) -> Self {
+        self.params(&[("start", interval)])
+    }
+
+    pub fn end(self, interval: &str) -> Self {
+        self.params(&[("end", interval)])
+    }
+
+    pub fn forwards(self) -> Self {
+        self.params(&[("direction", "forwards")])
+    }
+
+    pub fn backwards(self) -> Self {
+        self.params(&[("direction", "backwards")])
+    }
+
+    pub fn limit(self, limit: u32) -> Self {
+        self.params(&[("limit", limit.to_string())])
+    }
+
+    /// Modify the query params of the request, adding the parameters provided.
+    pub fn params<P: Serialize + ?Sized>(mut self, params: &P) -> Self {
+        self.inner = self.inner.params(params);
+        self
+    }
+
+    /// Request a stream of pages from the Ably REST API.
+    pub fn pages(self) -> impl Stream<Item = Result<PaginatedResult<T, U>>> {
+        // Use stream::unfold to create a stream of pages where the internal
+        // state holds the request for the next page, and the closure sends the
+        // request and returns both a PaginatedResult and the request for the
+        // next page if the response has a 'Link: ...; rel="next"' header.
+        let seed_state = PaginatedState {
+            next_req: Some(self.inner.build()),
+            handler:  self.handler,
+            phantom:  PhantomData,
+        };
+        stream::unfold(seed_state, |mut state| {
+            async {
+                // If there is no request in the state, we're done, so unwrap
+                // the request to a Result<Request>.
+                let req = state.next_req?;
+
+                // If there was an error constructing the next request, yield
+                // that error and set the next request to None to end the
+                // stream on the next iteration.
+                let req = match req {
+                    Err(err) => {
+                        state.next_req = None;
+                        return Some((Err(err), state));
+                    }
+                    Ok(req) => req,
+                };
+
+                // Clone the request first so we can maintain the same headers
+                // for the next request before we consume the current request
+                // by sending it.
+                //
+                // If the request is not cloneable, for example because it has
+                // a streamed body, map it to an error which will be yielded on
+                // the next iteration of the stream.
+                let mut next_req = req
+                    .try_clone()
+                    .ok_or(error!(40000, "not a pageable request"));
+
+                // Send the request and wrap the response in a PaginatedResult.
+                //
+                // If there's an error, yield the error and set the next
+                // request to None to end the stream on the next iteration.
+                let res = match req.send().await {
+                    Err(err) => {
+                        state.next_req = None;
+                        return Some((Err(err), state));
+                    }
+                    Ok(res) => PaginatedResult::new(res, state.handler.clone()),
+                };
+
+                // If there's a next link in the response, merge its params
+                // into the next request if we have one, otherwise set the next
+                // request to None to end the stream on the next iteration.
+                state.next_req = None;
+                if let Some(link) = res.next_link() {
+                    if let Ok(req) = &mut next_req {
+                        req.url_mut().set_query(Some(&link.params));
+                    }
+                    state.next_req = Some(next_req)
+                };
+
+                // Yield the PaginatedResult and the next state.
+                Some((Ok(res), state))
+            }
+            .boxed()
+        })
+    }
+
+    /// Retrieve the first page of the paginated response.
+    pub async fn send(self) -> Result<PaginatedResult<T, U>> {
+        // The pages stream always returns at least one non-None value, even if
+        // the first request returns an error which would be Some(Err(err)), so
+        // we unwrap the Option with a generic error which we don't expect to
+        // be encountered by the caller.
+        self.pages()
+            .next()
+            .await
+            .unwrap_or(Err(error!(40000, "Unexpected error retrieving first page")))
     }
 }
 
@@ -327,21 +416,6 @@ impl Response {
             .flatten()
     }
 
-    fn next_link(&self) -> Option<Link> {
-        self.inner
-            .headers()
-            .get_all(reqwest::header::LINK)
-            .iter()
-            .map(Link::try_from)
-            .flatten()
-            .find(|l| l.rel == "next")
-    }
-
-    /// Returns the list of items from the body of a paginated response.
-    pub async fn items<T: DeserializeOwned>(self) -> Result<Vec<T>> {
-        self.body().await.map_err(Into::into)
-    }
-
     /// Deserialize the response body.
     pub async fn body<T: DeserializeOwned>(self) -> Result<T> {
         let content_type = self
@@ -378,5 +452,68 @@ impl Response {
     /// Returns the HTTP status code.
     pub fn status_code(&self) -> reqwest::StatusCode {
         self.inner.status()
+    }
+}
+
+/// A handler for items in a paginated response, typically used to decode
+/// history messages before returning them to the caller.
+pub trait PaginatedItemHandler<T>: Send + Clone + 'static {
+    fn handle(&self, item: &mut T) -> ();
+}
+
+/// Provide a no-op implementation of PaginatedItemHandler for the unit type
+/// which is used as the default type for paginated responses which don't
+/// require a handler (e.g. paginated stats responses).
+impl<T> PaginatedItemHandler<T> for () {
+    fn handle(&self, _: &mut T) -> () {}
+}
+
+/// An item in a paginated response.
+///
+/// An item can be any type which can be deserialized and sent between threads,
+/// and this trait just provides a convenient alias for those traits.
+pub trait PaginatedItem: DeserializeOwned + Send + 'static {}
+
+/// Indicate to the compiler that any type which implements DeserializeOwned
+/// and Send can be used as a PaginatedItem.
+impl<T> PaginatedItem for T where T: DeserializeOwned + Send + 'static {}
+
+/// A page of items from a paginated response.
+pub struct PaginatedResult<T: PaginatedItem, U: PaginatedItemHandler<T> = ()> {
+    res:     Response,
+    handler: Option<U>,
+    phantom: PhantomData<T>,
+}
+
+impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedResult<T, U> {
+    pub fn new(res: Response, handler: Option<U>) -> Self {
+        Self {
+            res,
+            handler,
+            phantom: PhantomData,
+        }
+    }
+
+    /// Returns the page's list of items, running them through the item handler
+    /// if set.
+    pub async fn items(self) -> Result<Vec<T>> {
+        let mut items: Vec<T> = self.res.body().await?;
+
+        if let Some(handler) = self.handler {
+            items.iter_mut().for_each(|item| handler.handle(item));
+        }
+
+        Ok(items)
+    }
+
+    fn next_link(&self) -> Option<Link> {
+        self.res
+            .inner
+            .headers()
+            .get_all(reqwest::header::LINK)
+            .iter()
+            .map(Link::try_from)
+            .flatten()
+            .find(|l| l.rel == "next")
     }
 }

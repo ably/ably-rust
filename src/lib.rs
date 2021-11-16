@@ -12,6 +12,7 @@ pub mod auth;
 pub mod base64;
 pub mod history;
 pub mod http;
+pub mod json;
 pub mod options;
 pub mod presence;
 pub mod rest;
@@ -28,8 +29,7 @@ pub type Result<T> = std::result::Result<T, ErrorInfo>;
 mod tests {
     use super::http::Method;
     use super::options::ClientOptions;
-    use super::rest::Rest;
-    use super::stats::Stats;
+    use super::rest::{Data, Rest};
     use super::*;
     use chrono::prelude::*;
     use chrono::Duration;
@@ -165,12 +165,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn custom_request_returns_items() -> Result<()> {
+    async fn custom_request_returns_body() -> Result<()> {
         let client = test_client();
 
         let res = client.request(Method::GET, "/time").send().await?;
 
-        let items: Vec<u64> = res.items().await?;
+        let items: Vec<u64> = res.body().await?;
 
         assert_eq!(items.len(), 1);
 
@@ -178,11 +178,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn custom_request_returns_pages() -> Result<()> {
+    async fn paginated_request_returns_items() -> Result<()> {
+        let client = test_client();
+
+        let res = client
+            .paginated_request(Method::GET, "/time")
+            .send()
+            .await?;
+
+        let items = res.items().await?;
+
+        assert_eq!(items.len(), 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn paginated_request_returns_pages() -> Result<()> {
         let client = test_client();
 
         let mut pages = client
-            .request(Method::GET, "/time")
+            .paginated_request(Method::GET, "/time")
             .pages()
             .try_collect::<Vec<_>>()
             .await?;
@@ -191,7 +207,7 @@ mod tests {
 
         let page = pages.pop().expect("Expected a page");
 
-        let items: Vec<u64> = page.items().await?;
+        let items = page.items().await?;
 
         assert_eq!(items.len(), 1);
 
@@ -273,7 +289,7 @@ mod tests {
             .await?;
 
         // Check the stats are what we expect.
-        let stats: Vec<Stats> = res.items().await?;
+        let stats = res.items().await?;
         assert_eq!(stats.len(), 3);
         assert_eq!(
             stats
@@ -468,9 +484,9 @@ mod tests {
 
         // Retrieve the message from history.
         let res = channel.history().send().await?;
-        let mut history: Vec<rest::Message> = res.items().await?;
-        let message = history.pop().expect("Expected a history message").decode()?;
-        assert_eq!(message.data, rest::Data::String(data.to_string()));
+        let mut history = res.items().await?;
+        let message = history.pop().expect("Expected a history message");
+        assert_eq!(message.data, Data::String(data.to_string()));
 
         Ok(())
     }
@@ -502,8 +518,8 @@ mod tests {
 
         // Retrieve the message from history.
         let res = channel.history().send().await?;
-        let mut history: Vec<rest::Message> = res.items().await?;
-        let message = history.pop().expect("Expected a history message").decode()?;
+        let mut history = res.items().await?;
+        let message = history.pop().expect("Expected a history message");
         let json = serde_json::json!({
             "b": true,
             "i": 42,
@@ -511,7 +527,7 @@ mod tests {
             "o": {"x": "1", "y": "2"},
             "v": [1, 2, 3]
         });
-        assert_eq!(message.data, rest::Data::JSON(json));
+        assert_eq!(message.data, Data::JSON(json));
 
         Ok(())
     }
@@ -529,12 +545,9 @@ mod tests {
 
         // Retrieve the message from history.
         let res = channel.history().send().await?;
-        let mut history: Vec<rest::Message> = res.items().await?;
-        let message = history.pop().expect("Expected a history message").decode()?;
-        assert_eq!(
-            message.data,
-            rest::Data::Binary(vec![0x1, 0x2, 0x3, 0x4])
-        );
+        let mut history = res.items().await?;
+        let message = history.pop().expect("Expected a history message");
+        assert_eq!(message.data, Data::Binary(vec![0x1, 0x2, 0x3, 0x4]));
 
         Ok(())
     }
@@ -548,19 +561,19 @@ mod tests {
         // Retrieve the presence set
         let channel = client.channels.get("persisted:presence_fixtures");
         let res = channel.presence.get().send().await?;
-        let mut presence: Vec<rest::PresenceMessage> = res.items().await?;
+        let presence = res.items().await?;
         assert_eq!(presence.len(), 3);
         assert_eq!(
-            presence[0].decode()?.data,
-            rest::Data::Binary("some presence data".as_bytes().into())
+            presence[0].data,
+            Data::Binary("some presence data".as_bytes().into())
         );
         assert_eq!(
-            presence[1].decode()?.data,
-            rest::Data::JSON(serde_json::json!({"some":"presence data"}))
+            presence[1].data,
+            Data::JSON(serde_json::json!({"some":"presence data"}))
         );
         assert_eq!(
-            presence[2].decode()?.data,
-            rest::Data::String("some presence data".to_string())
+            presence[2].data,
+            Data::String("some presence data".to_string())
         );
 
         Ok(())
@@ -574,20 +587,20 @@ mod tests {
 
         // Retrieve the presence history
         let channel = client.channels.get("persisted:presence_fixtures");
-        let res = channel.presence.history().get().await?;
-        let mut presence: Vec<rest::PresenceMessage> = res.items().await?;
+        let res = channel.presence.history().send().await?;
+        let presence = res.items().await?;
         assert_eq!(presence.len(), 3);
         assert_eq!(
-            presence[0].decode()?.data,
-            rest::Data::Binary("some presence data".as_bytes().into())
+            presence[0].data,
+            Data::Binary("some presence data".as_bytes().into())
         );
         assert_eq!(
-            presence[1].decode()?.data,
-            rest::Data::JSON(serde_json::json!({"some":"presence data"}))
+            presence[1].data,
+            Data::JSON(serde_json::json!({"some":"presence data"}))
         );
         assert_eq!(
-            presence[2].decode()?.data,
-            rest::Data::String("some presence data".to_string())
+            presence[2].data,
+            Data::String("some presence data".to_string())
         );
 
         Ok(())
@@ -629,7 +642,7 @@ mod tests {
         // Retrieve the channel history.
         let mut pages = channel.history().pages().try_collect::<Vec<_>>().await?;
         assert_eq!(pages.len(), 1);
-        let history: Vec<rest::Message> = pages.pop().unwrap().items().await?;
+        let history = pages.pop().unwrap().items().await?;
         assert_eq!(history.len(), 7, "Expected 7 history messages");
 
         // Check message IDs are unique.
@@ -697,59 +710,22 @@ mod tests {
         let mut pages = channel.history().backwards().limit(1).pages();
 
         // Check each page has the expected items.
-        let assert_page = |page: Option<http::Response>, expected_name, expected_data| async move {
-            let page = page.expect("Expected a page");
-            let mut history: Vec<rest::Message> = page.items().await.expect("Expected history items");
+        for (expected_name, expected_data) in [
+            ("event6", Data::JSON(json!({"foo": "bar"}))),
+            ("event5", Data::JSON(json!({"one":1,"two":2,"three":3}))),
+            ("event4", Data::JSON(json!([1, 2, 3]))),
+            ("event3", Data::String("and more".to_string())),
+            ("event2", Data::String("and more".to_string())),
+            ("event1", Data::String("some more data".to_string())),
+            ("event0", Data::String("some data".to_string())),
+        ] {
+            let page = pages.try_next().await?.expect("Expected a page");
+            let mut history = page.items().await?;
             assert_eq!(history.len(), 1, "Expected 1 history message per page");
-            let message = history.pop().unwrap().decode().expect("Expected message to decode");
-            let name = message.name.clone().expect("Expected message name");
-            let data = message.data;
-            assert_eq!(name, expected_name);
-            assert_eq!(data, expected_data);
-            Result::<_>::Ok(())
-        };
-        assert_page(
-            pages.try_next().await?,
-            "event6",
-            rest::Data::JSON(json!({"foo": "bar"})),
-        )
-        .await?;
-        assert_page(
-            pages.try_next().await?,
-            "event5",
-            rest::Data::JSON(json!({"one": 1, "two": 2, "three": 3})),
-        )
-        .await?;
-        assert_page(
-            pages.try_next().await?,
-            "event4",
-            rest::Data::JSON(json!([1, 2, 3])),
-        )
-        .await?;
-        assert_page(
-            pages.try_next().await?,
-            "event3",
-            rest::Data::String("and more".to_string()),
-        )
-        .await?;
-        assert_page(
-            pages.try_next().await?,
-            "event2",
-            rest::Data::String("and more".to_string()),
-        )
-        .await?;
-        assert_page(
-            pages.try_next().await?,
-            "event1",
-            rest::Data::String("some more data".to_string()),
-        )
-        .await?;
-        assert_page(
-            pages.try_next().await?,
-            "event0",
-            rest::Data::String("some data".to_string()),
-        )
-        .await?;
+            let message = history.pop().unwrap();
+            assert_eq!(message.name, Some(expected_name.to_string()));
+            assert_eq!(message.data, expected_data);
+        }
 
         Ok(())
     }

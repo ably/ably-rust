@@ -1,5 +1,3 @@
-use super::http;
-use super::Result;
 use serde::Deserialize;
 
 /// Ably Application statistics retrieved from [REST stats endpoint].
@@ -166,34 +164,4 @@ pub struct Rates {
 pub struct ReactorRates {
     pub http_event: f64,
     pub amqp:       f64,
-}
-
-/// A builder to construct a REST stats request.
-pub struct RequestBuilder {
-    req: http::RequestBuilder,
-}
-
-impl RequestBuilder {
-    pub fn new(req: http::RequestBuilder) -> Self {
-        Self { req }
-    }
-
-    pub fn start(mut self, interval: &str) -> Self {
-        self.req = self.req.params(&[("start", interval)]);
-        self
-    }
-
-    pub fn end(mut self, interval: &str) -> Self {
-        self.req = self.req.params(&[("end", interval)]);
-        self
-    }
-
-    pub fn forwards(mut self) -> Self {
-        self.req = self.req.params(&[("direction", "forwards")]);
-        self
-    }
-
-    pub async fn send(self) -> Result<http::Response> {
-        self.req.send().await
-    }
 }

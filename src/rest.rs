@@ -1,6 +1,6 @@
 use crate::error::*;
 use crate::options::ClientOptions;
-use crate::{auth, base64, history, http, presence, stats, Result};
+use crate::{auth, base64, history, http, json, presence, stats, Result};
 
 use chrono::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -37,13 +37,13 @@ impl Rest {
     ///     .send()
     ///     .await?;
     ///
-    /// let stats: Vec<Stats> = res.items().await?;
+    /// let stats = res.items().await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn stats(&self) -> stats::RequestBuilder {
-        let req = self.client.request(http::Method::GET, "/stats");
-        stats::RequestBuilder::new(req)
+    pub fn stats(&self) -> http::PaginatedRequestBuilder<stats::Stats> {
+        self.client
+            .paginated_request(http::Method::GET, "/stats", None)
     }
 
     /// Sends a GET request to /time and returns the server time in UTC.
@@ -109,6 +109,14 @@ impl Rest {
     pub fn request(&self, method: http::Method, path: &str) -> http::RequestBuilder {
         self.client.request(method, path)
     }
+
+    pub fn paginated_request(
+        &self,
+        method: http::Method,
+        path: &str,
+    ) -> http::PaginatedRequestBuilder<json::Value> {
+        self.client.paginated_request(method, path, None)
+    }
 }
 
 impl From<&str> for Rest {
@@ -150,6 +158,64 @@ impl Client {
         req = req.auth(self.auth.clone());
         req
     }
+
+    pub fn paginated_request<T: http::PaginatedItem, U: http::PaginatedItemHandler<T>>(
+        &self,
+        method: http::Method,
+        path: impl Into<String>,
+        handler: Option<U>,
+    ) -> http::PaginatedRequestBuilder<T, U> {
+        http::PaginatedRequestBuilder::new(self.request(method, path), handler)
+    }
+}
+
+#[derive(Clone)]
+pub struct ChannelOptions {
+    cipher: Option<CipherParams>,
+}
+
+impl From<CipherParams> for ChannelOptions {
+    fn from(cipher: CipherParams) -> Self {
+        Self {
+            cipher: Some(cipher),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct CipherParams {
+    key: Vec<u8>,
+}
+
+pub struct ChannelBuilder {
+    client: Client,
+    name:   String,
+    cipher: Option<CipherParams>,
+}
+
+impl ChannelBuilder {
+    fn new(client: Client, name: String) -> Self {
+        Self {
+            client,
+            name,
+            cipher: None,
+        }
+    }
+
+    pub fn cipher(mut self, cipher: CipherParams) -> Self {
+        self.cipher = Some(cipher);
+        self
+    }
+
+    pub fn get(self) -> Channel {
+        let opts = self.cipher.map(Into::into);
+        Channel {
+            name:     self.name.clone(),
+            presence: Presence::new(self.name.clone(), self.client.clone(), opts.clone()),
+            client:   self.client.clone(),
+            opts:     opts,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -162,13 +228,12 @@ impl Channels {
         Self { client }
     }
 
+    pub fn name(&self, name: impl Into<String>) -> ChannelBuilder {
+        ChannelBuilder::new(self.client.clone(), name.into())
+    }
+
     pub fn get(&self, name: impl Into<String>) -> Channel {
-        let name = name.into();
-        Channel {
-            name:     name.clone(),
-            presence: Presence::new(name.clone(), self.client.clone()),
-            client:   self.client.clone(),
-        }
+        self.name(name).get()
     }
 }
 
@@ -176,6 +241,7 @@ pub struct Channel {
     pub name:     String,
     pub presence: Presence,
     client:       Client,
+    opts:         Option<ChannelOptions>,
 }
 
 impl Channel {
@@ -188,29 +254,31 @@ impl Channel {
     /// Returns a history::RequestBuilder which is used to set parameters
     /// before sending the history request.
     ///
-    pub fn history(&self) -> history::RequestBuilder {
-        let req = self.client.request(
+    pub fn history(&self) -> history::PaginatedRequestBuilder<Message> {
+        self.client.paginated_request(
             http::Method::GET,
             format!("/channels/{}/history", self.name),
-        );
-        history::RequestBuilder::new(req)
+            Some(MessageItemHandler::new(self.opts.clone())),
+        )
     }
 }
 
 pub struct Presence {
     name:   String,
     client: Client,
+    opts:   Option<ChannelOptions>,
 }
 
 impl Presence {
-    fn new(name: String, client: Client) -> Self {
-        Self { name, client }
+    fn new(name: String, client: Client, opts: Option<ChannelOptions>) -> Self {
+        Self { name, client, opts }
     }
 
     pub fn get(&self) -> presence::RequestBuilder {
-        let req = self.client.request(
+        let req = self.client.paginated_request(
             http::Method::GET,
             format!("/channels/{}/presence", self.name),
+            Some(MessageItemHandler::new(self.opts.clone())),
         );
         presence::RequestBuilder::new(req)
     }
@@ -220,19 +288,19 @@ impl Presence {
     /// Returns a history::RequestBuilder which is used to set parameters
     /// before sending the history request.
     ///
-    pub fn history(&self) -> history::RequestBuilder {
-        let req = self.client.request(
+    pub fn history(&self) -> history::PaginatedRequestBuilder<PresenceMessage> {
+        self.client.paginated_request(
             http::Method::GET,
             format!("/channels/{}/presence/history", self.name),
-        );
-        history::RequestBuilder::new(req)
+            Some(MessageItemHandler::new(self.opts.clone())),
+        )
     }
 }
 
 pub struct PublishBuilder {
-    client:   Client,
-    channel:  String,
-    msg:      Result<Message>,
+    client:  Client,
+    channel: String,
+    msg:     Result<Message>,
 }
 
 impl PublishBuilder {
@@ -276,7 +344,7 @@ impl PublishBuilder {
                 Ok(data) => {
                     msg.data = data;
                     msg.encoding = Some(String::from("json"));
-                },
+                }
                 Err(err) => self.msg = Err(err),
             }
         }
@@ -369,46 +437,54 @@ impl From<serde_json::Value> for Data {
 #[derive(Default, Deserialize, Serialize)]
 pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub id:   Option<String>,
+    pub id:       Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    pub name:     Option<String>,
     #[serde(skip_serializing_if = "Data::is_none")]
-    pub data: Data,
+    pub data:     Data,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoding: Option<String>,
 }
 
-impl Message {
-    pub fn decode(mut self) -> Result<Self> {
+impl EncodedMessage for Message {
+    fn decode(&mut self, _opts: Option<&ChannelOptions>) -> () {
         let encoding = match &self.encoding {
             Some(enc) => enc,
-            None => return Ok(self),
+            None => return (),
         };
 
         let encodings = encoding.split('/').rev().collect::<Vec<&str>>();
 
         for (_i, enc) in encodings.into_iter().enumerate() {
-            self.data = decode(&self.data, &enc)?;
-            // self.encoding = encodings[i+1..].into_iter().rev().collect::<Vec<&str>>().join('/');
+            match decode(&self.data, &enc) {
+                Ok(data) => {
+                    self.data = data;
+                    // self.encoding = encodings[i+1..].into_iter().rev().collect::<Vec<&str>>().join('/');
+                }
+                Err(_err) => {
+                    // TODO: log the error
+                    return ();
+                }
+            }
         }
 
-        Ok(self)
+        ()
     }
 }
 
 fn decode(data: &Data, encoding: &str) -> Result<Data> {
     match encoding {
         "json" => match data {
-            Data::String(s) => serde_json::from_str::<serde_json::Value>(s).map(Into::into).map_err(Into::into),
+            Data::String(s) => serde_json::from_str::<serde_json::Value>(s)
+                .map(Into::into)
+                .map_err(Into::into),
             _ => Err(error!(40013, "invalid JSON message data")),
         },
         "base64" => match data {
             Data::String(s) => base64::decode(s).map(Into::into).map_err(Into::into),
             _ => Err(error!(40013, "invalid base64 message data")),
         },
-        _ => {
-            Err(error!(40013, "invalid message encoding"))
-        },
+        _ => Err(error!(40013, "invalid message encoding")),
     }
 }
 
@@ -424,21 +500,29 @@ pub struct PresenceMessage {
     pub encoding:      Option<String>,
 }
 
-impl PresenceMessage {
-    pub fn decode(&mut self) -> Result<&Self> {
+impl EncodedMessage for PresenceMessage {
+    fn decode(&mut self, _opts: Option<&ChannelOptions>) -> () {
         let encoding = match &self.encoding {
             Some(enc) => enc,
-            None => return Ok(self),
+            None => return (),
         };
 
         let encodings = encoding.split('/').rev().collect::<Vec<&str>>();
 
         for (_i, enc) in encodings.into_iter().enumerate() {
-            self.data = decode(&self.data, &enc)?;
-            // self.encoding = encodings[i+1..].into_iter().rev().collect::<Vec<&str>>().join('/');
+            match decode(&self.data, &enc) {
+                Ok(data) => {
+                    self.data = data;
+                    // self.encoding = encodings[i+1..].into_iter().rev().collect::<Vec<&str>>().join('/');
+                }
+                Err(_err) => {
+                    // TODO: log the error
+                    return ();
+                }
+            }
         }
 
-        Ok(self)
+        ()
     }
 }
 
@@ -460,3 +544,24 @@ pub enum Format {
 }
 
 pub const DEFAULT_FORMAT: Format = Format::MessagePack;
+
+pub trait EncodedMessage {
+    fn decode(&mut self, opts: Option<&ChannelOptions>) -> ();
+}
+
+#[derive(Clone)]
+pub struct MessageItemHandler {
+    opts: Option<ChannelOptions>,
+}
+
+impl MessageItemHandler {
+    pub fn new(opts: Option<ChannelOptions>) -> Self {
+        Self { opts }
+    }
+}
+
+impl<T: EncodedMessage> http::PaginatedItemHandler<T> for MessageItemHandler {
+    fn handle(&self, msg: &mut T) -> () {
+        msg.decode(self.opts.as_ref());
+    }
+}
