@@ -446,45 +446,9 @@ pub struct Message {
     pub encoding: Option<String>,
 }
 
-impl EncodedMessage for Message {
-    fn decode(&mut self, _opts: Option<&ChannelOptions>) -> () {
-        let encoding = match &self.encoding {
-            Some(enc) => enc,
-            None => return (),
-        };
-
-        let encodings = encoding.split('/').rev().collect::<Vec<&str>>();
-
-        for (_i, enc) in encodings.into_iter().enumerate() {
-            match decode(&self.data, &enc) {
-                Ok(data) => {
-                    self.data = data;
-                    // self.encoding = encodings[i+1..].into_iter().rev().collect::<Vec<&str>>().join('/');
-                }
-                Err(_err) => {
-                    // TODO: log the error
-                    return ();
-                }
-            }
-        }
-
-        ()
-    }
-}
-
-fn decode(data: &Data, encoding: &str) -> Result<Data> {
-    match encoding {
-        "json" => match data {
-            Data::String(s) => serde_json::from_str::<serde_json::Value>(s)
-                .map(Into::into)
-                .map_err(Into::into),
-            _ => Err(error!(40013, "invalid JSON message data")),
-        },
-        "base64" => match data {
-            Data::String(s) => base64::decode(s).map(Into::into).map_err(Into::into),
-            _ => Err(error!(40013, "invalid base64 message data")),
-        },
-        _ => Err(error!(40013, "invalid message encoding")),
+impl Decode for Message {
+    fn decode(&mut self, opts: Option<&ChannelOptions>) -> () {
+        decode(&mut self.data, &mut self.encoding, opts);
     }
 }
 
@@ -500,29 +464,49 @@ pub struct PresenceMessage {
     pub encoding:      Option<String>,
 }
 
-impl EncodedMessage for PresenceMessage {
-    fn decode(&mut self, _opts: Option<&ChannelOptions>) -> () {
-        let encoding = match &self.encoding {
-            Some(enc) => enc,
-            None => return (),
-        };
+impl Decode for PresenceMessage {
+    fn decode(&mut self, opts: Option<&ChannelOptions>) -> () {
+        decode(&mut self.data, &mut self.encoding, opts);
+    }
+}
 
-        let encodings = encoding.split('/').rev().collect::<Vec<&str>>();
+pub trait Decode {
+    fn decode(&mut self, opts: Option<&ChannelOptions>) -> ();
+}
 
-        for (_i, enc) in encodings.into_iter().enumerate() {
-            match decode(&self.data, &enc) {
-                Ok(data) => {
-                    self.data = data;
-                    // self.encoding = encodings[i+1..].into_iter().rev().collect::<Vec<&str>>().join('/');
-                }
-                Err(_err) => {
-                    // TODO: log the error
-                    return ();
-                }
-            }
+fn decode(data: &mut Data, encoding_opt: &mut Option<String>, _opts: Option<&ChannelOptions>) -> () {
+    let encoding = match encoding_opt.take() {
+        Some(enc) => enc,
+        None => return (),
+    };
+
+    let mut encodings = encoding.split('/').collect::<Vec<&str>>();
+
+    while let Some(enc) = encodings.pop() {
+        *data = match decode_once(data, &enc) {
+            Ok(data) => data,
+            Err(_) => {
+                encodings.push(enc);
+                *encoding_opt = Some(encodings.join("/"));
+                return ();
+            },
         }
+    };
+}
 
-        ()
+fn decode_once(data: &Data, encoding: &str) -> Result<Data> {
+    match encoding {
+        "json" => match data {
+            Data::String(s) => serde_json::from_str::<serde_json::Value>(s)
+                .map(Into::into)
+                .map_err(Into::into),
+            _ => Err(error!(40013, "invalid JSON message data")),
+        },
+        "base64" => match data {
+            Data::String(s) => base64::decode(s).map(Into::into).map_err(Into::into),
+            _ => Err(error!(40013, "invalid base64 message data")),
+        },
+        _ => Err(error!(40013, "invalid message encoding")),
     }
 }
 
@@ -545,10 +529,6 @@ pub enum Format {
 
 pub const DEFAULT_FORMAT: Format = Format::MessagePack;
 
-pub trait EncodedMessage {
-    fn decode(&mut self, opts: Option<&ChannelOptions>) -> ();
-}
-
 #[derive(Clone)]
 pub struct MessageItemHandler {
     opts: Option<ChannelOptions>,
@@ -560,7 +540,7 @@ impl MessageItemHandler {
     }
 }
 
-impl<T: EncodedMessage> http::PaginatedItemHandler<T> for MessageItemHandler {
+impl<T: Decode> http::PaginatedItemHandler<T> for MessageItemHandler {
     fn handle(&self, msg: &mut T) -> () {
         msg.decode(self.opts.as_ref());
     }
