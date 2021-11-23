@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use std::convert::Infallible;
+use std::fmt;
 
 /// Creates an [`ErrorInfo`] with the given code and message.
 ///
@@ -43,6 +44,23 @@ impl ErrorInfo {
             status_code,
             href: format!("https://help.ably.io/error/{}", code),
         }
+    }
+}
+
+impl fmt::Display for ErrorInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[ErrorInfo")?;
+        if self.message.len() > 0 {
+            write!(f, ": {}", self.message)?;
+        }
+        if let Some(code) = self.status_code {
+            write!(f, "; statusCode={}", code)?;
+        }
+        write!(f, "; code={}", self.code)?;
+        if self.href.len() > 0 {
+            write!(f, "; see {} ", self.href)?;
+        }
+        write!(f, "]")
     }
 }
 
