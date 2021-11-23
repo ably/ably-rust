@@ -38,6 +38,8 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
+    use std::convert::TryFrom;
+    use std::fs;
     use std::iter::FromIterator;
 
     #[test]
@@ -727,6 +729,54 @@ mod tests {
             assert_eq!(message.data, expected_data);
         }
 
+        Ok(())
+    }
+
+    #[derive(Deserialize)]
+    struct CryptoData {
+        key:   String,
+        items: Vec<CryptoFixture>,
+    }
+
+    #[derive(Deserialize)]
+    struct CryptoFixture {
+        encoded:   json::Value,
+        encrypted: json::Value,
+    }
+
+    #[tokio::test]
+    async fn decrypt_message_128() -> Result<()> {
+        let file = fs::File::open("submodules/ably-common/test-resources/crypto-data-128.json")
+            .expect("Expected crypto-data-128.json to open");
+        let data: CryptoData =
+            serde_json::from_reader(file).expect("Expected JSON data in crypto-data-128.json");
+        let opts = rest::ChannelOptions::from(rest::CipherParams {
+            key: rest::CipherKey::try_from(data.key).expect("Expected base64 encoded cipher key"),
+        });
+        for item in data.items.iter() {
+            let msg = rest::Message::from_encoded(item.encrypted.clone(), Some(&opts))?;
+            assert_eq!(msg.encoding, None);
+            let expected = rest::Message::from_encoded(item.encoded.clone(), None)?;
+            assert_eq!(msg.data, expected.data);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn decrypt_message_256() -> Result<()> {
+        let file = fs::File::open("submodules/ably-common/test-resources/crypto-data-256.json")
+            .expect("Expected crypto-data-256.json to open");
+        let data: CryptoData =
+            serde_json::from_reader(file).expect("Expected JSON data in crypto-data-256.json");
+        let opts = rest::ChannelOptions::from(rest::CipherParams {
+            key: rest::CipherKey::try_from(data.key).expect("Expected base64 encoded cipher key"),
+        });
+        for item in data.items.iter() {
+            let msg = rest::Message::from_encoded(item.encrypted.clone(), Some(&opts))?;
+            assert_eq!(msg.encoding, None);
+            let expected = rest::Message::from_encoded(item.encoded.clone(), None)?;
+            assert_eq!(msg.data, expected.data);
+        }
         Ok(())
     }
 }

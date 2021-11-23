@@ -107,6 +107,24 @@ impl From<rmp_serde::decode::Error> for ErrorInfo {
     }
 }
 
+impl From<std::str::Utf8Error> for ErrorInfo {
+    fn from(err: std::str::Utf8Error) -> Self {
+        error!(40001, format!("invalid utf-8 data: {}", err))
+    }
+}
+
+impl From<block_modes::InvalidKeyIvLength> for ErrorInfo {
+    fn from(_: block_modes::InvalidKeyIvLength) -> Self {
+        error!(40000, "invalid cipher key or iv length")
+    }
+}
+
+impl From<block_modes::BlockModeError> for ErrorInfo {
+    fn from(err: block_modes::BlockModeError) -> Self {
+        error!(40000, format!("error decrypting data: {}", err))
+    }
+}
+
 /// Implement From<Infallible> to support ErrorInfo being the associated
 /// type for the TryInto trait bound in ClientOptions#key.
 impl From<Infallible> for ErrorInfo {

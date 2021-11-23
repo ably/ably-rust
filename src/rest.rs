@@ -2,9 +2,15 @@ use crate::error::*;
 use crate::options::ClientOptions;
 use crate::{auth, base64, history, http, json, presence, stats, Result};
 
+use aes::{Aes128, Aes256};
+use block_modes::block_padding::Pkcs7;
+use block_modes::{BlockMode, Cbc};
 use chrono::prelude::*;
+use lazy_static::lazy_static;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
+use std::convert::TryFrom;
 
 /// A client for the [Ably REST API].
 ///
@@ -182,9 +188,53 @@ impl From<CipherParams> for ChannelOptions {
     }
 }
 
+const CIPHER_ALGORITHM: &str = "aes";
+const CIPHER_MODE: &str = "cbc";
+
 #[derive(Clone)]
 pub struct CipherParams {
-    key: Vec<u8>,
+    pub key: CipherKey,
+}
+
+#[derive(Clone)]
+pub enum CipherKey {
+    Key128(Vec<u8>),
+    Key256(Vec<u8>),
+}
+
+impl CipherKey {
+    fn len(&self) -> usize {
+        match self {
+            Self::Key128(key) => key.len(),
+            Self::Key256(key) => key.len(),
+        }
+    }
+}
+
+impl TryFrom<Vec<u8>> for CipherKey {
+    type Error = ErrorInfo;
+
+    fn try_from(v: Vec<u8>) -> Result<Self> {
+        match v.len() {
+            16 => Ok(Self::Key128(v)),
+            32 => Ok(Self::Key256(v)),
+            _ => Err(error!(
+                40000,
+                format!(
+                    "invalid cipher key length {}, must be 128 or 256 bits",
+                    v.len()
+                )
+            )),
+        }
+    }
+}
+
+impl TryFrom<String> for CipherKey {
+    type Error = ErrorInfo;
+
+    fn try_from(s: String) -> Result<Self> {
+        Self::try_from(base64::decode(s)?)
+    }
 }
 
 pub struct ChannelBuilder {
@@ -422,6 +472,12 @@ impl From<String> for Data {
     }
 }
 
+impl From<&str> for Data {
+    fn from(s: &str) -> Self {
+        Self::String(s.to_string())
+    }
+}
+
 impl From<Vec<u8>> for Data {
     fn from(v: Vec<u8>) -> Self {
         Self::Binary(v)
@@ -444,6 +500,16 @@ pub struct Message {
     pub data:     Data,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoding: Option<String>,
+}
+
+impl Message {
+    pub fn from_encoded(v: json::Value, opts: Option<&ChannelOptions>) -> Result<Message> {
+        let mut msg: Message = serde_json::from_value(v)?;
+
+        msg.decode(opts);
+
+        Ok(msg)
+    }
 }
 
 impl Decode for Message {
@@ -474,7 +540,7 @@ pub trait Decode {
     fn decode(&mut self, opts: Option<&ChannelOptions>) -> ();
 }
 
-fn decode(data: &mut Data, encoding_opt: &mut Option<String>, _opts: Option<&ChannelOptions>) -> () {
+fn decode(data: &mut Data, encoding_opt: &mut Option<String>, opts: Option<&ChannelOptions>) -> () {
     let encoding = match encoding_opt.take() {
         Some(enc) => enc,
         None => return (),
@@ -483,19 +549,39 @@ fn decode(data: &mut Data, encoding_opt: &mut Option<String>, _opts: Option<&Cha
     let mut encodings = encoding.split('/').collect::<Vec<&str>>();
 
     while let Some(enc) = encodings.pop() {
-        *data = match decode_once(data, &enc) {
+        *data = match decode_once(data, &enc, opts) {
             Ok(data) => data,
             Err(_) => {
                 encodings.push(enc);
                 *encoding_opt = Some(encodings.join("/"));
                 return ();
-            },
+            }
         }
-    };
+    }
 }
 
-fn decode_once(data: &Data, encoding: &str) -> Result<Data> {
-    match encoding {
+lazy_static! {
+    static ref ENCODING_RE: Regex =
+        Regex::new(r#"^(?P<format>[\-\w]+)(?:\+(?P<params>[\-\w]+))?"#).unwrap();
+}
+
+fn decode_once(data: &mut Data, encoding: &str, opts: Option<&ChannelOptions>) -> Result<Data> {
+    let caps = ENCODING_RE
+        .captures(encoding)
+        .ok_or(error!(40004, "Invalid encoding"))?;
+    let format = caps
+        .name("format")
+        .ok_or(error!(40004, "Invalid encoding; missing format"))?
+        .as_str();
+
+    match format {
+        "utf-8" => match data {
+            Data::String(s) => Ok(Data::String(s.to_string())),
+            Data::Binary(data) => std::str::from_utf8(data)
+                .map(Into::into)
+                .map_err(Into::into),
+            _ => Err(error!(40013, "invalid utf-8 message data")),
+        },
         "json" => match data {
             Data::String(s) => serde_json::from_str::<serde_json::Value>(s)
                 .map(Into::into)
@@ -506,8 +592,62 @@ fn decode_once(data: &Data, encoding: &str) -> Result<Data> {
             Data::String(s) => base64::decode(s).map(Into::into).map_err(Into::into),
             _ => Err(error!(40013, "invalid base64 message data")),
         },
+        "cipher" => match data {
+            Data::Binary(ref mut data) => {
+                let opts = opts.ok_or(error!(
+                    40000,
+                    "unable to decrypt message, no channel options"
+                ))?;
+                let cipher = opts
+                    .cipher
+                    .as_ref()
+                    .ok_or(error!(40000, "unable to decrypt message, no cipher params"))?;
+                let params = caps
+                    .name("params")
+                    .ok_or(error!(40004, "Invalid encoding; missing params"))?;
+                if params.as_str().to_string()
+                    != format!(
+                        "{}-{}-{}",
+                        CIPHER_ALGORITHM,
+                        cipher.key.len() * 8,
+                        CIPHER_MODE
+                    )
+                {
+                    return Err(error!(
+                        40000,
+                        "unable to decrypt message, incompatible cipher params"
+                    ));
+                }
+                decrypt(data, &cipher.key)
+            }
+            _ => Err(error!(40013, "invalid cipher message data")),
+        },
         _ => Err(error!(40013, "invalid message encoding")),
     }
+}
+
+fn decrypt(data: &mut Vec<u8>, key: &CipherKey) -> Result<Data> {
+    if data.len() % aes::BLOCK_SIZE != 0 || data.len() < aes::BLOCK_SIZE {
+        return Err(error!(
+            40013,
+            format!(
+                "invalid cipher message data; unexpected length: {}",
+                data.len()
+            )
+        ));
+    }
+    let iv = &data[..aes::BLOCK_SIZE];
+    let decrypted = match key {
+        CipherKey::Key128(key) => {
+            let cipher = Cbc::<Aes128, Pkcs7>::new_from_slices(key, iv)?;
+            cipher.decrypt(&mut data[aes::BLOCK_SIZE..])?
+        }
+        CipherKey::Key256(key) => {
+            let cipher = Cbc::<Aes256, Pkcs7>::new_from_slices(key, iv)?;
+            cipher.decrypt(&mut data[aes::BLOCK_SIZE..])?
+        }
+    };
+    Ok(Data::Binary(decrypted.to_vec()))
 }
 
 #[derive(Clone, Debug, Deserialize_repr, PartialEq, Serialize_repr)]
