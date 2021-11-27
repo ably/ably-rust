@@ -779,4 +779,20 @@ mod tests {
         }
         Ok(())
     }
+
+    #[tokio::test]
+    async fn client_fallback() -> Result<()> {
+        // IANA reserved; requests to it will hang forever
+        let unroutable_host = "10.255.255.1";
+        let client = ClientOptions::from("aaaaaa.bbbbbb:cccccc")
+            .rest_host(unroutable_host)
+            .fallback_hosts(vec!["sandbox-a-fallback.ably-realtime.com".to_string()])
+            .http_request_timeout(std::time::Duration::from_secs(3))
+            .client()
+            .unwrap();
+
+        client.time().await.expect("Expected fallback response");
+
+        Ok(())
+    }
 }

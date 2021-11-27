@@ -2,6 +2,7 @@ use crate::error::*;
 use crate::{auth, http, rest, Result};
 
 use std::convert::TryInto;
+use std::time::Duration;
 
 /// [Ably client options] for initialising a REST or Realtime client.
 ///
@@ -20,20 +21,35 @@ pub struct ClientOptions {
     /// Override the hostname used in the REST API URL.
     rest_host: Option<String>,
 
+    /// Override the list of fallback hosts.
+    fallback_hosts: Option<Vec<String>>,
+
     /// The REST API URL which is constructed as options are set. Any error
     /// encountered when updating rest_url will be returned from client().
     rest_url: Result<reqwest::Url>,
+
+    http_request_timeout: Duration,
+
+    /// The maximum number of fallback hosts to try when the primary host is
+    /// unreachable or it indicates that the request is unserviceable.
+    http_max_retry_count: u32,
 }
+
+const DEFAULT_HTTP_MAX_RETRY_COUNT: u32 = 3;
+const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl ClientOptions {
     /// Returns ClientOptions with default values.
     pub fn new() -> Self {
         Self {
-            credential:  Err(error!(40106, "must provide either an API key or a token")),
-            format:      rest::DEFAULT_FORMAT,
-            environment: None,
-            rest_host:   None,
-            rest_url:    Ok(reqwest::Url::parse("https://rest.ably.io").unwrap()),
+            credential:           Err(error!(40106, "must provide either an API key or a token")),
+            format:               rest::DEFAULT_FORMAT,
+            environment:          None,
+            rest_host:            None,
+            fallback_hosts:       Some(Self::default_fallback_hosts()),
+            rest_url:             Ok(reqwest::Url::parse("https://rest.ably.io").unwrap()),
+            http_request_timeout: DEFAULT_HTTP_REQUEST_TIMEOUT,
+            http_max_retry_count: DEFAULT_HTTP_MAX_RETRY_COUNT,
         }
     }
 
@@ -118,6 +134,15 @@ impl ClientOptions {
             }
         }
 
+        // Generate the fallback hosts
+        self.fallback_hosts = Some(vec![
+            format!("{}-a-fallback.ably-realtime.com", environment),
+            format!("{}-b-fallback.ably-realtime.com", environment),
+            format!("{}-c-fallback.ably-realtime.com", environment),
+            format!("{}-d-fallback.ably-realtime.com", environment),
+            format!("{}-e-fallback.ably-realtime.com", environment),
+        ]);
+
         // Track that the environment was set.
         self.environment = Some(String::from(environment));
 
@@ -173,9 +198,27 @@ impl ClientOptions {
             }
         }
 
+        // TODO: only unset these if they're the defaults
+        self.fallback_hosts = None;
+
         // Track that the rest_host was set.
         self.rest_host = Some(String::from(rest_host));
 
+        self
+    }
+
+    pub fn fallback_hosts(mut self, hosts: Vec<String>) -> Self {
+        self.fallback_hosts = Some(hosts);
+        self
+    }
+
+    pub fn http_request_timeout(mut self, timeout: Duration) -> Self {
+        self.http_request_timeout = timeout;
+        self
+    }
+
+    pub fn http_max_retry_count(mut self, count: u32) -> Self {
+        self.http_max_retry_count = count;
         self
     }
 
@@ -192,7 +235,13 @@ impl ClientOptions {
     pub fn client(self) -> Result<rest::Rest> {
         let credential = self.credential?;
         let url = self.rest_url.clone()?;
-        let http = http::Client::new(url.clone());
+        let http = http::Client::new(
+            reqwest::Client::builder()
+                .timeout(self.http_request_timeout)
+                .build()?,
+            url.clone(),
+            self.fallback_hosts,
+        );
         let auth = auth::Auth::new(credential, http.clone());
         let client = rest::Client::new(auth.clone(), http, self.format);
         let channels = rest::Channels::new(client.clone());
@@ -202,6 +251,16 @@ impl ClientOptions {
             channels,
             client,
         })
+    }
+
+    fn default_fallback_hosts() -> Vec<String> {
+        vec![
+            "a.ably-realtime.com".to_string(),
+            "b.ably-realtime.com".to_string(),
+            "c.ably-realtime.com".to_string(),
+            "d.ably-realtime.com".to_string(),
+            "e.ably-realtime.com".to_string(),
+        ]
     }
 }
 

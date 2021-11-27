@@ -12,6 +12,9 @@ use futures::stream::{self, Stream, StreamExt};
 
 use lazy_static::lazy_static;
 
+use rand::seq::SliceRandom;
+use rand::thread_rng;
+
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -20,15 +23,21 @@ use serde::Serialize;
 /// [Ably REST API]: https://ably.com/documentation/rest-api
 #[derive(Clone, Debug)]
 pub struct Client {
-    inner:    reqwest::Client,
-    rest_url: reqwest::Url,
+    inner:          reqwest::Client,
+    rest_url:       reqwest::Url,
+    fallback_hosts: Option<Vec<String>>,
 }
 
 impl Client {
-    pub fn new(rest_url: reqwest::Url) -> Self {
+    pub fn new(
+        inner: reqwest::Client,
+        rest_url: reqwest::Url,
+        fallback_hosts: Option<Vec<String>>,
+    ) -> Self {
         Self {
-            inner: reqwest::Client::new(),
+            inner,
             rest_url,
+            fallback_hosts,
         }
     }
 
@@ -39,7 +48,7 @@ impl Client {
     pub fn request(&self, method: Method, path: impl Into<String>) -> RequestBuilder {
         let mut url = self.rest_url.clone();
         url.set_path(&path.into());
-        self.request_url(method, url)
+        self.request_url(method, url).use_fallbacks()
     }
 
     pub fn paginated_request<T: PaginatedItem, U: PaginatedItemHandler<T>>(
@@ -56,7 +65,98 @@ impl Client {
     /// Returns a RequestBuilder which can be used to set query params, headers
     /// and the request body before sending the request.
     pub fn request_url(&self, method: Method, url: impl reqwest::IntoUrl) -> RequestBuilder {
-        RequestBuilder::new(self.inner.clone(), self.inner.request(method, url))
+        RequestBuilder::new(self.clone(), self.inner.request(method, url))
+    }
+
+    /// Send the given request, retrying against fallback hosts if
+    /// req.use_fallbacks is true.
+    pub async fn send(&self, req: Request) -> Result<Response> {
+        // Executing the request will consume it, so clone it first for a
+        // potential retry later.
+        let mut next_req = None;
+        if req.use_fallbacks {
+            next_req = req.try_clone();
+        }
+
+        // Execute the request, and return the response if it succeeds.
+        let mut err = match self.execute(req).await {
+            Ok(res) => return Ok(res),
+            Err(err) => err,
+        };
+
+        // Return the error if we're unable to retry against fallback hosts.
+        if next_req.is_none() || !Self::is_retriable(&err) {
+            return Err(err);
+        }
+
+        // Create a randomised list of fallback hosts if they're set.
+        let mut hosts = match &self.fallback_hosts {
+            None => return Err(err),
+            Some(hosts) => hosts.clone(),
+        };
+        hosts.shuffle(&mut thread_rng());
+
+        // Try sending the request to the fallback hosts.
+        // TODO: take(httpMaxRetryCount)
+        for host in hosts.iter() {
+            // Check we have a next request to send.
+            let mut req = match next_req {
+                Some(req) => req,
+                None => break,
+            };
+
+            // Update the request host and prepare the next request.
+            next_req = req.try_clone();
+            req.url_mut().set_host(Some(host)).map_err(|err| {
+                error!(40000, format!("invalid fallback host '{}': {}", host, err))
+            })?;
+
+            // Execute the request, and return the response if it succeeds.
+            err = match self.execute(req).await {
+                Ok(res) => return Ok(res),
+                Err(err) => err,
+            };
+
+            // Continue only if the request can be retried.
+            if !Self::is_retriable(&err) {
+                break;
+            }
+        }
+
+        Err(err)
+    }
+
+    async fn execute(&self, req: Request) -> Result<Response> {
+        let res = self.inner.execute(req.inner).await?;
+
+        // Return the response if it was successful, otherwise try to decode a
+        // JSON error from the response body, falling back to a generic error
+        // if decoding fails.
+        if res.status().is_success() {
+            return Ok(Response::new(res));
+        }
+
+        let status_code: u32 = res.status().as_u16().into();
+        Err(res
+            .json::<WrappedError>()
+            .await
+            .map(|e| e.error)
+            .unwrap_or_else(|err| {
+                error!(
+                    50000,
+                    format!("Unexpected error: {}", err),
+                    Some(status_code)
+                )
+            }))
+    }
+
+    /// Return whether a request can be retried based on the error which
+    /// resulted from attempting to send it.
+    fn is_retriable(err: &ErrorInfo) -> bool {
+        match err.status_code {
+            Some(code) => (500..=504).contains(&code),
+            None => true,
+        }
     }
 }
 
@@ -64,25 +164,32 @@ impl Client {
 ///
 /// [Ably REST API]: https://ably.com/documentation/rest-api
 pub struct RequestBuilder {
-    client: reqwest::Client,
-    inner:  Result<reqwest::RequestBuilder>,
-    auth:   Option<auth::Auth>,
-    format: rest::Format,
+    client:        Client,
+    inner:         Result<reqwest::RequestBuilder>,
+    auth:          Option<auth::Auth>,
+    format:        rest::Format,
+    use_fallbacks: bool,
 }
 
 impl RequestBuilder {
-    fn new(client: reqwest::Client, inner: reqwest::RequestBuilder) -> Self {
+    fn new(client: Client, inner: reqwest::RequestBuilder) -> Self {
         Self {
             client,
             inner: Ok(inner),
             auth: None,
             format: rest::DEFAULT_FORMAT,
+            use_fallbacks: false,
         }
     }
 
     /// Set the request format.
     pub fn format(mut self, format: rest::Format) -> Self {
         self.format = format;
+        self
+    }
+
+    pub fn use_fallbacks(mut self) -> Self {
+        self.use_fallbacks = true;
         self
     }
 
@@ -141,7 +248,11 @@ impl RequestBuilder {
 
     /// Send the request to the Ably REST API.
     pub async fn send(self) -> Result<Response> {
-        self.build()?.send().await
+        let client = self.client.clone();
+
+        let req = self.build()?;
+
+        client.send(req).await
     }
 
     fn build(self) -> Result<Request> {
@@ -164,7 +275,10 @@ impl RequestBuilder {
         // Build the request.
         let req = req.build()?;
 
-        Ok(Request::new(self.client.clone(), req))
+        Ok(Request {
+            inner:         req,
+            use_fallbacks: self.use_fallbacks,
+        })
     }
 }
 
@@ -176,6 +290,7 @@ impl RequestBuilder {
 /// [stream::unfold]: https://docs.rs/futures/latest/futures/stream/fn.unfold.html
 struct PaginatedState<T, U: PaginatedItemHandler<T>> {
     next_req: Option<Result<Request>>,
+    client:   Client,
     handler:  Option<U>,
     phantom:  PhantomData<T>,
 }
@@ -228,8 +343,10 @@ impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U>
         // state holds the request for the next page, and the closure sends the
         // request and returns both a PaginatedResult and the request for the
         // next page if the response has a 'Link: ...; rel="next"' header.
+        let client = self.inner.client.clone();
         let seed_state = PaginatedState {
             next_req: Some(self.inner.build()),
+            client:   client,
             handler:  self.handler,
             phantom:  PhantomData,
         };
@@ -265,7 +382,7 @@ impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U>
                 //
                 // If there's an error, yield the error and set the next
                 // request to None to end the stream on the next iteration.
-                let res = match req.send().await {
+                let res = match state.client.send(req).await {
                     Err(err) => {
                         state.next_req = None;
                         return Some((Err(err), state));
@@ -305,47 +422,20 @@ impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U>
 }
 
 pub struct Request {
-    client: reqwest::Client,
-    inner:  reqwest::Request,
+    inner:         reqwest::Request,
+    use_fallbacks: bool,
 }
 
 impl Request {
-    fn new(client: reqwest::Client, req: reqwest::Request) -> Self {
-        Self { client, inner: req }
-    }
-
     fn url_mut(&mut self) -> &mut reqwest::Url {
         self.inner.url_mut()
     }
 
-    async fn send(self) -> Result<Response> {
-        let res = self.client.execute(self.inner).await?;
-
-        // Return the response if it was successful, otherwise try to decode a
-        // JSON error from the response body, falling back to a generic error
-        // if decoding fails.
-        if res.status().is_success() {
-            return Ok(Response::new(res));
-        }
-
-        let status_code: u32 = res.status().as_u16().into();
-        Err(res
-            .json::<WrappedError>()
-            .await
-            .map(|e| e.error)
-            .unwrap_or_else(|err| {
-                error!(
-                    50000,
-                    format!("Unexpected error: {}", err),
-                    Some(status_code)
-                )
-            }))
-    }
-
     fn try_clone(&self) -> Option<Self> {
-        self.inner
-            .try_clone()
-            .map(|req| Self::new(self.client.clone(), req))
+        self.inner.try_clone().map(|req| Self {
+            inner:         req,
+            use_fallbacks: self.use_fallbacks,
+        })
     }
 }
 
@@ -403,6 +493,10 @@ pub struct Response {
 impl Response {
     fn new(response: reqwest::Response) -> Self {
         Self { inner: response }
+    }
+
+    pub fn status(&self) -> reqwest::StatusCode {
+        self.inner.status()
     }
 
     /// Returns the response Content-Type.
