@@ -7,12 +7,14 @@ edition = "2018"
 
 [dependencies]
 aes = { version = "*" }
+atty = { version = "*" }
 base64 = { version = "*" }
 block-modes = { version = "*" }
 chrono = { version = "*", features = ["serde"] }
 futures = { version = "*" }
 hmac = { version = "*" }
 lazy_static = { version = "*" }
+log = { version = "*" }
 mime = { version = "*" }
 rand = { version = "*" }
 regex = { version = "*" }
@@ -22,6 +24,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "*" }
 serde_repr = { version = "*" }
 sha2 = { version = "*" }
+simplelog = { version = "*" }
 
 [dev-dependencies]
 tokio = { version = "*", features = ["macros"] }

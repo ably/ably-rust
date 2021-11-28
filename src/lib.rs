@@ -8,6 +8,7 @@
 
 #[macro_use]
 pub mod error;
+pub mod log;
 pub mod auth;
 pub mod base64;
 pub mod history;
