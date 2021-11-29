@@ -1,10 +1,12 @@
 use super::error::{ErrorInfo, WrappedError};
 use super::Result;
-use super::{auth, rest};
+use super::rest;
+use crate::options::ClientOptions;
 use regex::Regex;
 pub use reqwest::header::{HeaderMap, HeaderValue};
 pub use reqwest::Method;
 use std::convert::TryFrom;
+use std::fmt::Display;
 use std::marker::PhantomData;
 
 use futures::future::FutureExt;
@@ -23,22 +25,14 @@ use serde::Serialize;
 /// [Ably REST API]: https://ably.com/documentation/rest-api
 #[derive(Clone, Debug)]
 pub struct Client {
-    inner:          reqwest::Client,
-    rest_url:       reqwest::Url,
-    fallback_hosts: Option<Vec<String>>,
+    inner: reqwest::Client,
+    opts:  ClientOptions,
+    url:   reqwest::Url,
 }
 
 impl Client {
-    pub fn new(
-        inner: reqwest::Client,
-        rest_url: reqwest::Url,
-        fallback_hosts: Option<Vec<String>>,
-    ) -> Self {
-        Self {
-            inner,
-            rest_url,
-            fallback_hosts,
-        }
+    pub fn new(inner: reqwest::Client, opts: ClientOptions, url: reqwest::Url) -> Self {
+        Self { inner, opts, url }
     }
 
     /// Start building a HTTP request to the Ably REST API.
@@ -46,7 +40,7 @@ impl Client {
     /// Returns a RequestBuilder which can be used to set query params, headers
     /// and the request body before sending the request.
     pub fn request(&self, method: Method, path: impl Into<String>) -> RequestBuilder {
-        let mut url = self.rest_url.clone();
+        let mut url = self.url.clone();
         url.set_path(&path.into());
         self.request_url(method, url).use_fallbacks()
     }
@@ -90,7 +84,7 @@ impl Client {
         }
 
         // Create a randomised list of fallback hosts if they're set.
-        let mut hosts = match &self.fallback_hosts {
+        let mut hosts = match &self.opts.fallback_hosts {
             None => return Err(err),
             Some(hosts) => hosts.clone(),
         };
@@ -166,7 +160,6 @@ impl Client {
 pub struct RequestBuilder {
     client:        Client,
     inner:         Result<reqwest::RequestBuilder>,
-    auth:          Option<auth::Auth>,
     format:        rest::Format,
     use_fallbacks: bool,
 }
@@ -176,7 +169,6 @@ impl RequestBuilder {
         Self {
             client,
             inner: Ok(inner),
-            auth: None,
             format: rest::DEFAULT_FORMAT,
             use_fallbacks: false,
         }
@@ -241,8 +233,17 @@ impl RequestBuilder {
         self
     }
 
-    pub fn auth(mut self, auth: auth::Auth) -> Self {
-        self.auth = Some(auth);
+    pub fn basic_auth<U: Display, P: Display>(mut self, username: U, password: Option<P>) -> Self {
+        if let Ok(req) = self.inner {
+            self.inner = Ok(req.basic_auth(username, password));
+        }
+        self
+    }
+
+    pub fn bearer_auth<T: Display>(mut self, token: T) -> Self {
+        if let Ok(req) = self.inner {
+            self.inner = Ok(req.bearer_auth(token));
+        }
         self
     }
 
@@ -256,24 +257,7 @@ impl RequestBuilder {
     }
 
     fn build(self) -> Result<Request> {
-        let mut req = self.inner?;
-
-        req = req.header("X-Ably-Version", "1.2");
-
-        // Set the Authorization header.
-        if let Some(auth) = self.auth {
-            match auth.credential {
-                auth::Credential::Key(key) => {
-                    req = req.basic_auth(&key.name, Some(&key.value));
-                }
-                auth::Credential::Token(token) => {
-                    req = req.bearer_auth(&token);
-                }
-            }
-        }
-
-        // Build the request.
-        let req = req.build()?;
+        let req = self.inner?.build()?;
 
         Ok(Request {
             inner:         req,

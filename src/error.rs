@@ -77,6 +77,12 @@ impl From<reqwest::Error> for ErrorInfo {
     }
 }
 
+impl From<url::ParseError> for ErrorInfo {
+    fn from(err: url::ParseError) -> Self {
+        error!(40000, format!("invalid URL: {}", err))
+    }
+}
+
 impl From<hmac::crypto_mac::InvalidKeyLength> for ErrorInfo {
     fn from(_: hmac::crypto_mac::InvalidKeyLength) -> Self {
         error!(40101, "invalid credentials")

@@ -1,7 +1,7 @@
 use crate::error::*;
 use crate::{auth, http, rest, Result};
 
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
 use std::time::Duration;
 
 /// [Ably client options] for initialising a REST or Realtime client.
@@ -9,48 +9,139 @@ use std::time::Duration;
 /// [Ably client options]: https://ably.com/documentation/rest/types#client-options
 #[derive(Clone, Debug)]
 pub struct ClientOptions {
-    /// Holds either an API key or a token.
-    credential: Result<auth::Credential>,
+    /// An Ably API key.
+    pub(crate) key: Option<auth::Key>,
 
-    /// The message format (either MessagePack or JSON).
-    format: rest::Format,
+    /// An Ably authentication token, either as a string literal, a
+    /// TokenDetails object, or a TokenRequest object.
+    pub(crate) token: Option<auth::Token>,
 
-    /// An optional custom environment used to construct the endpoint URLs.
-    environment: Option<String>,
+    /// A callback which is called to obtain an Ably authentication token,
+    /// either as a string literal, a TokenDetails object, or a TokenRequest
+    /// object.
+    // pub auth_callback: Option<auth::AuthCallback>,
 
-    /// Override the hostname used in the REST API URL.
-    rest_host: Option<String>,
+    /// A URL to request an Ably authentication token from, either as a string
+    /// literal, a TokenDetails object, or a TokenRequest object.
+    pub(crate) auth_url: Option<String>,
 
-    /// Override the list of fallback hosts.
-    fallback_hosts: Option<Vec<String>>,
+    /// The HTTP method to use when requesting a token from auth_url. Defaults
+    /// to GET.
+    pub(crate) auth_method: http::Method,
 
-    /// The REST API URL which is constructed as options are set. Any error
-    /// encountered when updating rest_url will be returned from client().
-    rest_url: Result<reqwest::Url>,
+    /// The HTTP headers to include when requesting a token from auth_url.
+    // pub auth_headers: Option<reqwest::Headers>,
 
-    http_request_timeout: Duration,
+    /// The HTTP params to use when requesting a token from auth_url, which are
+    /// included in the query string when auth_method is GET, or in the
+    /// form-encoded body when auth_method is POST.
+    // pub auth_params: Option<Params>,
+
+    /// Use TLS for all connections. Defaults to true.
+    pub(crate) tls: bool,
+
+    /// A client ID, used for identifying this client when publishing messages
+    /// or for presence purposes.
+    pub(crate) client_id: Option<String>,
+
+    /// Always use token authentication, even if an Ably API key is set.
+    pub(crate) use_token_auth: bool,
+
+    /// An optional custom environment used to construct API URLs.
+    pub(crate) environment: Option<String>,
+
+    /// Enable idempotent REST publishing. Defaults to false.
+    ///
+    /// See https://faqs.ably.com/what-is-idempotent-publishing
+    pub(crate) idempotent_rest_publishing: bool,
+
+    /// The list of fallback hosts to use in the case of an error necessitating
+    /// the use of an alternative host. Defaults to [a-e].ably-realtime.com.
+    pub(crate) fallback_hosts: Option<Vec<String>>,
+
+    /// Encode requests using the binary msgpack encoding (true), or the JSON
+    /// encoding (false). Defaults to true.
+    pub(crate) use_binary_protocol: bool,
+
+    /// Query the Ably system for the current time when issuing tokens.
+    /// Defaults to false.
+    pub(crate) query_time: bool,
+
+    /// Override the default parameters used to request Ably tokens.
+    // pub default_token_params: Option<auth::TokenParams>,
+
+    /// Automatically connect when the Realtime library is instantiated.
+    /// Defaults to true.
+    pub(crate) auto_connect: bool,
+
+    // pub queue_messages: bool,
+    // pub echo_messages: bool,
+    // pub recover: Option<String>,
+    /// The hostname used in the REST API URL. Defaults to rest.ably.io.
+    pub(crate) rest_host: String,
+
+    /// The hostname used in the Realtime API URL. Defaults to
+    /// realtime.ably.io.
+    pub(crate) realtime_host: String,
+
+    /// The TCP port for non-TLS requests. Defaults to 80.
+    pub(crate) port: u32,
+
+    /// The TCP port for TLS requests. Defaults to 443.
+    pub(crate) tls_port: u32,
+
+    /// How long to wait before attempting to re-establish a connection which
+    /// is in the DISCONNECTED state. Defaults to 15s.
+    pub(crate) disconnected_retry_timeout: Duration,
+
+    /// How long to wait before attempting to re-establish a connection which
+    /// is in the SUSPENDED state. Defaults to 30s.
+    pub(crate) suspended_retry_timeout: Duration,
+
+    /// How long to wait before attempting to re-attach a channel which is in
+    /// the SUSPENDED state following a server initiated detach. Defaults to
+    /// 15s.
+    pub(crate) channel_retry_timeout: Duration,
+
+    /// How long to wait for a TCP connection to be established. Defaults to
+    /// 4s.
+    pub(crate) http_open_timeout: Duration,
+
+    /// How long to wait for a HTTP request to be sent and a response to be
+    /// received. Defaults to 10s.
+    pub(crate) http_request_timeout: Duration,
 
     /// The maximum number of fallback hosts to try when the primary host is
     /// unreachable or it indicates that the request is unserviceable.
-    http_max_retry_count: u32,
-}
+    pub(crate) http_max_retry_count: u32,
 
-const DEFAULT_HTTP_MAX_RETRY_COUNT: u32 = 3;
-const DEFAULT_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+    /// How long to wait for fallback requests to succeed before considering
+    /// the request as failed. Defaults to 15s.
+    pub(crate) http_max_retry_duration: Duration,
+
+    /// The maximum size of messages that can be published in a single request.
+    /// Defaults to 64KiB.
+    pub(crate) max_message_size: u64,
+
+    /// The maximum size of a single POST body or WebSocket frame. Defaults to
+    /// 512KiB.
+    pub(crate) max_frame_size: u64,
+
+    /// How long to wait before switching back to the primary host after a
+    /// successful request to a fallback endpoint. Defaults to 10m.
+    pub(crate) fallback_retry_timeout: Duration,
+
+    /// Include a random request_id in the query string of all API requests.
+    /// Defaults to false.
+    pub(crate) add_request_ids: bool,
+
+    error: Option<ErrorInfo>,
+}
 
 impl ClientOptions {
     /// Returns ClientOptions with default values.
     pub fn new() -> Self {
-        Self {
-            credential:           Err(error!(40106, "must provide either an API key or a token")),
-            format:               rest::DEFAULT_FORMAT,
-            environment:          None,
-            rest_host:            None,
-            fallback_hosts:       Some(Self::default_fallback_hosts()),
-            rest_url:             Ok(reqwest::Url::parse("https://rest.ably.io").unwrap()),
-            http_request_timeout: DEFAULT_HTTP_REQUEST_TIMEOUT,
-            http_max_retry_count: DEFAULT_HTTP_MAX_RETRY_COUNT,
-        }
+        Self::default()
     }
 
     /// Sets the API key.
@@ -70,10 +161,14 @@ impl ClientOptions {
         T: TryInto<auth::Key>,
         T::Error: Into<ErrorInfo>,
     {
-        self.credential = key
-            .try_into()
-            .map(|k| auth::Credential::Key(k))
-            .map_err(Into::into);
+        match key.try_into() {
+            Ok(key) => {
+                self.key = Some(key);
+            }
+            Err(err) => {
+                self.error = Some(err.into());
+            }
+        }
         self
     }
 
@@ -89,8 +184,8 @@ impl ClientOptions {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn token(mut self, token: &str) -> Self {
-        self.credential = Ok(auth::Credential::Token(String::from(token)));
+    pub fn token(mut self, token: impl Into<auth::Token>) -> Self {
+        self.token = Some(token.into());
         self
     }
 
@@ -114,27 +209,18 @@ impl ClientOptions {
     /// in the REST API URL.
     ///
     /// [T03k1]: https://docs.ably.io/client-lib-development-guide/features/#TO3k1
-    pub fn environment(mut self, environment: &str) -> Self {
-        // Only allow the environment to be set if rest_host isn't set.
-        if self.rest_host.is_some() {
-            self.rest_url = Err(error!(40000, "Cannot set both environment and rest_host"));
+    pub fn environment(mut self, environment: impl Into<String>) -> Self {
+        // Only allow the environment to be set if rest_host is the default.
+        if self.rest_host != ClientOptions::default().rest_host {
+            self.error = Some(error!(40000, "Cannot set both environment and rest_host"));
             return self;
         }
 
-        // Update the host in the URL if we haven't yet encountered an error.
-        if let Ok(ref mut url) = self.rest_url {
-            let host = format!("{}-rest.ably.io", environment);
+        let environment = environment.into();
 
-            if let Err(err) = url.set_host(Some(host.as_ref())) {
-                self.rest_url = Err(error!(
-                    40000,
-                    format!("Invalid environment '{}' ({})", environment, err)
-                ));
-                return self;
-            }
-        }
+        self.rest_host = format!("{}-rest.ably.io", environment);
 
-        // Generate the fallback hosts
+        // Generate the fallback hosts.
         self.fallback_hosts = Some(vec![
             format!("{}-a-fallback.ably-realtime.com", environment),
             format!("{}-b-fallback.ably-realtime.com", environment),
@@ -144,19 +230,15 @@ impl ClientOptions {
         ]);
 
         // Track that the environment was set.
-        self.environment = Some(String::from(environment));
+        self.environment = Some(environment);
 
         self
     }
 
     /// Sets the message format to MessagePack if the argument is true, or JSON
     /// if the argument is false.
-    pub fn use_binary_protocol(mut self, binary: bool) -> Self {
-        if binary {
-            self.format = rest::Format::MessagePack;
-        } else {
-            self.format = rest::Format::JSON;
-        }
+    pub fn use_binary_protocol(mut self, v: bool) -> Self {
+        self.use_binary_protocol = v;
         self
     }
 
@@ -180,29 +262,18 @@ impl ClientOptions {
     /// in the REST API URL.
     ///
     /// [T03k2]: https://docs.ably.io/client-lib-development-guide/features/#TO3k2
-    pub fn rest_host(mut self, rest_host: &str) -> Self {
+    pub fn rest_host(mut self, rest_host: impl Into<String>) -> Self {
         // Only allow the rest_host to be set if environment isn't set.
         if self.environment.is_some() {
-            self.rest_url = Err(error!(40000, "Cannot set both environment and rest_host"));
+            self.error = Some(error!(40000, "Cannot set both environment and rest_host"));
             return self;
-        }
-
-        // Update the host in the URL if we haven't yet encountered an error.
-        if let Ok(ref mut url) = self.rest_url {
-            if let Err(err) = url.set_host(Some(rest_host)) {
-                self.rest_url = Err(error!(
-                    40000,
-                    format!("Invalid rest_host '{}' ({})", rest_host, err)
-                ));
-                return self;
-            }
         }
 
         // TODO: only unset these if they're the defaults
         self.fallback_hosts = None;
 
         // Track that the rest_host was set.
-        self.rest_host = Some(String::from(rest_host));
+        self.rest_host = rest_host.into();
 
         self
     }
@@ -232,35 +303,76 @@ impl ClientOptions {
     /// - the REST API URL must be valid
     ///
     /// [RSC1b]: https://docs.ably.io/client-lib-development-guide/features/#RSC1b
-    pub fn client(self) -> Result<rest::Rest> {
-        let credential = self.credential?;
-        let url = self.rest_url.clone()?;
-        let http = http::Client::new(
-            reqwest::Client::builder()
-                .timeout(self.http_request_timeout)
-                .build()?,
-            url.clone(),
-            self.fallback_hosts,
-        );
-        let auth = auth::Auth::new(credential, http.clone());
-        let client = rest::Client::new(auth.clone(), http, self.format);
-        let channels = rest::Channels::new(client.clone());
+    pub fn client(&self) -> Result<rest::Rest> {
+        if let Some(err) = &self.error {
+            return Err(err.clone());
+        }
 
-        Ok(rest::Rest {
-            auth,
-            channels,
-            client,
-        })
+        if self.key.is_none() && self.token.is_none() {
+            return Err(error!(40106, "must provide either an API key or a token"));
+        }
+
+        let rest_url = if self.tls {
+            format!("https://{}", self.rest_host)
+        } else {
+            format!("http://{}", self.rest_host)
+        };
+        let rest_url = reqwest::Url::parse(&rest_url)?;
+
+        let mut default_headers = http::HeaderMap::new();
+        default_headers.insert("X-Ably-Version", http::HeaderValue::from_static("1.2"));
+
+        let client = reqwest::Client::builder()
+            .default_headers(default_headers)
+            .timeout(self.http_request_timeout)
+            .connect_timeout(self.http_open_timeout)
+            .build()?;
+
+        let http = http::Client::new(client, self.clone(), rest_url);
+
+        Ok(rest::Rest::new(http, self.clone()))
     }
+}
 
-    fn default_fallback_hosts() -> Vec<String> {
-        vec![
-            "a.ably-realtime.com".to_string(),
-            "b.ably-realtime.com".to_string(),
-            "c.ably-realtime.com".to_string(),
-            "d.ably-realtime.com".to_string(),
-            "e.ably-realtime.com".to_string(),
-        ]
+impl Default for ClientOptions {
+    fn default() -> Self {
+        Self {
+            key: None,
+            token: None,
+            auth_url: None,
+            auth_method: http::Method::GET,
+            tls: true,
+            client_id: None,
+            use_token_auth: false,
+            environment: None,
+            idempotent_rest_publishing: false,
+            fallback_hosts: Some(vec![
+                "a.ably-realtime.com".to_string(),
+                "b.ably-realtime.com".to_string(),
+                "c.ably-realtime.com".to_string(),
+                "d.ably-realtime.com".to_string(),
+                "e.ably-realtime.com".to_string(),
+            ]),
+            use_binary_protocol: true,
+            query_time: false,
+            auto_connect: true,
+            rest_host: "rest.ably.io".to_string(),
+            realtime_host: "realtime.ably.io".to_string(),
+            port: 80,
+            tls_port: 443,
+            disconnected_retry_timeout: Duration::from_secs(15),
+            suspended_retry_timeout: Duration::from_secs(30),
+            channel_retry_timeout: Duration::from_secs(15),
+            http_open_timeout: Duration::from_secs(4),
+            http_request_timeout: Duration::from_secs(10),
+            http_max_retry_count: 3,
+            http_max_retry_duration: Duration::from_secs(15),
+            max_message_size: 64 * 1024,
+            max_frame_size: 512 * 1024,
+            fallback_retry_timeout: Duration::from_secs(10 * 60),
+            add_request_ids: false,
+            error: None,
+        }
     }
 }
 
@@ -285,11 +397,14 @@ impl From<&str> for ClientOptions {
     ///
     /// [RSC1a]: https://docs.ably.io/client-lib-development-guide/features/#RSC1a
     fn from(s: &str) -> Self {
-        let options = Self::new();
+        let mut options = Self::new();
 
-        match s.find(':') {
-            Some(_) => options.key(s),
-            None => options.token(s),
+        if let Ok(key) = auth::Key::try_from(s) {
+            options.key = Some(key)
+        } else {
+            options.token = Some(s.into())
         }
+
+        options
     }
 }

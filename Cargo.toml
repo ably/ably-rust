@@ -25,6 +25,7 @@ serde_json = { version = "*" }
 serde_repr = { version = "*" }
 sha2 = { version = "*" }
 simplelog = { version = "*" }
+url = { version = "*" }
 
 [dev-dependencies]
 tokio = { version = "*", features = ["macros"] }

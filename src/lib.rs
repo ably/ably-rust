@@ -8,12 +8,12 @@
 
 #[macro_use]
 pub mod error;
-pub mod log;
 pub mod auth;
 pub mod base64;
 pub mod history;
 pub mod http;
 pub mod json;
+pub mod log;
 pub mod options;
 pub mod presence;
 pub mod rest;
@@ -44,17 +44,17 @@ mod tests {
     use std::iter::FromIterator;
 
     #[test]
-    fn rest_client_from_sets_key_credential_with_string_with_colon() {
+    fn rest_client_from_string_with_colon_sets_key() {
         let s = "appID.keyID:keySecret";
         let client = Rest::from(s);
-        assert!(client.auth.credential.is_key());
+        assert!(client.opts.key.is_some());
     }
 
     #[test]
-    fn rest_client_from_sets_token_credential_with_string_without_colon() {
+    fn rest_client_from_string_without_colon_sets_token_literal() {
         let s = "appID.tokenID";
         let client = Rest::from(s);
-        assert!(client.auth.credential.is_token());
+        assert!(client.opts.token.is_some());
     }
 
     #[test]
@@ -65,12 +65,12 @@ mod tests {
         assert_eq!(err.code, 40106);
     }
 
-    fn test_client_options() -> ClientOptions {
-        ClientOptions::from("aaaaaa.bbbbbb:cccccc").environment("sandbox")
-    }
-
     fn test_client() -> Rest {
-        test_client_options().client().unwrap()
+        ClientOptions::new()
+            .key("aaaaaa.bbbbbb:cccccc")
+            .environment("sandbox")
+            .client()
+            .unwrap()
     }
 
     /// A test app in the Ably Sandbox environment.
@@ -136,10 +136,10 @@ mod tests {
             self.keys[0].clone()
         }
 
-        async fn token_request(&self, params: auth::TokenParams) -> Result<auth::TokenResponse> {
+        async fn token_request(&self, params: auth::TokenParams) -> Result<auth::Token> {
             let req = params.sign(&self.key())?;
 
-            Ok(auth::TokenResponse::Request(req))
+            Ok(auth::Token::Request(req))
         }
     }
 
@@ -235,7 +235,8 @@ mod tests {
 
     #[tokio::test]
     async fn custom_request_with_bad_rest_host_returns_network_error() -> Result<()> {
-        let client = ClientOptions::from("aaaaaa.bbbbbb:cccccc")
+        let client = ClientOptions::new()
+            .key("aaaaaa.bbbbbb:cccccc")
             .rest_host("i-dont-exist.ably.com")
             .client()?;
 
@@ -335,7 +336,7 @@ mod tests {
             req.client_id.is_none(),
             "expected tokenRequest.client_id to not be set by default"
         );
-        assert_eq!(req.key_name, client.auth.credential.key().unwrap().name);
+        assert_eq!(req.key_name, client.opts.key.unwrap().name);
 
         Ok(())
     }
@@ -785,12 +786,12 @@ mod tests {
     async fn client_fallback() -> Result<()> {
         // IANA reserved; requests to it will hang forever
         let unroutable_host = "10.255.255.1";
-        let client = ClientOptions::from("aaaaaa.bbbbbb:cccccc")
+        let client = ClientOptions::new()
+            .key("aaaaaa.bbbbbb:cccccc")
             .rest_host(unroutable_host)
             .fallback_hosts(vec!["sandbox-a-fallback.ably-realtime.com".to_string()])
             .http_request_timeout(std::time::Duration::from_secs(3))
-            .client()
-            .unwrap();
+            .client()?;
 
         client.time().await.expect("Expected fallback response");
 

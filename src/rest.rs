@@ -20,9 +20,20 @@ pub struct Rest {
     pub auth:     auth::Auth,
     pub channels: Channels,
     pub client:   Client,
+    pub opts:     ClientOptions,
 }
 
 impl Rest {
+    pub(crate) fn new(http: http::Client, opts: ClientOptions) -> Self {
+        let client = Client::new(http.clone(), opts.clone());
+        Self {
+            auth: auth::Auth::new(http.clone(), opts.clone()),
+            channels: Channels::new(client.clone()),
+            client,
+            opts,
+        }
+    }
+
     /// Start building a GET request to /stats.
     ///
     /// Returns a stats::RequestBuilder which is used to set parameters before
@@ -149,19 +160,24 @@ impl From<&str> for Rest {
 
 #[derive(Clone, Debug)]
 pub struct Client {
-    auth:   auth::Auth,
-    http:   http::Client,
-    format: Format,
+    http: http::Client,
+    opts: ClientOptions,
 }
 
 impl Client {
-    pub fn new(auth: auth::Auth, http: http::Client, format: Format) -> Self {
-        Self { auth, http, format }
+    pub fn new(http: http::Client, opts: ClientOptions) -> Self {
+        Self { http, opts }
     }
 
     pub fn request(&self, method: http::Method, path: impl Into<String>) -> http::RequestBuilder {
         let mut req = self.http.request(method, path);
-        req = req.auth(self.auth.clone());
+
+        if let Some(ref key) = self.opts.key {
+            req = req.basic_auth(&key.name, Some(&key.value))
+        } else if let Some(auth::Token::Literal(ref token)) = self.opts.token {
+            req = req.bearer_auth(&token)
+        }
+
         req
     }
 
