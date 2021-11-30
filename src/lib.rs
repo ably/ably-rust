@@ -125,11 +125,13 @@ mod tests {
 
         /// Returns a Rest client with the test app's key.
         fn client(&self) -> Rest {
+            self.options().client().unwrap()
+        }
+
+        fn options(&self) -> ClientOptions {
             ClientOptions::new()
                 .key(self.key())
                 .environment("sandbox")
-                .client()
-                .unwrap()
         }
 
         fn key(&self) -> auth::Key {
@@ -471,6 +473,25 @@ mod tests {
 
         // Check the token details.
         assert!(token.token.len() > 0, "Expected token to be set");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn auth_request_token_with_client_id_in_options() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+
+        // Create a client with client_id set in the options.
+        let client_id = "test client id";
+        let client = app.options().client_id(client_id).client()?;
+
+        // Request a token.
+        let token = client.auth.request_token().send().await?;
+
+        // Check the token details include the client_id.
+        assert!(token.token.len() > 0, "Expected token to be set");
+        assert_eq!(token.client_id, Some(client_id.to_string()));
 
         Ok(())
     }

@@ -172,6 +172,21 @@ impl ClientOptions {
         self
     }
 
+    /// Set the client ID, used for identifying this client when publishing
+    /// messages or for presence purposes. Can be any utf-8 string except the
+    /// reserved wildcard string '*'.
+    pub fn client_id(mut self, client_id: impl Into<String>) -> Self {
+        let client_id = client_id.into();
+
+        if client_id == "*" {
+            self.error = Some(error!(40012, "Can’t use '*' as a clientId as that string is reserved"));
+        } else {
+            self.client_id = Some(client_id);
+        }
+
+        self
+    }
+
     /// Sets the token.
     ///
     /// # Example
@@ -321,6 +336,10 @@ impl ClientOptions {
 
         let mut default_headers = http::HeaderMap::new();
         default_headers.insert("X-Ably-Version", http::HeaderValue::from_static("1.2"));
+
+        if let Some(client_id) = &self.client_id {
+            default_headers.insert("X-Ably-ClientId", base64::encode(client_id).parse()?);
+        }
 
         let client = reqwest::Client::builder()
             .default_headers(default_headers)

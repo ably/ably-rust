@@ -71,6 +71,10 @@ impl Auth {
             builder = builder.key(key.clone());
         }
 
+        if let Some(client_id) = &self.opts.client_id {
+            builder = builder.client_id(client_id);
+        }
+
         builder
     }
 
@@ -80,6 +84,10 @@ impl Auth {
 
         if let Some(key) = &self.opts.key {
             builder = builder.key(key.clone());
+        }
+
+        if let Some(client_id) = &self.opts.client_id {
+            builder = builder.client_id(client_id);
         }
 
         builder
@@ -397,6 +405,7 @@ pub struct TokenRequest {
 ///
 /// [REST requestToken endpoint]: https://docs.ably.io/rest-api/#request-token
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TokenDetails {
     pub token:      String,
     #[serde(skip_serializing_if = "Option::is_none")]

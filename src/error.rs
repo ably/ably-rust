@@ -83,6 +83,12 @@ impl From<url::ParseError> for ErrorInfo {
     }
 }
 
+impl From<reqwest::header::InvalidHeaderValue> for ErrorInfo {
+    fn from(_: reqwest::header::InvalidHeaderValue) -> Self {
+        error!(40000, "invalid HTTP header")
+    }
+}
+
 impl From<hmac::crypto_mac::InvalidKeyLength> for ErrorInfo {
     fn from(_: hmac::crypto_mac::InvalidKeyLength) -> Self {
         error!(40101, "invalid credentials")
