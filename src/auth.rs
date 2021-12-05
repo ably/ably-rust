@@ -95,12 +95,21 @@ impl Auth {
 
     pub async fn with_auth_headers(&self, req: &mut reqwest::Request) -> Result<()> {
         if let Some(ref key) = self.opts.key {
-            let encoded = base64::encode(format!("{}:{}", key.name, key.value));
-            Self::set_header(
-                req,
-                reqwest::header::AUTHORIZATION,
-                format!("Basic {}", encoded),
-            )
+            if self.opts.use_token_auth {
+                let res = self.request_token().key(key.clone()).send().await?;
+                Self::set_header(
+                    req,
+                    reqwest::header::AUTHORIZATION,
+                    format!("Bearer {}", res.token),
+                )
+            } else {
+                let encoded = base64::encode(format!("{}:{}", key.name, key.value));
+                Self::set_header(
+                    req,
+                    reqwest::header::AUTHORIZATION,
+                    format!("Basic {}", encoded),
+                )
+            }
         } else if let Some(Token::Literal(ref token)) = self.opts.token {
             Self::set_header(
                 req,

@@ -846,4 +846,27 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn rest_with_key_and_use_token_auth() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+
+        // Configure a client with a key and useTokenAuth=true.
+        let client = ClientOptions::new()
+            .key(app.key())
+            .use_token_auth(true)
+            .environment("sandbox")
+            .client()
+            .expect("Expected client to initialise");
+
+        // Check a REST request succeeds.
+        client
+            .stats()
+            .send()
+            .await
+            .expect("Expected REST request to succeed");
+
+        Ok(())
+    }
 }

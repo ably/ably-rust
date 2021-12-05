@@ -212,6 +212,11 @@ impl ClientOptions {
         self
     }
 
+    pub fn use_token_auth(mut self, v: bool) -> Self {
+        self.use_token_auth = v;
+        self
+    }
+
     /// Sets the environment. See [TO3k1].
     ///
     /// # Example
