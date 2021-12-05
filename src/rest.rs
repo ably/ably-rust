@@ -7,6 +7,8 @@ use block_modes::block_padding::Pkcs7;
 use block_modes::{BlockMode, Cbc};
 use chrono::prelude::*;
 use lazy_static::lazy_static;
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
@@ -24,10 +26,9 @@ pub struct Rest {
 }
 
 impl Rest {
-    pub(crate) fn new(http: http::Client, opts: ClientOptions) -> Self {
-        let client = Client::new(http.clone(), opts.clone());
+    pub(crate) fn new(auth: auth::Auth, client: Client, opts: ClientOptions) -> Self {
         Self {
-            auth: auth::Auth::new(http.clone(), opts.clone()),
+            auth,
             channels: Channels::new(client.clone()),
             client,
             opts,
@@ -160,25 +161,48 @@ impl From<&str> for Rest {
 
 #[derive(Clone, Debug)]
 pub struct Client {
-    http: http::Client,
-    opts: ClientOptions,
+    inner: reqwest::Client,
+    opts:  ClientOptions,
+    url:   reqwest::Url,
+    auth:  Option<Box<auth::Auth>>,
 }
 
 impl Client {
-    pub fn new(http: http::Client, opts: ClientOptions) -> Self {
-        Self { http, opts }
+    pub fn new(inner: reqwest::Client, opts: ClientOptions, url: reqwest::Url) -> Self {
+        Self {
+            inner,
+            opts,
+            url,
+            auth: None,
+        }
+    }
+
+    pub fn new_with_auth(
+        inner: reqwest::Client,
+        opts: ClientOptions,
+        url: reqwest::Url,
+        auth: auth::Auth,
+    ) -> Self {
+        Self {
+            inner,
+            opts,
+            url,
+            auth: Some(Box::new(auth)),
+        }
     }
 
     pub fn request(&self, method: http::Method, path: impl Into<String>) -> http::RequestBuilder {
-        let mut req = self.http.request(method, path);
+        let mut url = self.url.clone();
+        url.set_path(&path.into());
+        self.request_url(method, url)
+    }
 
-        if let Some(ref key) = self.opts.key {
-            req = req.basic_auth(&key.name, Some(&key.value))
-        } else if let Some(auth::Token::Literal(ref token)) = self.opts.token {
-            req = req.bearer_auth(&token)
-        }
-
-        req
+    pub fn request_url(
+        &self,
+        method: http::Method,
+        url: impl reqwest::IntoUrl,
+    ) -> http::RequestBuilder {
+        http::RequestBuilder::new(self.clone(), self.inner.request(method, url))
     }
 
     pub fn paginated_request<T: http::PaginatedItem, U: http::PaginatedItemHandler<T>>(
@@ -188,6 +212,97 @@ impl Client {
         handler: Option<U>,
     ) -> http::PaginatedRequestBuilder<T, U> {
         http::PaginatedRequestBuilder::new(self.request(method, path), handler)
+    }
+
+    /// Send the given request, retrying against fallback hosts if it fails.
+    pub async fn send(&self, req: reqwest::Request) -> Result<http::Response> {
+        // Executing the request will consume it, so clone it first for a
+        // potential retry later.
+        let mut next_req = req.try_clone();
+
+        // Execute the request, and return the response if it succeeds.
+        let mut err = match self.execute(req).await {
+            Ok(res) => return Ok(res),
+            Err(err) => err,
+        };
+
+        // Return the error if we're unable to retry against fallback hosts.
+        if next_req.is_none() || !Self::is_retriable(&err) {
+            return Err(err);
+        }
+
+        // Create a randomised list of fallback hosts if they're set.
+        let mut hosts = match &self.opts.fallback_hosts {
+            None => return Err(err),
+            Some(hosts) => hosts.clone(),
+        };
+        hosts.shuffle(&mut thread_rng());
+
+        // Try sending the request to the fallback hosts, capped at
+        // ClientOptions.httpMaxRetryCount.
+        for host in hosts.iter().take(self.opts.http_max_retry_count) {
+            // Check we have a next request to send.
+            let mut req = match next_req {
+                Some(req) => req,
+                None => break,
+            };
+
+            // Update the request host and prepare the next request.
+            next_req = req.try_clone();
+            req.url_mut().set_host(Some(host)).map_err(|err| {
+                error!(40000, format!("invalid fallback host '{}': {}", host, err))
+            })?;
+
+            // Execute the request, and return the response if it succeeds.
+            err = match self.execute(req).await {
+                Ok(res) => return Ok(res),
+                Err(err) => err,
+            };
+
+            // Continue only if the request can be retried.
+            if !Self::is_retriable(&err) {
+                break;
+            }
+        }
+
+        Err(err)
+    }
+
+    async fn execute(&self, mut req: reqwest::Request) -> Result<http::Response> {
+        if let Some(auth) = &self.auth {
+            auth.with_auth_headers(&mut req).await?;
+        }
+
+        let res = self.inner.execute(req).await?;
+
+        // Return the response if it was successful, otherwise try to decode a
+        // JSON error from the response body, falling back to a generic error
+        // if decoding fails.
+        if res.status().is_success() {
+            return Ok(http::Response::new(res));
+        }
+
+        let status_code: u32 = res.status().as_u16().into();
+        Err(res
+            .json::<WrappedError>()
+            .await
+            .map(|e| e.error)
+            .unwrap_or_else(|err| {
+                error!(
+                    50000,
+                    format!("Unexpected error: {}", err),
+                    Some(status_code)
+                )
+            }))
+    }
+
+    /// Return whether a request can be retried based on the error which
+    /// resulted from attempting to send it.
+    fn is_retriable(err: &ErrorInfo) -> bool {
+        match err.status_code {
+            Some(code) => (500..=504).contains(&code),
+            None => true,
+        }
     }
 }
 

@@ -23,7 +23,7 @@ pub struct ClientOptions {
 
     /// A URL to request an Ably authentication token from, either as a string
     /// literal, a TokenDetails object, or a TokenRequest object.
-    pub(crate) auth_url: Option<String>,
+    pub(crate) auth_url: Option<reqwest::Url>,
 
     /// The HTTP method to use when requesting a token from auth_url. Defaults
     /// to GET.
@@ -113,7 +113,7 @@ pub struct ClientOptions {
 
     /// The maximum number of fallback hosts to try when the primary host is
     /// unreachable or it indicates that the request is unserviceable.
-    pub(crate) http_max_retry_count: u32,
+    pub(crate) http_max_retry_count: usize,
 
     /// How long to wait for fallback requests to succeed before considering
     /// the request as failed. Defaults to 15s.
@@ -179,7 +179,10 @@ impl ClientOptions {
         let client_id = client_id.into();
 
         if client_id == "*" {
-            self.error = Some(error!(40012, "Can’t use '*' as a clientId as that string is reserved"));
+            self.error = Some(error!(
+                40012,
+                "Can’t use '*' as a clientId as that string is reserved"
+            ));
         } else {
             self.client_id = Some(client_id);
         }
@@ -201,6 +204,11 @@ impl ClientOptions {
     /// ```
     pub fn token(mut self, token: impl Into<auth::Token>) -> Self {
         self.token = Some(token.into());
+        self
+    }
+
+    pub fn auth_url(mut self, url: reqwest::Url) -> Self {
+        self.auth_url = Some(url);
         self
     }
 
@@ -303,7 +311,7 @@ impl ClientOptions {
         self
     }
 
-    pub fn http_max_retry_count(mut self, count: u32) -> Self {
+    pub fn http_max_retry_count(mut self, count: usize) -> Self {
         self.http_max_retry_count = count;
         self
     }
@@ -323,8 +331,8 @@ impl ClientOptions {
             return Err(err.clone());
         }
 
-        if self.key.is_none() && self.token.is_none() {
-            return Err(error!(40106, "must provide either an API key or a token"));
+        if self.key.is_none() && self.token.is_none() && self.auth_url.is_none() {
+            return Err(error!(40106, "must provide either an API key, a token, or authUrl"));
         }
 
         let rest_url = if self.tls {
@@ -341,15 +349,21 @@ impl ClientOptions {
             default_headers.insert("X-Ably-ClientId", base64::encode(client_id).parse()?);
         }
 
-        let client = reqwest::Client::builder()
+        let http_client = reqwest::Client::builder()
             .default_headers(default_headers)
             .timeout(self.http_request_timeout)
             .connect_timeout(self.http_open_timeout)
             .build()?;
 
-        let http = http::Client::new(client, self.clone(), rest_url);
+        let rest_client_no_auth =
+            rest::Client::new(http_client.clone(), self.clone(), rest_url.clone());
 
-        Ok(rest::Rest::new(http, self.clone()))
+        let auth = auth::Auth::new(rest_client_no_auth, self.clone());
+
+        let rest_client_with_auth =
+            rest::Client::new_with_auth(http_client, self.clone(), rest_url.clone(), auth.clone());
+
+        Ok(rest::Rest::new(auth, rest_client_with_auth, self.clone()))
     }
 }
 

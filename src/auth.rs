@@ -3,9 +3,9 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::error::ErrorInfo;
-use crate::http;
 use crate::options::ClientOptions;
 use crate::Result;
+use crate::{http, rest};
 use chrono::prelude::*;
 use hmac::{Hmac, Mac, NewMac};
 use rand::distributions::Alphanumeric;
@@ -54,12 +54,12 @@ impl TokenProvider for Key {
 /// Provides functions relating to Ably API authentication.
 #[derive(Clone, Debug)]
 pub struct Auth {
-    client: http::Client,
+    client: rest::Client,
     opts:   ClientOptions,
 }
 
 impl Auth {
-    pub fn new(client: http::Client, opts: ClientOptions) -> Self {
+    pub fn new(client: rest::Client, opts: ClientOptions) -> Self {
         Self { client, opts }
     }
 
@@ -91,6 +91,37 @@ impl Auth {
         }
 
         builder
+    }
+
+    pub async fn with_auth_headers(&self, req: &mut reqwest::Request) -> Result<()> {
+        if let Some(ref key) = self.opts.key {
+            let encoded = base64::encode(format!("{}:{}", key.name, key.value));
+            Self::set_header(
+                req,
+                reqwest::header::AUTHORIZATION,
+                format!("Basic {}", encoded),
+            )
+        } else if let Some(Token::Literal(ref token)) = self.opts.token {
+            Self::set_header(
+                req,
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {}", token),
+            )
+        } else if let Some(ref url) = self.opts.auth_url {
+            let res = self.request_token().auth_url(url.clone()).send().await?;
+            Self::set_header(
+                req,
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {}", res.token),
+            )
+        } else {
+            Ok(())
+        }
+    }
+
+    fn set_header(req: &mut reqwest::Request, key: http::HeaderName, value: String) -> Result<()> {
+        req.headers_mut().append(key, value.parse()?);
+        Ok(())
     }
 
     /// Generate a random 16 character nonce to use in a TokenRequest.
@@ -200,13 +231,13 @@ impl CreateTokenRequestBuilder {
 
 /// A builder to request a token.
 pub struct RequestTokenBuilder {
-    client:   http::Client,
+    client:   rest::Client,
     provider: Option<Box<dyn TokenProvider>>,
     params:   TokenParams,
 }
 
 impl RequestTokenBuilder {
-    fn new(client: http::Client) -> Self {
+    fn new(client: rest::Client) -> Self {
         Self {
             client,
             provider: None,
@@ -272,30 +303,35 @@ impl RequestTokenBuilder {
     /// Exchange a TokenRequest for a token by making a HTTP request to the
     /// [requestToken endpoint] in the Ably REST API.
     ///
+    /// Returns a boxed future rather than using async since this is both
+    /// called from and calls out to RequestBuilder.send, and recursive
+    /// async functions are not supported.
+    ///
     /// [requestToken endpoint]: https://docs.ably.io/rest-api/#request-token
-    async fn exchange(&self, req: &TokenRequest) -> Result<TokenDetails> {
-        self.client
+    fn exchange(
+        &self,
+        req: &TokenRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<TokenDetails>> + Send>> {
+        let req = self
+            .client
             .request(
                 http::Method::POST,
                 format!("/keys/{}/requestToken", req.key_name),
             )
-            .body(req)
-            .send()
-            .await?
-            .body()
-            .await
-            .map_err(Into::into)
+            .body(req);
+
+        Box::pin(async move { req.send().await?.body().await.map_err(Into::into) })
     }
 }
 
 /// A TokenProvider which requests tokens from a URL.
 pub struct UrlTokenProvider {
-    client: http::Client,
+    client: rest::Client,
     url:    reqwest::Url,
 }
 
 impl UrlTokenProvider {
-    fn new(client: http::Client, url: reqwest::Url) -> Self {
+    fn new(client: rest::Client, url: reqwest::Url) -> Self {
         Self { client, url }
     }
 
@@ -434,7 +470,7 @@ pub type TokenProviderFuture<'a> = Pin<Box<dyn Future<Output = Result<Token>> + 
 
 /// A TokenProvider is used to provide a Token during a call to
 /// auth::request_token.
-pub trait TokenProvider {
+pub trait TokenProvider: Send + Sync {
     fn provide_token<'a>(&'a self, params: TokenParams) -> TokenProviderFuture<'a>;
 }
 

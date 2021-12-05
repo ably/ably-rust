@@ -129,9 +129,7 @@ mod tests {
         }
 
         fn options(&self) -> ClientOptions {
-            ClientOptions::new()
-                .key(self.key())
-                .environment("sandbox")
+            ClientOptions::new().key(self.key()).environment("sandbox")
         }
 
         fn key(&self) -> auth::Key {
@@ -815,6 +813,36 @@ mod tests {
             .client()?;
 
         client.time().await.expect("Expected fallback response");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rest_with_auth_url() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+
+        // Generate an authUrl.
+        let key = app.key();
+        let auth_url = Url::parse_with_params(
+            "https://echo.ably.io/createJWT",
+            &[("keyName", key.name), ("keySecret", key.value)],
+        )
+        .unwrap();
+
+        // Configure a client with an authUrl.
+        let client = ClientOptions::new()
+            .auth_url(auth_url)
+            .environment("sandbox")
+            .client()
+            .expect("Expected client to initialise");
+
+        // Check a REST request succeeds.
+        client
+            .stats()
+            .send()
+            .await
+            .expect("Expected REST request to succeed");
 
         Ok(())
     }
