@@ -319,6 +319,14 @@ impl RequestTokenBuilder {
             Token::Literal(token) => Ok(TokenDetails::from(token)),
             Token::Details(details) => Ok(details),
         }
+        .map_err(|mut err| {
+            // Normalise auth error according to RSA4e.
+            if err.code == 40000 {
+                err.code = 40170;
+                err.status_code = Some(401);
+            }
+            err
+        })
     }
 
     /// Exchange a TokenRequest for a token by making a HTTP request to the
