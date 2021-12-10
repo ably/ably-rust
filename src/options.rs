@@ -19,7 +19,7 @@ pub struct ClientOptions {
     /// A callback which is called to obtain an Ably authentication token,
     /// either as a string literal, a TokenDetails object, or a TokenRequest
     /// object.
-    // pub auth_callback: Option<auth::AuthCallback>,
+    pub(crate) auth_callback: Option<Box<dyn auth::AuthCallback>>,
 
     /// A URL to request an Ably authentication token from, either as a string
     /// literal, a TokenDetails object, or a TokenRequest object.
@@ -207,6 +207,11 @@ impl ClientOptions {
         self
     }
 
+    pub fn auth_callback(mut self, callback: impl auth::AuthCallback + 'static) -> Self {
+        self.auth_callback = Some(Box::new(callback));
+        self
+    }
+
     pub fn auth_url(mut self, url: reqwest::Url) -> Self {
         self.auth_url = Some(url);
         self
@@ -336,8 +341,15 @@ impl ClientOptions {
             return Err(err.clone());
         }
 
-        if self.key.is_none() && self.token.is_none() && self.auth_url.is_none() {
-            return Err(error!(40106, "must provide either an API key, a token, or authUrl"));
+        if self.key.is_none()
+            && self.token.is_none()
+            && self.auth_url.is_none()
+            && self.auth_callback.is_none()
+        {
+            return Err(error!(
+                40106,
+                "must provide either an API key, a token, authUrl, or authCallback"
+            ));
         }
 
         let rest_url = if self.tls {
@@ -377,6 +389,7 @@ impl Default for ClientOptions {
         Self {
             key: None,
             token: None,
+            auth_callback: None,
             auth_url: None,
             auth_method: http::Method::GET,
             tls: true,

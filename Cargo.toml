@@ -11,6 +11,7 @@ atty = { version = "*" }
 base64 = { version = "*" }
 block-modes = { version = "*" }
 chrono = { version = "*", features = ["serde"] }
+dyn-clone = { version = "*" }
 futures = { version = "*" }
 hmac = { version = "*" }
 lazy_static = { version = "*" }

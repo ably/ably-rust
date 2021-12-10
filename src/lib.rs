@@ -74,7 +74,7 @@ mod tests {
     }
 
     /// A test app in the Ably Sandbox environment.
-    #[derive(Deserialize)]
+    #[derive(Clone, Debug, Deserialize)]
     struct TestApp {
         keys: Vec<auth::Key>,
     }
@@ -143,8 +143,8 @@ mod tests {
         }
     }
 
-    impl auth::TokenProvider for TestApp {
-        fn provide_token<'a>(&'a self, params: auth::TokenParams) -> auth::TokenProviderFuture<'a> {
+    impl auth::AuthCallback for TestApp {
+        fn token<'a>(&'a self, params: auth::TokenParams) -> auth::TokenFuture<'a> {
             Box::pin(self.token_request(params))
         }
     }
@@ -466,8 +466,13 @@ mod tests {
         let app = TestApp::create().await?;
         let client = app.client();
 
-        // Request a token with a custom provider.
-        let token = client.auth.request_token().provider(app).send().await?;
+        // Request a token with a custom authCallback.
+        let token = client
+            .auth
+            .request_token()
+            .auth_callback(app)
+            .send()
+            .await?;
 
         // Check the token details.
         assert!(token.token.len() > 0, "Expected token to be set");
@@ -833,6 +838,28 @@ mod tests {
         // Configure a client with an authUrl.
         let client = ClientOptions::new()
             .auth_url(auth_url)
+            .environment("sandbox")
+            .client()
+            .expect("Expected client to initialise");
+
+        // Check a REST request succeeds.
+        client
+            .stats()
+            .send()
+            .await
+            .expect("Expected REST request to succeed");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rest_with_auth_callback() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+
+        // Configure a client with the test app as the authCallback.
+        let client = ClientOptions::new()
+            .auth_callback(app)
             .environment("sandbox")
             .client()
             .expect("Expected client to initialise");

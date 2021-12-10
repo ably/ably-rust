@@ -7,6 +7,7 @@ use crate::options::ClientOptions;
 use crate::Result;
 use crate::{http, rest};
 use chrono::prelude::*;
+use dyn_clone::DynClone;
 use hmac::{Hmac, Mac, NewMac};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
@@ -45,8 +46,8 @@ impl Key {
     }
 }
 
-impl TokenProvider for Key {
-    fn provide_token<'a>(&'a self, params: TokenParams) -> TokenProviderFuture<'a> {
+impl AuthCallback for Key {
+    fn token<'a>(&'a self, params: TokenParams) -> TokenFuture<'a> {
         Box::pin(self.sign(params))
     }
 }
@@ -118,6 +119,17 @@ impl Auth {
             )
         } else if let Some(ref url) = self.opts.auth_url {
             let res = self.request_token().auth_url(url.clone()).send().await?;
+            Self::set_header(
+                req,
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {}", res.token),
+            )
+        } else if let Some(ref callback) = self.opts.auth_callback {
+            let res = self
+                .request_token()
+                .auth_callback(callback.clone())
+                .send()
+                .await?;
             Self::set_header(
                 req,
                 reqwest::header::AUTHORIZATION,
@@ -241,7 +253,7 @@ impl CreateTokenRequestBuilder {
 /// A builder to request a token.
 pub struct RequestTokenBuilder {
     client:   rest::Client,
-    provider: Option<Box<dyn TokenProvider>>,
+    callback: Option<Box<dyn AuthCallback>>,
     params:   TokenParams,
 }
 
@@ -249,25 +261,25 @@ impl RequestTokenBuilder {
     fn new(client: rest::Client) -> Self {
         Self {
             client,
-            provider: None,
+            callback: None,
             params: TokenParams::default(),
         }
     }
 
-    /// Use a key as the TokenProvider.
+    /// Use a key as the AuthCallback.
     pub fn key(self, key: Key) -> Self {
-        self.provider(key)
+        self.auth_callback(key)
     }
 
-    /// Use a URL as the TokenProvider.
+    /// Use a URL as the AuthCallback.
     pub fn auth_url(self, url: reqwest::Url) -> Self {
-        let provider = UrlTokenProvider::new(self.client.clone(), url);
-        self.provider(provider)
+        let callback = UrlAuthCallback::new(self.client.clone(), url);
+        self.auth_callback(callback)
     }
 
-    /// Use a custom TokenProvider.
-    pub fn provider(mut self, provider: impl TokenProvider + 'static) -> Self {
-        self.provider = Some(Box::new(provider));
+    /// Use a custom AuthCallback.
+    pub fn auth_callback(mut self, callback: impl AuthCallback + 'static) -> Self {
+        self.callback = Some(Box::new(callback));
         self
     }
 
@@ -289,20 +301,20 @@ impl RequestTokenBuilder {
         self
     }
 
-    /// Request a response from the configured TokenProvider.
+    /// Request a response from the configured AuthCallback.
     ///
     /// If the response is a TokenRequest, exchange it for a token.
     pub async fn send(self) -> Result<TokenDetails> {
-        let provider = self
-            .provider
+        let callback = self
+            .callback
             .as_ref()
             .ok_or(error!(40171, "no means provided to renew auth token"))?;
 
-        // The provider may either:
+        // The callback may either:
         // - return a TokenRequest which we'll exchange for a TokenDetails
         // - return a token string which we'll wrap in a TokenDetails
         // - return a TokenDetails which we'll just return as is
-        match provider.provide_token(self.params.clone()).await? {
+        match callback.token(self.params.clone()).await? {
             Token::Request(req) => self.exchange(&req).await,
             Token::Literal(token) => Ok(TokenDetails::from(token)),
             Token::Details(details) => Ok(details),
@@ -333,13 +345,14 @@ impl RequestTokenBuilder {
     }
 }
 
-/// A TokenProvider which requests tokens from a URL.
-pub struct UrlTokenProvider {
+/// An AuthCallback which requests tokens from a URL.
+#[derive(Clone, Debug)]
+pub struct UrlAuthCallback {
     client: rest::Client,
     url:    reqwest::Url,
 }
 
-impl UrlTokenProvider {
+impl UrlAuthCallback {
     fn new(client: rest::Client, url: reqwest::Url) -> Self {
         Self { client, url }
     }
@@ -377,8 +390,8 @@ impl UrlTokenProvider {
     }
 }
 
-impl TokenProvider for UrlTokenProvider {
-    fn provide_token<'a>(&'a self, params: TokenParams) -> TokenProviderFuture<'a> {
+impl AuthCallback for UrlAuthCallback {
+    fn token<'a>(&'a self, params: TokenParams) -> TokenFuture<'a> {
         Box::pin(self.request(params))
     }
 }
@@ -474,16 +487,24 @@ impl From<String> for TokenDetails {
     }
 }
 
-/// A future returned from a TokenProvider which resolves to a Token.
-pub type TokenProviderFuture<'a> = Pin<Box<dyn Future<Output = Result<Token>> + Send + 'a>>;
+/// A future returned from an AuthCallback which resolves to a Token.
+pub type TokenFuture<'a> = Pin<Box<dyn Future<Output = Result<Token>> + Send + 'a>>;
 
-/// A TokenProvider is used to provide a Token during a call to
+/// An AuthCallback is used to provide a Token during a call to
 /// auth::request_token.
-pub trait TokenProvider: Send + Sync {
-    fn provide_token<'a>(&'a self, params: TokenParams) -> TokenProviderFuture<'a>;
+pub trait AuthCallback: DynClone + std::fmt::Debug + Send + Sync {
+    fn token<'a>(&'a self, params: TokenParams) -> TokenFuture<'a>;
 }
 
-/// A response from requesting a token from a TokenProvider.
+dyn_clone::clone_trait_object!(AuthCallback);
+
+impl AuthCallback for Box<dyn AuthCallback> {
+    fn token<'a>(&'a self, params: TokenParams) -> TokenFuture<'a> {
+        (**self).token(params)
+    }
+}
+
+/// A response from requesting a token from an AuthCallback.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
 pub enum Token {
