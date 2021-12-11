@@ -10,7 +10,7 @@ macro_rules! error {
         ErrorInfo::new($code, $message, None)
     };
     ($code:expr, $message:expr, $status_code:expr) => {
-        ErrorInfo::new($code, $message, $status_code)
+        ErrorInfo::new($code, $message, Some($status_code))
     };
 }
 
@@ -70,9 +70,9 @@ impl From<reqwest::Error> for ErrorInfo {
             Some(s) => error!(
                 s.as_u16() as u32 * 100,
                 format!("Unexpected HTTP status: {}", s),
-                Some(s.as_u16() as u32)
+                s.as_u16() as u32
             ),
-            None => error!(40000, format!("Unexpected HTTP error: {}", err), None),
+            None => error!(40000, format!("Unexpected HTTP error: {}", err)),
         }
     }
 }

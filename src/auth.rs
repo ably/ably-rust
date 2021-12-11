@@ -14,6 +14,8 @@ use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
+const MAX_TOKEN_LENGTH: usize = 128 * 1024;
+
 /// An API Key used to authenticate with the REST API using HTTP Basic Auth.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Key {
@@ -310,23 +312,39 @@ impl RequestTokenBuilder {
             .as_ref()
             .ok_or(error!(40171, "no means provided to renew auth token"))?;
 
-        // The callback may either:
-        // - return a TokenRequest which we'll exchange for a TokenDetails
-        // - return a token string which we'll wrap in a TokenDetails
-        // - return a TokenDetails which we'll just return as is
-        match callback.token(self.params.clone()).await? {
-            Token::Request(req) => self.exchange(&req).await,
-            Token::Literal(token) => Ok(TokenDetails::from(token)),
-            Token::Details(details) => Ok(details),
-        }
-        .map_err(|mut err| {
-            // Normalise auth error according to RSA4e.
-            if err.code == 40000 {
-                err.code = 40170;
-                err.status_code = Some(401);
+        let details = match callback.token(self.params.clone()).await {
+            // The callback may either:
+            // - return a TokenRequest which we'll exchange for a TokenDetails
+            // - return a token string which we'll wrap in a TokenDetails
+            // - return a TokenDetails which we'll just return as is
+            Ok(token) => match token {
+                Token::Request(req) => self.exchange(&req).await?,
+                Token::Literal(token) => TokenDetails::from(token),
+                Token::Details(details) => details,
+            },
+            Err(mut err) => {
+                // Normalise auth error according to RSA4e.
+                if err.code == 40000 {
+                    err.code = 40170;
+                    err.status_code = Some(401);
+                }
+                return Err(err);
             }
-            err
-        })
+        };
+
+        // Reject tokens with size greater than 128KiB (RSA4f).
+        if details.token.len() > MAX_TOKEN_LENGTH {
+            return Err(error!(
+                40170,
+                format!(
+                    "Token string exceeded max permitted length (was {} bytes)",
+                    details.token.len()
+                ),
+                401
+            ));
+        }
+
+        Ok(details)
     }
 
     /// Exchange a TokenRequest for a token by making a HTTP request to the

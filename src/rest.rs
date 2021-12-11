@@ -287,13 +287,7 @@ impl Client {
             .json::<WrappedError>()
             .await
             .map(|e| e.error)
-            .unwrap_or_else(|err| {
-                error!(
-                    50000,
-                    format!("Unexpected error: {}", err),
-                    Some(status_code)
-                )
-            }))
+            .unwrap_or_else(|err| error!(50000, format!("Unexpected error: {}", err), status_code)))
     }
 
     /// Return whether a request can be retried based on the error which
