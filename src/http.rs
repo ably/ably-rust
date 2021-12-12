@@ -16,6 +16,8 @@ use lazy_static::lazy_static;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+pub type UrlQuery = Box<[(String, String)]>;
+
 /// A builder to construct a HTTP request to the [Ably REST API].
 ///
 /// [Ably REST API]: https://ably.com/documentation/rest-api

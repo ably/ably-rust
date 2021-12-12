@@ -30,12 +30,12 @@ pub struct ClientOptions {
     pub(crate) auth_method: http::Method,
 
     /// The HTTP headers to include when requesting a token from auth_url.
-    // pub auth_headers: Option<reqwest::Headers>,
+    pub(crate) auth_headers: Option<http::HeaderMap>,
 
     /// The HTTP params to use when requesting a token from auth_url, which are
     /// included in the query string when auth_method is GET, or in the
     /// form-encoded body when auth_method is POST.
-    // pub auth_params: Option<Params>,
+    pub(crate) auth_params: Option<http::UrlQuery>,
 
     /// Use TLS for all connections. Defaults to true.
     pub(crate) tls: bool,
@@ -392,6 +392,8 @@ impl Default for ClientOptions {
             auth_callback: None,
             auth_url: None,
             auth_method: http::Method::GET,
+            auth_headers: None,
+            auth_params: None,
             tls: true,
             client_id: None,
             use_token_auth: false,

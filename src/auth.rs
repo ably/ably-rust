@@ -120,7 +120,13 @@ impl Auth {
                 format!("Bearer {}", token),
             )
         } else if let Some(ref url) = self.opts.auth_url {
-            let res = self.request_token().auth_url(url.clone()).send().await?;
+            let auth_url = AuthUrl {
+                url:     url.clone(),
+                method:  self.opts.auth_method.clone(),
+                headers: self.opts.auth_headers.clone(),
+                params:  self.opts.auth_params.clone(),
+            };
+            let res = self.request_token().auth_url(auth_url).send().await?;
             Self::set_header(
                 req,
                 reqwest::header::AUTHORIZATION,
@@ -280,8 +286,8 @@ impl RequestTokenBuilder {
     }
 
     /// Use a URL as the AuthCallback.
-    pub fn auth_url(self, url: reqwest::Url) -> Self {
-        let callback = UrlAuthCallback::new(self.client.clone(), url);
+    pub fn auth_url(self, url: impl Into<AuthUrl>) -> Self {
+        let callback = AuthUrlCallback::new(self.client.clone(), url.into());
         self.auth_callback(callback)
     }
 
@@ -385,23 +391,19 @@ impl RequestTokenBuilder {
 
 /// An AuthCallback which requests tokens from a URL.
 #[derive(Clone, Debug)]
-pub struct UrlAuthCallback {
+pub struct AuthUrlCallback {
     client: rest::Client,
-    url:    reqwest::Url,
+    url:    AuthUrl,
 }
 
-impl UrlAuthCallback {
-    fn new(client: rest::Client, url: reqwest::Url) -> Self {
+impl AuthUrlCallback {
+    fn new(client: rest::Client, url: AuthUrl) -> Self {
         Self { client, url }
     }
 
     /// Request a token from the URL.
     async fn request(&self, _params: TokenParams) -> Result<Token> {
-        let res = self
-            .client
-            .request_url(http::Method::GET, self.url.clone())
-            .send()
-            .await?;
+        let res = self.url.request(&self.client).send().await?;
 
         // Parse the token response based on the Content-Type header.
         let content_type = res.content_type().ok_or(error!(
@@ -428,9 +430,44 @@ impl UrlAuthCallback {
     }
 }
 
-impl AuthCallback for UrlAuthCallback {
+impl AuthCallback for AuthUrlCallback {
     fn token<'a>(&'a self, params: TokenParams) -> TokenFuture<'a> {
         Box::pin(self.request(params))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AuthUrl {
+    pub url:     reqwest::Url,
+    pub method:  http::Method,
+    pub headers: Option<http::HeaderMap>,
+    pub params:  Option<http::UrlQuery>,
+}
+
+impl AuthUrl {
+    fn request(&self, client: &rest::Client) -> http::RequestBuilder {
+        let mut req = client.request_url(self.method.clone(), self.url.clone());
+
+        if let Some(ref headers) = self.headers {
+            req = req.headers(headers.clone());
+        }
+
+        if let Some(ref params) = self.params {
+            req = req.params(params);
+        }
+
+        req
+    }
+}
+
+impl From<reqwest::Url> for AuthUrl {
+    fn from(url: reqwest::Url) -> Self {
+        Self {
+            url,
+            method: http::Method::GET,
+            headers: None,
+            params: None,
+        }
     }
 }
 
