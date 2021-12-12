@@ -242,6 +242,12 @@ impl CreateTokenRequestBuilder {
         self
     }
 
+    /// Set the timestamp.
+    pub fn timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
+        self.params.timestamp = Some(timestamp);
+        self
+    }
+
     /// Sign and return the TokenRequest.
     pub fn sign(self) -> Result<TokenRequest> {
         let key = self.key.as_ref().ok_or(error!(
@@ -300,6 +306,12 @@ impl RequestTokenBuilder {
     /// Set the desired TTL.
     pub fn ttl(mut self, ttl: i64) -> Self {
         self.params.ttl = Some(ttl);
+        self
+    }
+
+    /// Set the timestamp.
+    pub fn timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
+        self.params.timestamp = Some(timestamp);
         self
     }
 
