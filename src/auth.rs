@@ -89,6 +89,10 @@ impl Auth {
             builder = builder.key(key.clone());
         }
 
+        if let Some(params) = &self.opts.default_token_params {
+            builder = builder.params(params.clone());
+        }
+
         if let Some(client_id) = &self.opts.client_id {
             builder = builder.client_id(client_id);
         }
@@ -294,6 +298,12 @@ impl RequestTokenBuilder {
     /// Use a custom AuthCallback.
     pub fn auth_callback(mut self, callback: impl AuthCallback + 'static) -> Self {
         self.callback = Some(Box::new(callback));
+        self
+    }
+
+    /// Set the TokenParams.
+    pub fn params(mut self, params: TokenParams) -> Self {
+        self.params = params;
         self
     }
 

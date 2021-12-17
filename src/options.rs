@@ -68,7 +68,7 @@ pub struct ClientOptions {
     pub(crate) query_time: bool,
 
     /// Override the default parameters used to request Ably tokens.
-    // pub default_token_params: Option<auth::TokenParams>,
+    pub(crate) default_token_params: Option<auth::TokenParams>,
 
     /// Automatically connect when the Realtime library is instantiated.
     /// Defaults to true.
@@ -275,6 +275,12 @@ impl ClientOptions {
         self
     }
 
+    /// Set the default TokenParams.
+    pub fn default_token_params(mut self, params: auth::TokenParams) -> Self {
+        self.default_token_params = Some(params);
+        self
+    }
+
     /// Sets the rest_host. See [TO3k2].
     ///
     /// # Example
@@ -408,6 +414,7 @@ impl Default for ClientOptions {
             ]),
             use_binary_protocol: true,
             query_time: false,
+            default_token_params: None,
             auto_connect: true,
             rest_host: "rest.ably.io".to_string(),
             realtime_host: "realtime.ably.io".to_string(),
