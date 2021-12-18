@@ -85,8 +85,19 @@ impl Auth {
     pub fn request_token(&self) -> RequestTokenBuilder {
         let mut builder = RequestTokenBuilder::new(self.client.clone());
 
-        if let Some(key) = &self.opts.key {
+        if let Some(ref callback) = self.opts.auth_callback {
+            builder = builder.auth_callback(callback.clone());
+        } else if let Some(ref url) = self.opts.auth_url {
+            builder = builder.auth_url(AuthUrl {
+                url:     url.clone(),
+                method:  self.opts.auth_method.clone(),
+                headers: self.opts.auth_headers.clone(),
+                params:  self.opts.auth_params.clone(),
+            });
+        } else if let Some(key) = &self.opts.key {
             builder = builder.key(key.clone());
+        } else if let Some(ref token) = self.opts.token {
+            builder = builder.token(token.clone());
         }
 
         if let Some(params) = &self.opts.default_token_params {
@@ -102,54 +113,30 @@ impl Auth {
 
     pub async fn with_auth_headers(&self, req: &mut reqwest::Request) -> Result<()> {
         if let Some(ref key) = self.opts.key {
-            if self.opts.use_token_auth {
-                let res = self.request_token().key(key.clone()).send().await?;
-                Self::set_header(
-                    req,
-                    reqwest::header::AUTHORIZATION,
-                    format!("Bearer {}", res.token),
-                )
-            } else {
-                let encoded = base64::encode(format!("{}:{}", key.name, key.value));
-                Self::set_header(
-                    req,
-                    reqwest::header::AUTHORIZATION,
-                    format!("Basic {}", encoded),
-                )
+            if !self.opts.use_token_auth {
+                return Self::set_basic_auth(req, key);
             }
-        } else if let Some(Token::Literal(ref token)) = self.opts.token {
-            Self::set_header(
-                req,
-                reqwest::header::AUTHORIZATION,
-                format!("Bearer {}", token),
-            )
-        } else if let Some(ref url) = self.opts.auth_url {
-            let auth_url = AuthUrl {
-                url:     url.clone(),
-                method:  self.opts.auth_method.clone(),
-                headers: self.opts.auth_headers.clone(),
-                params:  self.opts.auth_params.clone(),
-            };
-            let res = self.request_token().auth_url(auth_url).send().await?;
-            Self::set_header(
-                req,
-                reqwest::header::AUTHORIZATION,
-                format!("Bearer {}", res.token),
-            )
-        } else if let Some(ref callback) = self.opts.auth_callback {
-            let res = self
-                .request_token()
-                .auth_callback(callback.clone())
-                .send()
-                .await?;
-            Self::set_header(
-                req,
-                reqwest::header::AUTHORIZATION,
-                format!("Bearer {}", res.token),
-            )
-        } else {
-            Ok(())
         }
+
+        let res = self.request_token().send().await?;
+        Self::set_bearer_auth(req, &res.token)
+    }
+
+    fn set_bearer_auth(req: &mut reqwest::Request, token: &str) -> Result<()> {
+        Self::set_header(
+            req,
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", token),
+        )
+    }
+
+    fn set_basic_auth(req: &mut reqwest::Request, key: &Key) -> Result<()> {
+        let encoded = base64::encode(format!("{}:{}", key.name, key.value));
+        Self::set_header(
+            req,
+            reqwest::header::AUTHORIZATION,
+            format!("Basic {}", encoded),
+        )
     }
 
     fn set_header(req: &mut reqwest::Request, key: http::HeaderName, value: String) -> Result<()> {
@@ -287,6 +274,11 @@ impl RequestTokenBuilder {
     /// Use a key as the AuthCallback.
     pub fn key(self, key: Key) -> Self {
         self.auth_callback(key)
+    }
+
+    /// Use a token as the AuthCallback.
+    pub fn token(self, token: Token) -> Self {
+        self.auth_callback(token)
     }
 
     /// Use a URL as the AuthCallback.
@@ -613,5 +605,12 @@ impl From<TokenDetails> for Token {
 impl<T: Into<String>> From<T> for Token {
     fn from(s: T) -> Self {
         Self::Literal(s.into())
+    }
+}
+
+impl AuthCallback for Token {
+    fn token<'a>(&'a self, _: TokenParams) -> TokenFuture<'a> {
+        let token = self.clone();
+        Box::pin(async move { Ok(token) })
     }
 }
