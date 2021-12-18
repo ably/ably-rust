@@ -28,11 +28,11 @@ pub struct RequestBuilder {
 }
 
 impl RequestBuilder {
-    pub fn new(client: rest::Client, inner: reqwest::RequestBuilder) -> Self {
+    pub fn new(client: rest::Client, inner: reqwest::RequestBuilder, format: rest::Format) -> Self {
         Self {
             client,
             inner: Ok(inner),
-            format: rest::DEFAULT_FORMAT,
+            format,
         }
     }
 

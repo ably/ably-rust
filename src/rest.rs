@@ -202,7 +202,11 @@ impl Client {
         method: http::Method,
         url: impl reqwest::IntoUrl,
     ) -> http::RequestBuilder {
-        http::RequestBuilder::new(self.clone(), self.inner.request(method, url))
+        http::RequestBuilder::new(
+            self.clone(),
+            self.inner.request(method, url),
+            self.opts.format.clone(),
+        )
     }
 
     pub fn paginated_request<T: http::PaginatedItem, U: http::PaginatedItemHandler<T>>(

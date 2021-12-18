@@ -62,6 +62,7 @@ pub struct ClientOptions {
     /// Encode requests using the binary msgpack encoding (true), or the JSON
     /// encoding (false). Defaults to true.
     pub(crate) use_binary_protocol: bool,
+    pub(crate) format:              rest::Format,
 
     /// Query the Ably system for the current time when issuing tokens.
     /// Defaults to false.
@@ -272,6 +273,11 @@ impl ClientOptions {
     /// if the argument is false.
     pub fn use_binary_protocol(mut self, v: bool) -> Self {
         self.use_binary_protocol = v;
+        self.format = if v {
+            rest::Format::MessagePack
+        } else {
+            rest::Format::JSON
+        };
         self
     }
 
@@ -413,6 +419,7 @@ impl Default for ClientOptions {
                 "e.ably-realtime.com".to_string(),
             ]),
             use_binary_protocol: true,
+            format: rest::Format::MessagePack,
             query_time: false,
             default_token_params: None,
             auto_connect: true,
