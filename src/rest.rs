@@ -477,16 +477,19 @@ impl Presence {
 }
 
 pub struct PublishBuilder {
-    client:  Client,
-    channel: String,
-    msg:     Result<Message>,
+    req: http::RequestBuilder,
+    msg: Result<Message>,
 }
 
 impl PublishBuilder {
     fn new(client: Client, channel: String) -> Self {
+        let req = client.request(
+            http::Method::POST,
+            format!("/channels/{}/messages", channel),
+        );
+
         Self {
-            client,
-            channel,
+            req,
             msg: Ok(Message::default()),
         }
     }
@@ -545,18 +548,15 @@ impl PublishBuilder {
         self
     }
 
+    pub fn params<T: Serialize + ?Sized>(mut self, params: &T) -> Self {
+        self.req = self.req.params(params);
+        self
+    }
+
     pub async fn send(self) -> Result<()> {
         let msg = self.msg?;
 
-        self.client
-            .request(
-                http::Method::POST,
-                format!("/channels/{}/messages", self.channel),
-            )
-            .body(&msg)
-            .send()
-            .await
-            .map(|_| ())
+        self.req.body(&msg).send().await.map(|_| ())
     }
 }
 

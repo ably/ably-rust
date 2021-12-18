@@ -609,6 +609,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn channel_publish_params() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        // Publish a message with params '_forceNack=true' which should
+        // result in the publish being rejected with a 40099 error code
+        let channel = client.channels.get("test_channel_publish_params");
+        let data = "a string";
+        let err = channel
+            .publish()
+            .name("name")
+            .string(data)
+            .params(&[("_forceNack", "true")])
+            .send()
+            .await
+            .expect_err("Expected realtime to reject the publish with _forceNack=true");
+        assert_eq!(err.code, 40099);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn channel_presence_get() -> Result<()> {
         // Create a test app.
         let app = TestApp::create().await?;
