@@ -534,6 +534,13 @@ impl PublishBuilder {
         self
     }
 
+    pub fn extras(mut self, extras: json::Map) -> Self {
+        if let Ok(msg) = self.msg.as_mut() {
+            msg.extras = Some(extras);
+        }
+        self
+    }
+
     pub async fn send(self) -> Result<()> {
         let msg = self.msg?;
 
@@ -618,13 +625,19 @@ impl From<serde_json::Value> for Data {
 #[derive(Default, Deserialize, Serialize)]
 pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub id:       Option<String>,
+    pub id:            Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub name:     Option<String>,
+    pub name:          Option<String>,
     #[serde(skip_serializing_if = "Data::is_none")]
-    pub data:     Data,
+    pub data:          Data,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub encoding: Option<String>,
+    pub encoding:      Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id:     Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extras:        Option<json::Map>,
 }
 
 impl Message {

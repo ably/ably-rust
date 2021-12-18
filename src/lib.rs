@@ -581,6 +581,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn channel_publish_extras() -> Result<()> {
+        // Create a test app.
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        // Publish a message with extras.
+        let channel = client.channels.get("test_channel_publish_extras");
+        let data = "a string";
+        let mut extras = json::Map::new();
+        extras.insert("headers".to_string(), json!({"some":"metadata"}));
+        channel
+            .publish()
+            .name("name")
+            .string(data)
+            .extras(extras.clone())
+            .send()
+            .await?;
+
+        // Retrieve the message from history.
+        let res = channel.history().send().await?;
+        let mut history = res.items().await?;
+        let message = history.pop().expect("Expected a history message");
+        assert_eq!(message.extras, Some(extras));
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn channel_presence_get() -> Result<()> {
         // Create a test app.
         let app = TestApp::create().await?;
