@@ -28,20 +28,22 @@ pub type Result<T> = std::result::Result<T, ErrorInfo>;
 
 #[cfg(test)]
 mod tests {
-    use super::http::Method;
-    use super::options::ClientOptions;
-    use super::rest::{Data, Rest};
-    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use std::convert::TryFrom;
+    use std::fs;
+    use std::iter::FromIterator;
+
     use chrono::prelude::*;
     use chrono::Duration;
     use futures::TryStreamExt;
     use reqwest::Url;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
-    use std::collections::{HashMap, HashSet};
-    use std::convert::TryFrom;
-    use std::fs;
-    use std::iter::FromIterator;
+
+    use super::*;
+    use crate::http::Method;
+    use crate::options::ClientOptions;
+    use crate::rest::{Data, Rest};
 
     #[test]
     fn rest_client_from_string_with_colon_sets_key() {

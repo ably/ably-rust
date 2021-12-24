@@ -1,20 +1,19 @@
-use super::error::ErrorInfo;
-use super::rest;
-use super::Result;
-use regex::Regex;
 pub use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 pub use reqwest::Method;
+
 use std::convert::TryFrom;
 use std::fmt::Display;
 use std::marker::PhantomData;
 
 use futures::future::FutureExt;
 use futures::stream::{self, Stream, StreamExt};
-
 use lazy_static::lazy_static;
-
+use regex::Regex;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+
+use crate::error::ErrorInfo;
+use crate::{rest, Result};
 
 pub type UrlQuery = Box<[(String, String)]>;
 

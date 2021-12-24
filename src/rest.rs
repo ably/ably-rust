@@ -1,6 +1,4 @@
-use crate::error::*;
-use crate::options::ClientOptions;
-use crate::{auth, base64, history, http, json, presence, stats, Result};
+use std::convert::TryFrom;
 
 use aes::{Aes128, Aes256};
 use block_modes::block_padding::Pkcs7;
@@ -12,7 +10,10 @@ use rand::thread_rng;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use std::convert::TryFrom;
+
+use crate::error::*;
+use crate::options::ClientOptions;
+use crate::{auth, base64, history, http, json, presence, stats, Result};
 
 /// A client for the [Ably REST API].
 ///

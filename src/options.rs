@@ -1,8 +1,8 @@
-use crate::error::*;
-use crate::{auth, http, rest, Result};
-
 use std::convert::{TryFrom, TryInto};
 use std::time::Duration;
+
+use crate::error::*;
+use crate::{auth, http, rest, Result};
 
 /// [Ably client options] for initialising a REST or Realtime client.
 ///

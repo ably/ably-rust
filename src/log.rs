@@ -1,10 +1,9 @@
-use crate::Result;
-
 pub use ::log::{debug, error, info, trace, warn};
 
 use atty::Stream;
-
 use simplelog::{ColorChoice, Config, LevelFilter, SimpleLogger, TermLogger, TerminalMode};
+
+use crate::Result;
 
 pub fn init() -> Result<()> {
     let res = if atty::is(Stream::Stdout) {

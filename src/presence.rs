@@ -1,5 +1,6 @@
-use crate::{http, rest, Result};
 use futures::stream::Stream;
+
+use crate::{http, rest, Result};
 
 pub type PaginatedRequestBuilder =
     http::PaginatedRequestBuilder<rest::PresenceMessage, rest::MessageItemHandler>;

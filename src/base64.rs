@@ -1,4 +1,5 @@
 pub use ::base64::{decode, encode};
+
 use serde::{Deserialize, Serialize};
 
 pub fn serialize<S: serde::Serializer>(v: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {

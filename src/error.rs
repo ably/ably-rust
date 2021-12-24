@@ -1,6 +1,7 @@
-use serde::Deserialize;
 use std::convert::Infallible;
 use std::fmt;
+
+use serde::Deserialize;
 
 /// Creates an [`ErrorInfo`] with the given code and message.
 ///

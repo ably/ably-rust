@@ -2,10 +2,6 @@ use std::convert::TryFrom;
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::error::ErrorInfo;
-use crate::options::ClientOptions;
-use crate::Result;
-use crate::{http, rest};
 use chrono::prelude::*;
 use dyn_clone::DynClone;
 use hmac::{Hmac, Mac, NewMac};
@@ -13,6 +9,10 @@ use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+
+use crate::error::ErrorInfo;
+use crate::options::ClientOptions;
+use crate::{http, rest, Result};
 
 const MAX_TOKEN_LENGTH: usize = 128 * 1024;
 
