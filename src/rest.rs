@@ -13,7 +13,7 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::error::*;
 use crate::options::ClientOptions;
-use crate::{auth, base64, history, http, json, presence, stats, Result};
+use crate::{auth, history, http, json, presence, stats, Result};
 
 /// A client for the [Ably REST API].
 ///
@@ -478,8 +478,9 @@ impl Presence {
 }
 
 pub struct PublishBuilder {
-    req: http::RequestBuilder,
-    msg: Result<Message>,
+    req:    http::RequestBuilder,
+    msg:    Result<Message>,
+    format: Format,
 }
 
 impl PublishBuilder {
@@ -492,6 +493,7 @@ impl PublishBuilder {
         Self {
             req,
             msg: Ok(Message::default()),
+            format: client.opts.format.clone(),
         }
     }
 
@@ -536,8 +538,15 @@ impl PublishBuilder {
 
     pub fn binary(mut self, data: Vec<u8>) -> Self {
         if let Ok(msg) = self.msg.as_mut() {
-            msg.data = data.into();
-            msg.encoding = Some(String::from("base64"));
+            match self.format {
+                Format::MessagePack => {
+                    msg.data = data.into();
+                }
+                Format::JSON => {
+                    msg.data = base64::encode(data).into();
+                    msg.encoding = Some(String::from("base64"));
+                }
+            }
         }
         self
     }
@@ -568,8 +577,7 @@ impl PublishBuilder {
 pub enum Data {
     String(String),
     JSON(serde_json::Value),
-    #[serde(with = "base64")]
-    Binary(Vec<u8>),
+    Binary(serde_bytes::ByteBuf),
     None,
 }
 
@@ -590,7 +598,7 @@ impl Serialize for Data {
         let s = match self {
             Self::String(s) => return s.serialize(serializer),
             Self::JSON(v) => serde_json::to_string(v).map_err(serde::ser::Error::custom)?,
-            Self::Binary(v) => base64::encode(v),
+            Self::Binary(v) => return v.serialize(serializer),
             Self::None => String::from(""),
         };
         s.serialize(serializer)
@@ -617,7 +625,13 @@ impl From<&str> for Data {
 
 impl From<Vec<u8>> for Data {
     fn from(v: Vec<u8>) -> Self {
-        Self::Binary(v)
+        Self::Binary(serde_bytes::ByteBuf::from(v))
+    }
+}
+
+impl From<&[u8]> for Data {
+    fn from(v: &[u8]) -> Self {
+        Self::Binary(serde_bytes::ByteBuf::from(v))
     }
 }
 
@@ -790,7 +804,7 @@ fn decrypt(data: &mut Vec<u8>, key: &CipherKey) -> Result<Data> {
             cipher.decrypt(&mut data[aes::BLOCK_SIZE..])?
         }
     };
-    Ok(Data::Binary(decrypted.to_vec()))
+    Ok(decrypted.to_vec().into())
 }
 
 #[derive(Clone, Debug, Deserialize_repr, PartialEq, Serialize_repr)]

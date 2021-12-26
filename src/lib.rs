@@ -9,7 +9,6 @@
 #[macro_use]
 pub mod error;
 pub mod auth;
-pub mod base64;
 pub mod history;
 pub mod http;
 pub mod json;
@@ -577,7 +576,7 @@ mod tests {
         let res = channel.history().send().await?;
         let mut history = res.items().await?;
         let message = history.pop().expect("Expected a history message");
-        assert_eq!(message.data, Data::Binary(vec![0x1, 0x2, 0x3, 0x4]));
+        assert_eq!(message.data, vec![0x1, 0x2, 0x3, 0x4].into());
 
         Ok(())
     }
@@ -644,10 +643,7 @@ mod tests {
         let res = channel.presence.get().send().await?;
         let presence = res.items().await?;
         assert_eq!(presence.len(), 3);
-        assert_eq!(
-            presence[0].data,
-            Data::Binary("some presence data".as_bytes().into())
-        );
+        assert_eq!(presence[0].data, "some presence data".as_bytes().into());
         assert_eq!(
             presence[1].data,
             Data::JSON(serde_json::json!({"some":"presence data"}))
@@ -671,10 +667,7 @@ mod tests {
         let res = channel.presence.history().send().await?;
         let presence = res.items().await?;
         assert_eq!(presence.len(), 3);
-        assert_eq!(
-            presence[0].data,
-            Data::Binary("some presence data".as_bytes().into())
-        );
+        assert_eq!(presence[0].data, "some presence data".as_bytes().into());
         assert_eq!(
             presence[1].data,
             Data::JSON(serde_json::json!({"some":"presence data"}))
