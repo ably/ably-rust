@@ -9,6 +9,7 @@
 #[macro_use]
 pub mod error;
 pub mod auth;
+pub mod crypto;
 pub mod history;
 pub mod http;
 pub mod json;
@@ -28,7 +29,7 @@ pub type Result<T> = std::result::Result<T, ErrorInfo>;
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
-    use std::convert::TryFrom;
+    use std::convert::TryInto;
     use std::fs;
     use std::iter::FromIterator;
 
@@ -42,7 +43,7 @@ mod tests {
     use super::*;
     use crate::http::Method;
     use crate::options::ClientOptions;
-    use crate::rest::{Data, Rest};
+    use crate::rest::{Data, Encoding, Rest};
 
     #[test]
     fn rest_client_from_string_with_colon_sets_key() {
@@ -807,7 +808,38 @@ mod tests {
     #[derive(Deserialize)]
     struct CryptoData {
         key:   String,
+        iv:    String,
         items: Vec<CryptoFixture>,
+    }
+
+    impl CryptoData {
+        fn load(name: &str) -> Self {
+            let path = format!("submodules/ably-common/test-resources/{}", name);
+            let file = fs::File::open(path).expect(format!("Expected {} to open", name).as_str());
+            serde_json::from_reader(file).expect(format!("Expected JSON data in {}", name).as_str())
+        }
+
+        fn opts(&self) -> rest::ChannelOptions {
+            self.cipher_params().into()
+        }
+
+        fn cipher_params(&self) -> rest::CipherParams {
+            rest::CipherParams::from(self.cipher_key()).set_iv(self.cipher_iv())
+        }
+
+        fn cipher_key(&self) -> crypto::Key {
+            base64::decode(&self.key)
+                .expect("Expected base64 encoded cipher key")
+                .try_into()
+                .unwrap()
+        }
+
+        fn cipher_iv(&self) -> crypto::IV {
+            base64::decode(&self.iv)
+                .expect("Expected base64 encoded IV")
+                .try_into()
+                .expect("Expected 16-byte IV")
+        }
     }
 
     #[derive(Deserialize)]
@@ -817,17 +849,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn encrypt_message_128() -> Result<()> {
+        let data = CryptoData::load("crypto-data-128.json");
+        let cipher = data.cipher_params();
+        for item in data.items.iter() {
+            let mut msg = rest::Message::from_encoded(item.encoded.clone(), None)?;
+            msg.encode(&rest::Format::MessagePack, Some(&cipher))?;
+            let expected = rest::Message::from_encoded(item.encrypted.clone(), None)?;
+            assert_eq!(msg.data, expected.data);
+            assert_eq!(msg.encoding, expected.encoding);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn encrypt_message_256() -> Result<()> {
+        let data = CryptoData::load("crypto-data-256.json");
+        let cipher = data.cipher_params();
+        for item in data.items.iter() {
+            let mut msg = rest::Message::from_encoded(item.encoded.clone(), None)?;
+            msg.encode(&rest::Format::MessagePack, Some(&cipher))?;
+            let expected = rest::Message::from_encoded(item.encrypted.clone(), None)?;
+            assert_eq!(msg.data, expected.data);
+            assert_eq!(msg.encoding, expected.encoding);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn decrypt_message_128() -> Result<()> {
-        let file = fs::File::open("submodules/ably-common/test-resources/crypto-data-128.json")
-            .expect("Expected crypto-data-128.json to open");
-        let data: CryptoData =
-            serde_json::from_reader(file).expect("Expected JSON data in crypto-data-128.json");
-        let opts = rest::ChannelOptions::from(rest::CipherParams {
-            key: rest::CipherKey::try_from(data.key).expect("Expected base64 encoded cipher key"),
-        });
+        let data = CryptoData::load("crypto-data-128.json");
+        let opts = data.opts();
         for item in data.items.iter() {
             let msg = rest::Message::from_encoded(item.encrypted.clone(), Some(&opts))?;
-            assert_eq!(msg.encoding, None);
+            assert_eq!(msg.encoding, Encoding::None);
             let expected = rest::Message::from_encoded(item.encoded.clone(), None)?;
             assert_eq!(msg.data, expected.data);
         }
@@ -836,16 +891,11 @@ mod tests {
 
     #[tokio::test]
     async fn decrypt_message_256() -> Result<()> {
-        let file = fs::File::open("submodules/ably-common/test-resources/crypto-data-256.json")
-            .expect("Expected crypto-data-256.json to open");
-        let data: CryptoData =
-            serde_json::from_reader(file).expect("Expected JSON data in crypto-data-256.json");
-        let opts = rest::ChannelOptions::from(rest::CipherParams {
-            key: rest::CipherKey::try_from(data.key).expect("Expected base64 encoded cipher key"),
-        });
+        let data = CryptoData::load("crypto-data-256.json");
+        let opts = data.opts();
         for item in data.items.iter() {
             let msg = rest::Message::from_encoded(item.encrypted.clone(), Some(&opts))?;
-            assert_eq!(msg.encoding, None);
+            assert_eq!(msg.encoding, Encoding::None);
             let expected = rest::Message::from_encoded(item.encoded.clone(), None)?;
             assert_eq!(msg.data, expected.data);
         }
@@ -940,6 +990,20 @@ mod tests {
             .await
             .expect("Expected REST request to succeed");
 
+        Ok(())
+    }
+
+    #[test]
+    fn generate_random_key_128() -> Result<()> {
+        let key: crypto::Key128 = crypto::generate_random_key();
+        assert_eq!(key.len(), 16);
+        Ok(())
+    }
+
+    #[test]
+    fn generate_random_key_256() -> Result<()> {
+        let key: crypto::Key256 = crypto::generate_random_key();
+        assert_eq!(key.len(), 32);
         Ok(())
     }
 }

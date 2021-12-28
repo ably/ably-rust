@@ -1,19 +1,14 @@
-use std::convert::TryFrom;
-
-use aes::{Aes128, Aes256};
-use block_modes::block_padding::Pkcs7;
-use block_modes::{BlockMode, Cbc};
 use chrono::prelude::*;
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
-use rand::thread_rng;
+use rand::{thread_rng, Rng};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::error::*;
 use crate::options::ClientOptions;
-use crate::{auth, history, http, json, presence, stats, Result};
+use crate::{auth, crypto, history, http, json, presence, stats, Result};
 
 /// A client for the [Ably REST API].
 ///
@@ -318,52 +313,66 @@ impl From<CipherParams> for ChannelOptions {
     }
 }
 
-const CIPHER_ALGORITHM: &str = "aes";
-const CIPHER_MODE: &str = "cbc";
-
 #[derive(Clone)]
 pub struct CipherParams {
-    pub key: CipherKey,
+    key: crypto::Key,
+    iv:  Option<crypto::IV>,
 }
 
-#[derive(Clone)]
-pub enum CipherKey {
-    Key128(Vec<u8>),
-    Key256(Vec<u8>),
-}
-
-impl CipherKey {
-    fn len(&self) -> usize {
-        match self {
-            Self::Key128(key) => key.len(),
-            Self::Key256(key) => key.len(),
-        }
+impl CipherParams {
+    fn encoding(&self) -> String {
+        format!("cipher+{}", self.algorithm())
     }
-}
 
-impl TryFrom<Vec<u8>> for CipherKey {
-    type Error = ErrorInfo;
+    fn algorithm(&self) -> String {
+        format!("aes-{}-cbc", self.key.len() * 8)
+    }
 
-    fn try_from(v: Vec<u8>) -> Result<Self> {
-        match v.len() {
-            16 => Ok(Self::Key128(v)),
-            32 => Ok(Self::Key256(v)),
-            _ => Err(error!(
-                40000,
+    pub(crate) fn set_iv(mut self, iv: crypto::IV) -> Self {
+        self.iv = Some(iv);
+        self
+    }
+
+    fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
+        // generate a random IV if one isn't provided.
+        let iv = match self.iv {
+            Some(iv) => iv,
+            None => thread_rng().gen(),
+        };
+
+        // create a buffer big enough to store the data + padding.
+        let blocks = data.len() / aes::BLOCK_SIZE + 1;
+        let mut buf = vec![0u8; blocks * aes::BLOCK_SIZE];
+
+        // copy the data into the buffer.
+        buf[..data.len()].copy_from_slice(data);
+
+        // encrypt the data.
+        let encrypted = self.key.encrypt(&iv, &mut buf, data.len())?;
+
+        // return the encrypted data prefixed with the IV.
+        Ok([&iv[..], encrypted].concat())
+    }
+
+    fn decrypt(&self, data: &mut Vec<u8>) -> Result<Vec<u8>> {
+        if data.len() % aes::BLOCK_SIZE != 0 || data.len() < aes::BLOCK_SIZE {
+            return Err(error!(
+                40013,
                 format!(
-                    "invalid cipher key length {}, must be 128 or 256 bits",
-                    v.len()
+                    "invalid cipher message data; unexpected length: {}",
+                    data.len()
                 )
-            )),
+            ));
         }
+        let (iv, buf) = data.split_at_mut(aes::BLOCK_SIZE);
+        let decrypted = self.key.decrypt(iv, buf)?;
+        Ok(decrypted.to_vec())
     }
 }
 
-impl TryFrom<String> for CipherKey {
-    type Error = ErrorInfo;
-
-    fn try_from(s: String) -> Result<Self> {
-        Self::try_from(base64::decode(s)?)
+impl From<crypto::Key> for CipherParams {
+    fn from(key: crypto::Key) -> Self {
+        CipherParams { key, iv: None }
     }
 }
 
@@ -426,7 +435,15 @@ pub struct Channel {
 
 impl Channel {
     pub fn publish(&self) -> PublishBuilder {
-        PublishBuilder::new(self.client.clone(), self.name.clone())
+        let mut builder = PublishBuilder::new(self.client.clone(), self.name.clone());
+
+        if let Some(opts) = &self.opts {
+            if let Some(cipher) = &opts.cipher {
+                builder = builder.cipher(cipher.clone());
+            }
+        }
+
+        builder
     }
 
     /// Start building a history request for the channel.
@@ -481,6 +498,7 @@ pub struct PublishBuilder {
     req:    http::RequestBuilder,
     msg:    Result<Message>,
     format: Format,
+    cipher: Option<CipherParams>,
 }
 
 impl PublishBuilder {
@@ -494,6 +512,7 @@ impl PublishBuilder {
             req,
             msg: Ok(Message::default()),
             format: client.opts.format.clone(),
+            cipher: None,
         }
     }
 
@@ -528,7 +547,6 @@ impl PublishBuilder {
             match data {
                 Ok(data) => {
                     msg.data = data;
-                    msg.encoding = Some(String::from("json"));
                 }
                 Err(err) => self.msg = Err(err),
             }
@@ -538,15 +556,7 @@ impl PublishBuilder {
 
     pub fn binary(mut self, data: Vec<u8>) -> Self {
         if let Ok(msg) = self.msg.as_mut() {
-            match self.format {
-                Format::MessagePack => {
-                    msg.data = data.into();
-                }
-                Format::JSON => {
-                    msg.data = base64::encode(data).into();
-                    msg.encoding = Some(String::from("base64"));
-                }
-            }
+            msg.data = data.into();
         }
         self
     }
@@ -563,8 +573,15 @@ impl PublishBuilder {
         self
     }
 
+    pub fn cipher(mut self, cipher: CipherParams) -> Self {
+        self.cipher = Some(cipher);
+        self
+    }
+
     pub async fn send(self) -> Result<()> {
-        let msg = self.msg?;
+        let mut msg = self.msg?;
+
+        msg.encode(&self.format, self.cipher.as_ref())?;
 
         self.req.body(&msg).send().await.map(|_| ())
     }
@@ -641,6 +658,49 @@ impl From<serde_json::Value> for Data {
     }
 }
 
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum Encoding {
+    None,
+    Some(String),
+}
+
+impl Encoding {
+    fn is_none(&self) -> bool {
+        match self {
+            Self::None => true,
+            Self::Some(_) => false,
+        }
+    }
+
+    fn push(&mut self, value: impl Into<String>) -> () {
+        *self = Self::Some(match self {
+            Self::None => value.into(),
+            Self::Some(s) => format!("{}/{}", s, value.into()),
+        })
+    }
+
+    fn pop(&mut self) -> Option<String> {
+        let mut encodings = match self {
+            Self::Some(s) => s.split('/').collect::<Vec<&str>>(),
+            Self::None => return None,
+        };
+        let last = encodings.pop()?.to_string();
+        *self = if encodings.len() == 0 {
+            Self::None
+        } else {
+            Self::Some(encodings.join("/"))
+        };
+        Some(last)
+    }
+}
+
+impl Default for Encoding {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
 #[derive(Default, Deserialize, Serialize)]
 pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -649,8 +709,8 @@ pub struct Message {
     pub name:          Option<String>,
     #[serde(skip_serializing_if = "Data::is_none")]
     pub data:          Data,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub encoding:      Option<String>,
+    #[serde(default, skip_serializing_if = "Encoding::is_none")]
+    pub encoding:      Encoding,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id:     Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -666,6 +726,49 @@ impl Message {
         msg.decode(opts);
 
         Ok(msg)
+    }
+
+    pub fn encode(&mut self, format: &Format, cipher: Option<&CipherParams>) -> Result<()> {
+        match &self.data {
+            Data::String(data) => {
+                if let Some(cipher) = cipher {
+                    let data = data.as_bytes();
+                    self.data = cipher.encrypt(data)?.into();
+                    self.encoding.push("utf-8");
+                    self.encoding.push(cipher.encoding());
+                }
+            }
+            Data::Binary(data) => {
+                if let Some(cipher) = cipher {
+                    self.data = cipher.encrypt(data)?.into();
+                    self.encoding.push(cipher.encoding());
+                }
+            }
+            Data::JSON(data) => {
+                let json_str = serde_json::to_string(data)?;
+
+                if let Some(cipher) = cipher {
+                    let data = json_str.as_bytes();
+                    self.data = cipher.encrypt(data)?.into();
+                    self.encoding.push("json");
+                    self.encoding.push("utf-8");
+                    self.encoding.push(cipher.encoding());
+                } else {
+                    self.data = json_str.into();
+                    self.encoding.push("json");
+                }
+            }
+            Data::None => (),
+        }
+
+        if let Data::Binary(data) = &self.data {
+            if format.is_json() {
+                self.data = base64::encode(data).into();
+                self.encoding.push("base64");
+            }
+        };
+
+        Ok(())
     }
 }
 
@@ -683,8 +786,8 @@ pub struct PresenceMessage {
     pub connection_id: String,
     #[serde(skip_serializing_if = "Data::is_none")]
     pub data:          Data,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub encoding:      Option<String>,
+    #[serde(default, skip_serializing_if = "Encoding::is_none")]
+    pub encoding:      Encoding,
 }
 
 impl Decode for PresenceMessage {
@@ -697,20 +800,12 @@ pub trait Decode {
     fn decode(&mut self, opts: Option<&ChannelOptions>) -> ();
 }
 
-fn decode(data: &mut Data, encoding_opt: &mut Option<String>, opts: Option<&ChannelOptions>) -> () {
-    let encoding = match encoding_opt.take() {
-        Some(enc) => enc,
-        None => return (),
-    };
-
-    let mut encodings = encoding.split('/').collect::<Vec<&str>>();
-
-    while let Some(enc) = encodings.pop() {
+fn decode(data: &mut Data, encoding: &mut Encoding, opts: Option<&ChannelOptions>) -> () {
+    while let Some(enc) = encoding.pop() {
         *data = match decode_once(data, &enc, opts) {
             Ok(data) => data,
             Err(_) => {
-                encodings.push(enc);
-                *encoding_opt = Some(encodings.join("/"));
+                encoding.push(enc);
                 return ();
             }
         }
@@ -762,49 +857,18 @@ fn decode_once(data: &mut Data, encoding: &str, opts: Option<&ChannelOptions>) -
                 let params = caps
                     .name("params")
                     .ok_or(error!(40004, "Invalid encoding; missing params"))?;
-                if params.as_str().to_string()
-                    != format!(
-                        "{}-{}-{}",
-                        CIPHER_ALGORITHM,
-                        cipher.key.len() * 8,
-                        CIPHER_MODE
-                    )
-                {
+                if params.as_str().to_string() != cipher.algorithm() {
                     return Err(error!(
                         40000,
                         "unable to decrypt message, incompatible cipher params"
                     ));
                 }
-                decrypt(data, &cipher.key)
+                cipher.decrypt(data).map(Into::into)
             }
             _ => Err(error!(40013, "invalid cipher message data")),
         },
         _ => Err(error!(40013, "invalid message encoding")),
     }
-}
-
-fn decrypt(data: &mut Vec<u8>, key: &CipherKey) -> Result<Data> {
-    if data.len() % aes::BLOCK_SIZE != 0 || data.len() < aes::BLOCK_SIZE {
-        return Err(error!(
-            40013,
-            format!(
-                "invalid cipher message data; unexpected length: {}",
-                data.len()
-            )
-        ));
-    }
-    let iv = &data[..aes::BLOCK_SIZE];
-    let decrypted = match key {
-        CipherKey::Key128(key) => {
-            let cipher = Cbc::<Aes128, Pkcs7>::new_from_slices(key, iv)?;
-            cipher.decrypt(&mut data[aes::BLOCK_SIZE..])?
-        }
-        CipherKey::Key256(key) => {
-            let cipher = Cbc::<Aes256, Pkcs7>::new_from_slices(key, iv)?;
-            cipher.decrypt(&mut data[aes::BLOCK_SIZE..])?
-        }
-    };
-    Ok(decrypted.to_vec().into())
 }
 
 #[derive(Clone, Debug, Deserialize_repr, PartialEq, Serialize_repr)]
@@ -822,6 +886,15 @@ pub enum PresenceAction {
 pub enum Format {
     MessagePack,
     JSON,
+}
+
+impl Format {
+    fn is_json(&self) -> bool {
+        match self {
+            Self::MessagePack => false,
+            Self::JSON => true,
+        }
+    }
 }
 
 pub const DEFAULT_FORMAT: Format = Format::MessagePack;

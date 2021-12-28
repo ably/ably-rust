@@ -10,6 +10,7 @@ aes = { version = "*" }
 atty = { version = "*" }
 base64 = { version = "*" }
 block-modes = { version = "*" }
+cipher = { version = "*" }
 chrono = { version = "*", features = ["serde"] }
 dyn-clone = { version = "*" }
 futures = { version = "*" }
