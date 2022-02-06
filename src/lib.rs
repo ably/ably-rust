@@ -19,12 +19,9 @@ pub mod presence;
 pub mod rest;
 pub mod stats;
 
-pub use error::ErrorInfo;
+pub use error::{ErrorInfo, Result};
 pub use options::ClientOptions;
 pub use rest::Rest;
-
-/// A `Result` alias where the `Err` variant contains an `ably::ErrorInfo`.
-pub type Result<T> = std::result::Result<T, ErrorInfo>;
 
 #[cfg(test)]
 mod tests {

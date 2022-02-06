@@ -3,6 +3,9 @@ use std::fmt;
 
 use serde::Deserialize;
 
+/// A `Result` alias where the `Err` variant contains an `ErrorInfo`.
+pub type Result<T> = std::result::Result<T, ErrorInfo>;
+
 /// Creates an [`ErrorInfo`] with the given code and message.
 ///
 /// [`ErrorInfo`]: ably::ErrorInfo
@@ -49,6 +52,9 @@ impl ErrorInfo {
 }
 
 impl fmt::Display for ErrorInfo {
+    /// Format the error like:
+    ///
+    /// [ErrorInfo: <msg>; statusCode=<statusCode>; code=<code>; see <url>]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[ErrorInfo")?;
         if self.message.len() > 0 {
@@ -181,4 +187,37 @@ impl From<Infallible> for ErrorInfo {
 #[derive(Deserialize)]
 pub struct WrappedError {
     pub error: ErrorInfo,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ErrorInfo;
+
+    #[test]
+    fn error_no_status() {
+        let err = error!(40000, "error message");
+        assert_eq!(err.code, 40000);
+        assert_eq!(err.message, "error message");
+        assert_eq!(err.status_code, None);
+    }
+
+    #[test]
+    fn error_with_status() {
+        let err = error!(40000, "error message", 400);
+        assert_eq!(err.code, 40000);
+        assert_eq!(err.message, "error message");
+        assert_eq!(err.status_code, Some(400));
+    }
+
+    #[test]
+    fn error_href() {
+        let err = error!(40101, "error message");
+        assert_eq!(err.href, "https://help.ably.io/error/40101");
+    }
+
+    #[test]
+    fn error_fmt() {
+        let err = error!(40101, "error message", 401);
+        assert_eq!(format!("{}", err), "[ErrorInfo: error message; statusCode=401; code=40101; see https://help.ably.io/error/40101 ]");
+    }
 }
