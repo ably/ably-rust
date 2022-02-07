@@ -325,7 +325,7 @@ impl CipherParams {
     }
 
     fn algorithm(&self) -> String {
-        format!("aes-{}-cbc", self.key.len() * 8)
+        format!("aes-{}-cbc", self.key.len())
     }
 
     pub(crate) fn set_iv(mut self, iv: crypto::IV) -> Self {

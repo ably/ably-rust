@@ -989,18 +989,4 @@ mod tests {
 
         Ok(())
     }
-
-    #[test]
-    fn generate_random_key_128() -> Result<()> {
-        let key: crypto::Key128 = crypto::generate_random_key();
-        assert_eq!(key.len(), 16);
-        Ok(())
-    }
-
-    #[test]
-    fn generate_random_key_256() -> Result<()> {
-        let key: crypto::Key256 = crypto::generate_random_key();
-        assert_eq!(key.len(), 32);
-        Ok(())
-    }
 }
