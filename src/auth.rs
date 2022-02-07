@@ -14,6 +14,8 @@ use crate::error::ErrorInfo;
 use crate::options::ClientOptions;
 use crate::{http, rest, Result};
 
+/// The maximum length of a valid token. Tokens with a length longer than this
+/// are rejected with a 40170 error code.
 const MAX_TOKEN_LENGTH: usize = 128 * 1024;
 
 /// An API Key used to authenticate with the REST API using HTTP Basic Auth.
@@ -28,6 +30,19 @@ impl TryFrom<&str> for Key {
     type Error = ErrorInfo;
 
     /// Parse an API Key from a string of the form '<keyName>:<keySecret>'.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::convert::TryFrom;
+    /// use ably::auth;
+    ///
+    /// let res = auth::Key::try_from("ABC123.DEF456:XXXXXXXXXXXX");
+    /// assert!(res.is_ok());
+    ///
+    /// let res = auth::Key::try_from("not-a-valid-key");
+    /// assert!(res.is_err());
+    /// ```
     fn try_from(s: &str) -> Result<Self> {
         if let [name, value] = s.splitn(2, ':').collect::<Vec<&str>>()[..] {
             Ok(Key {
@@ -41,14 +56,35 @@ impl TryFrom<&str> for Key {
 }
 
 impl Key {
-    async fn sign(&self, params: TokenParams) -> Result<Token> {
-        let req = params.sign(self)?;
-
-        Ok(Token::Request(req))
+    /// Use the API key to sign the given TokenParams, returning a signed
+    /// TokenRequest which can be exchanged for a token.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # async fn run() -> ably::Result<()> {
+    /// use std::convert::TryFrom;
+    /// use ably::auth;
+    ///
+    /// let key = auth::Key::try_from("ABC123.DEF456:XXXXXXXXXXXX").unwrap();
+    ///
+    /// let mut params = auth::TokenParams::default();
+    /// params.client_id = Some("test@example.com".to_string());
+    ///
+    /// let req = key.sign(params).await.unwrap();
+    ///
+    /// assert!(matches!(req, auth::Token::Request(_)));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn sign(&self, params: TokenParams) -> Result<Token> {
+        params.sign(self).map(|req| Token::Request(req))
     }
 }
 
 impl AuthCallback for Key {
+    /// Support using the API key as an AuthCallback which always returns a
+    /// signed token request.
     fn token<'a>(&'a self, params: TokenParams) -> TokenFuture<'a> {
         Box::pin(self.sign(params))
     }
@@ -94,7 +130,7 @@ impl Auth {
                 headers: self.opts.auth_headers.clone(),
                 params:  self.opts.auth_params.clone(),
             });
-        } else if let Some(key) = &self.opts.key {
+        } else if let Some(ref key) = self.opts.key {
             builder = builder.key(key.clone());
         } else if let Some(ref token) = self.opts.token {
             builder = builder.token(token.clone());
@@ -111,6 +147,7 @@ impl Auth {
         builder
     }
 
+    /// Set the Authorization header in the given request.
     pub async fn with_auth_headers(&self, req: &mut reqwest::Request) -> Result<()> {
         if let Some(ref key) = self.opts.key {
             if !self.opts.use_token_auth {
@@ -323,7 +360,7 @@ impl RequestTokenBuilder {
         self
     }
 
-    /// Request a response from the configured AuthCallback.
+    /// Request a token response from the configured AuthCallback.
     ///
     /// If the response is a TokenRequest, exchange it for a token.
     pub async fn send(self) -> Result<TokenDetails> {
@@ -335,7 +372,7 @@ impl RequestTokenBuilder {
         let details = match callback.token(self.params.clone()).await {
             // The callback may either:
             // - return a TokenRequest which we'll exchange for a TokenDetails
-            // - return a token string which we'll wrap in a TokenDetails
+            // - return a token literal which we'll wrap in a TokenDetails
             // - return a TokenDetails which we'll just return as is
             Ok(token) => match token {
                 Token::Request(req) => self.exchange(&req).await?,
@@ -439,6 +476,8 @@ impl AuthCallback for AuthUrlCallback {
 }
 
 #[derive(Clone, Debug)]
+/// A URL to request a token from, along with the HTTP method, headers, and
+/// query params to include in the request.
 pub struct AuthUrl {
     pub url:     reqwest::Url,
     pub method:  http::Method,
