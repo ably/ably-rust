@@ -146,22 +146,27 @@ impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U>
         }
     }
 
+    /// Set the start interval of the request.
     pub fn start(self, interval: &str) -> Self {
         self.params(&[("start", interval)])
     }
 
+    /// Set the end interval of the request.
     pub fn end(self, interval: &str) -> Self {
         self.params(&[("end", interval)])
     }
 
+    /// Paginate forwards.
     pub fn forwards(self) -> Self {
         self.params(&[("direction", "forwards")])
     }
 
+    /// Paginate backwards.
     pub fn backwards(self) -> Self {
         self.params(&[("direction", "backwards")])
     }
 
+    /// Limit the number of results per page.
     pub fn limit(self, limit: u32) -> Self {
         self.params(&[("limit", limit.to_string())])
     }
@@ -312,11 +317,12 @@ impl Response {
         Self { inner: response }
     }
 
+    /// The HTTP status code of the response.
     pub fn status(&self) -> reqwest::StatusCode {
         self.inner.status()
     }
 
-    /// Returns the response Content-Type.
+    /// The value of the Content-Type header.
     pub fn content_type(&self) -> Option<mime::Mime> {
         self.inner
             .headers()
@@ -358,11 +364,6 @@ impl Response {
     /// Return the response body as a String.
     pub async fn text(self) -> Result<String> {
         self.inner.text().await.map_err(Into::into)
-    }
-
-    /// Returns the HTTP status code.
-    pub fn status_code(&self) -> reqwest::StatusCode {
-        self.inner.status()
     }
 }
 

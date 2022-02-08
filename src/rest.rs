@@ -124,6 +124,40 @@ impl Rest {
         self.client.request(method, path)
     }
 
+    /// Start building a paginated HTTP request to the Ably REST API.
+    ///
+    /// Returns a PaginatedRequestBuilder which can be used to set query
+    /// params before sending the request.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # async fn run() -> ably::Result<()> {
+    /// use futures::TryStreamExt;
+    /// use ably::http::Method;
+    ///
+    /// let client = ably::Rest::from("<api_key>");
+    ///
+    /// let mut pages = client
+    ///     .paginated_request(Method::GET, "/time")
+    ///     .forwards()
+    ///     .limit(1)
+    ///     .pages();
+    ///
+    /// let page = pages.try_next().await?.expect("Expected a page");
+    ///
+    /// let items = page.items().await?;
+    ///
+    /// assert_eq!(items.len(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sending the request fails or if the resulting
+    /// response is unsuccessful (i.e. the status code is not in the 200-299
+    /// range).
     pub fn paginated_request(
         &self,
         method: http::Method,
@@ -156,6 +190,8 @@ impl From<&str> for Rest {
 }
 
 #[derive(Clone, Debug)]
+/// An internal client which is shared by both rest::Rest and auth::Auth to
+/// send HTTP requests to the Ably REST API.
 pub struct Client {
     inner: reqwest::Client,
     opts:  ClientOptions,
@@ -300,6 +336,7 @@ impl Client {
     }
 }
 
+/// Options for publishing messages on a channel.
 #[derive(Clone)]
 pub struct ChannelOptions {
     cipher: Option<CipherParams>,
@@ -313,6 +350,19 @@ impl From<CipherParams> for ChannelOptions {
     }
 }
 
+/// Parameters for encrypting and decrypting channel messages.
+///
+/// # Example
+///
+/// Initialize cipher params with a random 256 bit key.
+///
+/// ```
+/// use ably::crypto::*;
+///
+/// let key = generate_random_key::<Key256>();
+///
+/// let params = ably::rest::CipherParams::from(key);
+/// ```
 #[derive(Clone)]
 pub struct CipherParams {
     key: crypto::Key,
@@ -328,11 +378,15 @@ impl CipherParams {
         format!("aes-{}-cbc", self.key.len())
     }
 
+    /// Set an IV rather than using a random one. This is for testing purposes
+    /// only.
     pub(crate) fn set_iv(mut self, iv: crypto::IV) -> Self {
         self.iv = Some(iv);
         self
     }
 
+    /// Encrypt the data using AES-CBC with PKCS7 padding, returning the
+    /// ciphertext prefixed with the IV.
     fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
         // generate a random IV if one isn't provided.
         let iv = match self.iv {
@@ -354,6 +408,7 @@ impl CipherParams {
         Ok([&iv[..], encrypted].concat())
     }
 
+    /// Decrypt the data using AES-CBC with PKCS7 padding.
     fn decrypt(&self, data: &mut Vec<u8>) -> Result<Vec<u8>> {
         if data.len() % aes::BLOCK_SIZE != 0 || data.len() < aes::BLOCK_SIZE {
             return Err(error!(
@@ -376,6 +431,7 @@ impl From<crypto::Key> for CipherParams {
     }
 }
 
+/// Start building a Channel to publish a message.
 pub struct ChannelBuilder {
     client: Client,
     name:   String,
@@ -391,11 +447,13 @@ impl ChannelBuilder {
         }
     }
 
+    /// Set the channel cipher parameters.
     pub fn cipher(mut self, cipher: CipherParams) -> Self {
         self.cipher = Some(cipher);
         self
     }
 
+    /// Build the Channel.
     pub fn get(self) -> Channel {
         let opts = self.cipher.map(Into::into);
         Channel {
@@ -407,6 +465,7 @@ impl ChannelBuilder {
     }
 }
 
+/// A collection of Channels.
 #[derive(Clone, Debug)]
 pub struct Channels {
     client: Client,
@@ -417,15 +476,18 @@ impl Channels {
         Self { client }
     }
 
+    /// Start building a Channel with the given name.
     pub fn name(&self, name: impl Into<String>) -> ChannelBuilder {
         ChannelBuilder::new(self.client.clone(), name.into())
     }
 
+    /// Build and return a Channel with the given name.
     pub fn get(&self, name: impl Into<String>) -> Channel {
         self.name(name).get()
     }
 }
 
+/// An Ably Channel to publish messages to or retrieve history or presence for.
 pub struct Channel {
     pub name:     String,
     pub presence: Presence,
@@ -434,6 +496,7 @@ pub struct Channel {
 }
 
 impl Channel {
+    /// Start building a request to publish a message on the channel.
     pub fn publish(&self) -> PublishBuilder {
         let mut builder = PublishBuilder::new(self.client.clone(), self.name.clone());
 
@@ -450,7 +513,6 @@ impl Channel {
     ///
     /// Returns a history::RequestBuilder which is used to set parameters
     /// before sending the history request.
-    ///
     pub fn history(&self) -> history::PaginatedRequestBuilder<Message> {
         self.client.paginated_request(
             http::Method::GET,
@@ -471,6 +533,7 @@ impl Presence {
         Self { name, client, opts }
     }
 
+    /// Start building a presence request for the channel.
     pub fn get(&self) -> presence::RequestBuilder {
         let req = self.client.paginated_request(
             http::Method::GET,
@@ -484,7 +547,6 @@ impl Presence {
     ///
     /// Returns a history::RequestBuilder which is used to set parameters
     /// before sending the history request.
-    ///
     pub fn history(&self) -> history::PaginatedRequestBuilder<PresenceMessage> {
         self.client.paginated_request(
             http::Method::GET,
@@ -494,6 +556,7 @@ impl Presence {
     }
 }
 
+/// A request to publish a message to a channel.
 pub struct PublishBuilder {
     req:    http::RequestBuilder,
     msg:    Result<Message>,
@@ -516,6 +579,7 @@ impl PublishBuilder {
         }
     }
 
+    /// Set the message ID.
     pub fn id(mut self, id: impl Into<String>) -> Self {
         if let Ok(msg) = self.msg.as_mut() {
             msg.id = Some(id.into());
@@ -523,6 +587,7 @@ impl PublishBuilder {
         self
     }
 
+    /// Set the message name.
     pub fn name(mut self, name: impl Into<String>) -> Self {
         if let Ok(msg) = self.msg.as_mut() {
             msg.name = Some(name.into());
@@ -530,6 +595,7 @@ impl PublishBuilder {
         self
     }
 
+    /// Set the message data to the given string.
     pub fn string(mut self, data: impl Into<String>) -> Self {
         if let Ok(msg) = self.msg.as_mut() {
             msg.data = Data::String(data.into());
@@ -537,6 +603,7 @@ impl PublishBuilder {
         self
     }
 
+    /// Set the message data to the JSON encoding of the given data.
     pub fn json(mut self, data: impl serde::Serialize) -> Self {
         if let Ok(msg) = self.msg.as_mut() {
             let data = data
@@ -554,6 +621,7 @@ impl PublishBuilder {
         self
     }
 
+    /// Set the message data to the given binary data.
     pub fn binary(mut self, data: Vec<u8>) -> Self {
         if let Ok(msg) = self.msg.as_mut() {
             msg.data = data.into();
@@ -561,6 +629,7 @@ impl PublishBuilder {
         self
     }
 
+    /// Set the message extras.
     pub fn extras(mut self, extras: json::Map) -> Self {
         if let Ok(msg) = self.msg.as_mut() {
             msg.extras = Some(extras);
@@ -568,16 +637,19 @@ impl PublishBuilder {
         self
     }
 
+    /// Set the params to include in the publish request.
     pub fn params<T: Serialize + ?Sized>(mut self, params: &T) -> Self {
         self.req = self.req.params(params);
         self
     }
 
+    /// Set the cipher to use to encrypt the message.
     pub fn cipher(mut self, cipher: CipherParams) -> Self {
         self.cipher = Some(cipher);
         self
     }
 
+    /// Publish the message.
     pub async fn send(self) -> Result<()> {
         let mut msg = self.msg?;
 
@@ -658,6 +730,8 @@ impl From<serde_json::Value> for Data {
     }
 }
 
+/// The encoding of a message, which is either unset or is a list of data
+/// encodings separated by the '/' character.
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Encoding {
@@ -673,6 +747,7 @@ impl Encoding {
         }
     }
 
+    /// Append the given encoding to the current list of encodings.
     fn push(&mut self, value: impl Into<String>) -> () {
         *self = Self::Some(match self {
             Self::None => value.into(),
@@ -680,6 +755,8 @@ impl Encoding {
         })
     }
 
+    /// Pop the last encoding from the list of encodings, leaving the list
+    /// unset if the popped encoding was the only one in the list.
     fn pop(&mut self) -> Option<String> {
         let mut encodings = match self {
             Self::Some(s) => s.split('/').collect::<Vec<&str>>(),
@@ -701,6 +778,7 @@ impl Default for Encoding {
     }
 }
 
+/// A message which is published to a channel or returned by a history request.
 #[derive(Default, Deserialize, Serialize)]
 pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -720,6 +798,7 @@ pub struct Message {
 }
 
 impl Message {
+    /// Initialize a Message from the given JSON serialized data.
     pub fn from_encoded(v: json::Value, opts: Option<&ChannelOptions>) -> Result<Message> {
         let mut msg: Message = serde_json::from_value(v)?;
 
@@ -728,6 +807,9 @@ impl Message {
         Ok(msg)
     }
 
+    /// Encode the message ready to be sent in the body of a HTTP request.
+    ///
+    /// If the cipher is set, then use it to encrypt the message.
     pub fn encode(&mut self, format: &Format, cipher: Option<&CipherParams>) -> Result<()> {
         match &self.data {
             Data::String(data) => {
@@ -761,6 +843,7 @@ impl Message {
             Data::None => (),
         }
 
+        // If we have binary data but JSON format, base64 encode the data.
         if let Data::Binary(data) = &self.data {
             if format.is_json() {
                 self.data = base64::encode(data).into();
@@ -800,6 +883,7 @@ pub trait Decode {
     fn decode(&mut self, opts: Option<&ChannelOptions>) -> ();
 }
 
+/// Iteratively decode the given data based on the given list of encodings.
 fn decode(data: &mut Data, encoding: &mut Encoding, opts: Option<&ChannelOptions>) -> () {
     while let Some(enc) = encoding.pop() {
         *data = match decode_once(data, &enc, opts) {
@@ -813,6 +897,7 @@ fn decode(data: &mut Data, encoding: &mut Encoding, opts: Option<&ChannelOptions
 }
 
 lazy_static! {
+    /// A regular expression to split a data encoding into its format and params.
     static ref ENCODING_RE: Regex =
         Regex::new(r#"^(?P<format>[\-\w]+)(?:\+(?P<params>[\-\w]+))?"#).unwrap();
 }
@@ -899,6 +984,7 @@ impl Format {
 
 pub const DEFAULT_FORMAT: Format = Format::MessagePack;
 
+/// A pagination item handler which decodes each message.
 #[derive(Clone)]
 pub struct MessageItemHandler {
     opts: Option<ChannelOptions>,
