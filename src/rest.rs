@@ -189,6 +189,12 @@ impl From<&str> for Rest {
     }
 }
 
+impl From<String> for Rest {
+    fn from(s: String) -> Self {
+        Rest::from(s.as_str())
+    }
+}
+
 #[derive(Clone, Debug)]
 /// An internal client which is shared by both rest::Rest and auth::Auth to
 /// send HTTP requests to the Ably REST API.
@@ -387,7 +393,7 @@ impl CipherParams {
 
     /// Encrypt the data using AES-CBC with PKCS7 padding, returning the
     /// ciphertext prefixed with the IV.
-    fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
+    pub fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
         // generate a random IV if one isn't provided.
         let iv = match self.iv {
             Some(iv) => iv,
@@ -409,7 +415,7 @@ impl CipherParams {
     }
 
     /// Decrypt the data using AES-CBC with PKCS7 padding.
-    fn decrypt(&self, data: &mut Vec<u8>) -> Result<Vec<u8>> {
+    pub fn decrypt(&self, data: &mut Vec<u8>) -> Result<Vec<u8>> {
         if data.len() % aes::BLOCK_SIZE != 0 || data.len() < aes::BLOCK_SIZE {
             return Err(error!(
                 40013,

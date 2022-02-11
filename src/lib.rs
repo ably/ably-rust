@@ -21,7 +21,7 @@ pub mod stats;
 
 pub use error::{ErrorInfo, Result};
 pub use options::ClientOptions;
-pub use rest::Rest;
+pub use rest::{Rest, Data};
 
 #[cfg(test)]
 mod tests {
@@ -37,8 +37,6 @@ mod tests {
 
     use super::*;
     use crate::http::Method;
-    use crate::options::ClientOptions;
-    use crate::rest::{Data, Rest};
 
     #[test]
     fn rest_client_from_string_with_colon_sets_key() {

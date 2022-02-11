@@ -9,6 +9,7 @@ pub type Result<T> = std::result::Result<T, ErrorInfo>;
 /// Creates an [`ErrorInfo`] with the given code and message.
 ///
 /// [`ErrorInfo`]: ably::ErrorInfo
+#[macro_export]
 macro_rules! error {
     ($code:expr, $message:expr) => {
         ErrorInfo::new($code, $message, None)

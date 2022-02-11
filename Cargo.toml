@@ -43,4 +43,16 @@ simplelog = { version = "*" }
 url = { version = "*" }
 
 [dev-dependencies]
-tokio = { version = "*", features = ["macros"] }
+tokio = { version = "*", features = ["full"] }
+
+[[example]]
+name = "publish"
+path = "examples/publish.rs"
+
+[[example]]
+name = "history"
+path = "examples/history.rs"
+
+[[example]]
+name = "encrypt"
+path = "examples/encrypt.rs"
