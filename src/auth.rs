@@ -4,7 +4,7 @@ use std::pin::Pin;
 
 use chrono::prelude::*;
 use dyn_clone::DynClone;
-use hmac::{Hmac, Mac, NewMac};
+use hmac::{Hmac, Mac};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};

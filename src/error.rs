@@ -97,8 +97,8 @@ impl From<reqwest::header::InvalidHeaderValue> for ErrorInfo {
     }
 }
 
-impl From<hmac::crypto_mac::InvalidKeyLength> for ErrorInfo {
-    fn from(_: hmac::crypto_mac::InvalidKeyLength) -> Self {
+impl From<hmac::digest::InvalidLength> for ErrorInfo {
+    fn from(_: hmac::digest::InvalidLength) -> Self {
         error!(40101, "invalid credentials")
     }
 }

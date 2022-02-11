@@ -18,32 +18,32 @@ include = [
 ]
 
 [dependencies]
-aes = { version = "*" }
-atty = { version = "*" }
-base64 = { version = "*" }
-block-modes = { version = "*" }
-cipher = { version = "*" }
-chrono = { version = "*", features = ["serde"] }
-dyn-clone = { version = "*" }
-futures = { version = "*" }
-hmac = { version = "*" }
-lazy_static = { version = "*" }
-log = { version = "*" }
-mime = { version = "*" }
-rand = { version = "*" }
-regex = { version = "*" }
-reqwest = { version = "*", features = ["json"] }
-rmp-serde = { version = "*" }
+aes = { version = "0.7.5" }
+atty = { version = "0.2.14" }
+base64 = { version = "0.13.0" }
+block-modes = { version = "0.8.1" }
+cipher = { version = "0.3.0" }
+chrono = { version = "0.4.19", features = ["serde"] }
+dyn-clone = { version = "1.0.4" }
+futures = { version = "0.3.21" }
+hmac = { version = "0.12.0" }
+lazy_static = { version = "1.4.0" }
+log = { version = "0.4.14" }
+mime = { version = "0.3.16" }
+rand = { version = "0.8.4" }
+regex = { version = "1.5.4" }
+reqwest = { version = "0.11.4", features = ["json"] }
+rmp-serde = { version = "0.15.5" }
 serde = { version = "1.0", features = ["derive"] }
-serde_bytes = { version = "*" }
-serde_json = { version = "*" }
-serde_repr = { version = "*" }
-sha2 = { version = "*" }
-simplelog = { version = "*" }
-url = { version = "*" }
+serde_bytes = { version = "0.11.5" }
+serde_json = { version = "1.0.78" }
+serde_repr = { version = "0.1.7" }
+sha2 = { version = "0.10.1" }
+simplelog = { version = "0.11.2" }
+url = { version = "2.2.2" }
 
 [dev-dependencies]
-tokio = { version = "*", features = ["full"] }
+tokio = { version = "1.16.1", features = ["full"] }
 
 [[example]]
 name = "publish"
