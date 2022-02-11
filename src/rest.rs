@@ -386,6 +386,7 @@ impl CipherParams {
 
     /// Set an IV rather than using a random one. This is for testing purposes
     /// only.
+    #[allow(dead_code)]
     pub(crate) fn set_iv(mut self, iv: crypto::IV) -> Self {
         self.iv = Some(iv);
         self
