@@ -755,7 +755,7 @@ impl Encoding {
     }
 
     /// Append the given encoding to the current list of encodings.
-    fn push(&mut self, value: impl Into<String>) -> () {
+    fn push(&mut self, value: impl Into<String>) {
         *self = Self::Some(match self {
             Self::None => value.into(),
             Self::Some(s) => format!("{}/{}", s, value.into()),
@@ -863,7 +863,7 @@ impl Message {
 }
 
 impl Decode for Message {
-    fn decode(&mut self, opts: Option<&ChannelOptions>) -> () {
+    fn decode(&mut self, opts: Option<&ChannelOptions>) {
         decode(&mut self.data, &mut self.encoding, opts);
     }
 }
@@ -881,17 +881,17 @@ pub struct PresenceMessage {
 }
 
 impl Decode for PresenceMessage {
-    fn decode(&mut self, opts: Option<&ChannelOptions>) -> () {
+    fn decode(&mut self, opts: Option<&ChannelOptions>) {
         decode(&mut self.data, &mut self.encoding, opts);
     }
 }
 
 pub trait Decode {
-    fn decode(&mut self, opts: Option<&ChannelOptions>) -> ();
+    fn decode(&mut self, opts: Option<&ChannelOptions>);
 }
 
 /// Iteratively decode the given data based on the given list of encodings.
-fn decode(data: &mut Data, encoding: &mut Encoding, opts: Option<&ChannelOptions>) -> () {
+fn decode(data: &mut Data, encoding: &mut Encoding, opts: Option<&ChannelOptions>) {
     while let Some(enc) = encoding.pop() {
         *data = match decode_once(data, &enc, opts) {
             Ok(data) => data,
@@ -1004,7 +1004,7 @@ impl MessageItemHandler {
 }
 
 impl<T: Decode> http::PaginatedItemHandler<T> for MessageItemHandler {
-    fn handle(&self, msg: &mut T) -> () {
+    fn handle(&self, msg: &mut T) {
         msg.decode(self.opts.as_ref());
     }
 }
