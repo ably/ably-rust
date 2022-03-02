@@ -186,7 +186,7 @@ impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U>
         let client = self.inner.client.clone();
         let seed_state = PaginatedState {
             next_req: Some(self.inner.build()),
-            client:   client,
+            client,
             handler:  self.handler,
             phantom:  PhantomData,
         };

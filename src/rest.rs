@@ -949,7 +949,7 @@ fn decode_once(data: &mut Data, encoding: &str, opts: Option<&ChannelOptions>) -
                 let params = caps
                     .name("params")
                     .ok_or(error!(40004, "Invalid encoding; missing params"))?;
-                if params.as_str().to_string() != cipher.algorithm() {
+                if params.as_str() == cipher.algorithm() {
                     return Err(error!(
                         40000,
                         "unable to decrypt message, incompatible cipher params"
