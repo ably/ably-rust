@@ -1,0 +1,4 @@
+- [x] publish accept params
+- [x] add rest wasm interface
+- [ ] add back history, crypto, etc for non-wasm arch
+- [ ] fix warnings

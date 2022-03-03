@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Ably</title>
+  </head>
+  <body>
+    <script type="module">
+      import init, { Rest } from "./pkg/ably.js";
+      init()
+        .then(() => {
+			const rest = new Rest("HfCDzA.KFq_Mw:1xqDKbZIKLwI_JpS");
+			rest.publish("my-channel", "ping").then((resp) => {
+				console.log("ok:", resp);
+			});
+        });
+    </script>
+  </body>
+</html>

@@ -13,7 +13,7 @@ pub mod crypto;
 pub mod history;
 pub mod http;
 pub mod json;
-pub mod log;
+// pub mod log;
 pub mod options;
 pub mod presence;
 pub mod rest;
@@ -21,7 +21,14 @@ pub mod stats;
 
 pub use error::{ErrorInfo, Result};
 pub use options::ClientOptions;
-pub use rest::{Rest, Data};
+
+use cfg_if::cfg_if;
+
+cfg_if! {
+    if #[cfg(any(target_arch = "wasm32"))] {
+        mod wasm;
+    }
+}
 
 #[cfg(test)]
 mod tests {

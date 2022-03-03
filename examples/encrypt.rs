@@ -14,11 +14,21 @@ async fn main() -> Result<()> {
     // get encrypted.
     let cipher_key = ably::crypto::generate_random_key::<ably::crypto::Key256>();
     let params = ably::rest::CipherParams::from(cipher_key);
-    let channel = client.channels.name("rust-example").cipher(params.clone()).get();
+    let channel = client
+        .channels
+        .name("rust-example")
+        .cipher(params.clone())
+        .get();
 
     // Publish a message as normal.
     println!("Publishing a string");
-    match channel.publish().name("test").string("a string").send().await {
+    match channel
+        .publish()
+        .name("test")
+        .string("a string")
+        .send()
+        .await
+    {
         Ok(_) => println!("String published!"),
         Err(err) => println!("Error publishing message: {}", err),
     }

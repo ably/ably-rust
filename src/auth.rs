@@ -22,7 +22,7 @@ const MAX_TOKEN_LENGTH: usize = 128 * 1024;
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Key {
     #[serde(rename(deserialize = "keyName"))]
-    pub name:  String,
+    pub name: String,
     pub value: String,
 }
 
@@ -46,7 +46,7 @@ impl TryFrom<&str> for Key {
     fn try_from(s: &str) -> Result<Self> {
         if let [name, value] = s.splitn(2, ':').collect::<Vec<&str>>()[..] {
             Ok(Key {
-                name:  name.to_string(),
+                name: name.to_string(),
                 value: value.to_string(),
             })
         } else {
@@ -82,19 +82,19 @@ impl Key {
     }
 }
 
-impl AuthCallback for Key {
-    /// Support using the API key as an AuthCallback which always returns a
-    /// signed token request.
-    fn token<'a>(&'a self, params: TokenParams) -> TokenFuture<'a> {
-        Box::pin(self.sign(params))
-    }
-}
+// impl AuthCallback for Key {
+//     /// Support using the API key as an AuthCallback which always returns a
+//     /// signed token request.
+//     fn token<'a>(&'a self, params: TokenParams) -> TokenFuture<'a> {
+//         Box::pin(self.sign(params))
+//     }
+// }
 
 /// Provides functions relating to Ably API authentication.
 #[derive(Clone, Debug)]
 pub struct Auth {
     client: rest::Client,
-    opts:   ClientOptions,
+    opts: ClientOptions,
 }
 
 impl Auth {
@@ -117,46 +117,45 @@ impl Auth {
         builder
     }
 
-    /// Start building a request for a token.
-    pub fn request_token(&self) -> RequestTokenBuilder {
-        let mut builder = RequestTokenBuilder::new(self.client.clone());
-
-        if let Some(ref callback) = self.opts.auth_callback {
-            builder = builder.auth_callback(callback.clone());
-        } else if let Some(ref url) = self.opts.auth_url {
-            builder = builder.auth_url(AuthUrl {
-                url:     url.clone(),
-                method:  self.opts.auth_method.clone(),
-                headers: self.opts.auth_headers.clone(),
-                params:  self.opts.auth_params.clone(),
-            });
-        } else if let Some(ref key) = self.opts.key {
-            builder = builder.key(key.clone());
-        } else if let Some(ref token) = self.opts.token {
-            builder = builder.token(token.clone());
-        }
-
-        if let Some(params) = &self.opts.default_token_params {
-            builder = builder.params(params.clone());
-        }
-
-        if let Some(client_id) = &self.opts.client_id {
-            builder = builder.client_id(client_id);
-        }
-
-        builder
-    }
+    //     /// Start building a request for a token.
+    //     pub fn request_token(&self) -> RequestTokenBuilder {
+    //         let mut builder = RequestTokenBuilder::new(self.client.clone());
+    //
+    //         if let Some(ref callback) = self.opts.auth_callback {
+    //             builder = builder.auth_callback(callback.clone());
+    //         } else if let Some(ref url) = self.opts.auth_url {
+    //             builder = builder.auth_url(AuthUrl {
+    //                 url:     url.clone(),
+    //                 method:  self.opts.auth_method.clone(),
+    //                 headers: self.opts.auth_headers.clone(),
+    //                 params:  self.opts.auth_params.clone(),
+    //             });
+    //         } else if let Some(ref key) = self.opts.key {
+    //             builder = builder.key(key.clone());
+    //         } else if let Some(ref token) = self.opts.token {
+    //             builder = builder.token(token.clone());
+    //         }
+    //
+    //         if let Some(params) = &self.opts.default_token_params {
+    //             builder = builder.params(params.clone());
+    //         }
+    //
+    //         if let Some(client_id) = &self.opts.client_id {
+    //             builder = builder.client_id(client_id);
+    //         }
+    //
+    //         builder
+    //     }
 
     /// Set the Authorization header in the given request.
     pub async fn with_auth_headers(&self, req: &mut reqwest::Request) -> Result<()> {
         if let Some(ref key) = self.opts.key {
-            if !self.opts.use_token_auth {
-                return Self::set_basic_auth(req, key);
-            }
+            return Self::set_basic_auth(req, key);
         }
+        Ok(())
 
-        let res = self.request_token().send().await?;
-        Self::set_bearer_auth(req, &res.token)
+        // let res = self.request_token().send().await?;
+        // Self::set_bearer_auth(req, &res.token)
     }
 
     fn set_bearer_auth(req: &mut reqwest::Request, token: &str) -> Result<()> {
@@ -240,14 +239,14 @@ impl Auth {
 
 /// A builder to create a signed TokenRequest.
 pub struct CreateTokenRequestBuilder {
-    key:    Option<Key>,
+    key: Option<Key>,
     params: TokenParams,
 }
 
 impl CreateTokenRequestBuilder {
     fn new() -> Self {
         Self {
-            key:    None,
+            key: None,
             params: TokenParams::default(),
         }
     }
@@ -294,9 +293,9 @@ impl CreateTokenRequestBuilder {
 
 /// A builder to request a token.
 pub struct RequestTokenBuilder {
-    client:   rest::Client,
+    client: rest::Client,
     callback: Option<Box<dyn AuthCallback>>,
-    params:   TokenParams,
+    params: TokenParams,
 }
 
 impl RequestTokenBuilder {
@@ -308,33 +307,33 @@ impl RequestTokenBuilder {
         }
     }
 
-    /// Use a key as the AuthCallback.
-    pub fn key(self, key: Key) -> Self {
-        self.auth_callback(key)
-    }
-
-    /// Use a token as the AuthCallback.
-    pub fn token(self, token: Token) -> Self {
-        self.auth_callback(token)
-    }
-
-    /// Use a URL as the AuthCallback.
-    pub fn auth_url(self, url: impl Into<AuthUrl>) -> Self {
-        let callback = AuthUrlCallback::new(self.client.clone(), url.into());
-        self.auth_callback(callback)
-    }
-
-    /// Use a custom AuthCallback.
-    pub fn auth_callback(mut self, callback: impl AuthCallback + 'static) -> Self {
-        self.callback = Some(Box::new(callback));
-        self
-    }
-
-    /// Set the TokenParams.
-    pub fn params(mut self, params: TokenParams) -> Self {
-        self.params = params;
-        self
-    }
+    //     /// Use a key as the AuthCallback.
+    //     pub fn key(self, key: Key) -> Self {
+    //         self.auth_callback(key)
+    //     }
+    //
+    //     /// Use a token as the AuthCallback.
+    //     pub fn token(self, token: Token) -> Self {
+    //         self.auth_callback(token)
+    //     }
+    //
+    //     /// Use a URL as the AuthCallback.
+    //     pub fn auth_url(self, url: impl Into<AuthUrl>) -> Self {
+    //         let callback = AuthUrlCallback::new(self.client.clone(), url.into());
+    //         self.auth_callback(callback)
+    //     }
+    //
+    //     /// Use a custom AuthCallback.
+    //     pub fn auth_callback(mut self, callback: impl AuthCallback + 'static) -> Self {
+    //         self.callback = Some(Box::new(callback));
+    //         self
+    //     }
+    //
+    //     /// Set the TokenParams.
+    //     pub fn params(mut self, params: TokenParams) -> Self {
+    //         self.params = params;
+    //         self
+    //     }
 
     /// Set the desired capability.
     pub fn capability(mut self, capability: &str) -> Self {
@@ -360,79 +359,79 @@ impl RequestTokenBuilder {
         self
     }
 
-    /// Request a token response from the configured AuthCallback.
-    ///
-    /// If the response is a TokenRequest, exchange it for a token.
-    pub async fn send(self) -> Result<TokenDetails> {
-        let callback = self
-            .callback
-            .as_ref()
-            .ok_or(error!(40171, "no means provided to renew auth token"))?;
-
-        let details = match callback.token(self.params.clone()).await {
-            // The callback may either:
-            // - return a TokenRequest which we'll exchange for a TokenDetails
-            // - return a token literal which we'll wrap in a TokenDetails
-            // - return a TokenDetails which we'll just return as is
-            Ok(token) => match token {
-                Token::Request(req) => self.exchange(&req).await?,
-                Token::Literal(token) => TokenDetails::from(token),
-                Token::Details(details) => details,
-            },
-            Err(mut err) => {
-                // Normalise auth error according to RSA4e.
-                if err.code == 40000 {
-                    err.code = 40170;
-                    err.status_code = Some(401);
-                }
-                return Err(err);
-            }
-        };
-
-        // Reject tokens with size greater than 128KiB (RSA4f).
-        if details.token.len() > MAX_TOKEN_LENGTH {
-            return Err(error!(
-                40170,
-                format!(
-                    "Token string exceeded max permitted length (was {} bytes)",
-                    details.token.len()
-                ),
-                401
-            ));
-        }
-
-        Ok(details)
-    }
-
-    /// Exchange a TokenRequest for a token by making a HTTP request to the
-    /// [requestToken endpoint] in the Ably REST API.
-    ///
-    /// Returns a boxed future rather than using async since this is both
-    /// called from and calls out to RequestBuilder.send, and recursive
-    /// async functions are not supported.
-    ///
-    /// [requestToken endpoint]: https://docs.ably.io/rest-api/#request-token
-    fn exchange(
-        &self,
-        req: &TokenRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<TokenDetails>> + Send>> {
-        let req = self
-            .client
-            .request(
-                http::Method::POST,
-                format!("/keys/{}/requestToken", req.key_name),
-            )
-            .body(req);
-
-        Box::pin(async move { req.send().await?.body().await.map_err(Into::into) })
-    }
+    //     /// Request a token response from the configured AuthCallback.
+    //     ///
+    //     /// If the response is a TokenRequest, exchange it for a token.
+    //     pub async fn send(self) -> Result<TokenDetails> {
+    //         let callback = self
+    //             .callback
+    //             .as_ref()
+    //             .ok_or(error!(40171, "no means provided to renew auth token"))?;
+    //
+    //         let details = match callback.token(self.params.clone()).await {
+    //             // The callback may either:
+    //             // - return a TokenRequest which we'll exchange for a TokenDetails
+    //             // - return a token literal which we'll wrap in a TokenDetails
+    //             // - return a TokenDetails which we'll just return as is
+    //             Ok(token) => match token {
+    //                 Token::Request(req) => self.exchange(&req).await?,
+    //                 Token::Literal(token) => TokenDetails::from(token),
+    //                 Token::Details(details) => details,
+    //             },
+    //             Err(mut err) => {
+    //                 // Normalise auth error according to RSA4e.
+    //                 if err.code == 40000 {
+    //                     err.code = 40170;
+    //                     err.status_code = Some(401);
+    //                 }
+    //                 return Err(err);
+    //             }
+    //         };
+    //
+    //         // Reject tokens with size greater than 128KiB (RSA4f).
+    //         if details.token.len() > MAX_TOKEN_LENGTH {
+    //             return Err(error!(
+    //                 40170,
+    //                 format!(
+    //                     "Token string exceeded max permitted length (was {} bytes)",
+    //                     details.token.len()
+    //                 ),
+    //                 401
+    //             ));
+    //         }
+    //
+    //         Ok(details)
+    //     }
+    //
+    //     /// Exchange a TokenRequest for a token by making a HTTP request to the
+    //     /// [requestToken endpoint] in the Ably REST API.
+    //     ///
+    //     /// Returns a boxed future rather than using async since this is both
+    //     /// called from and calls out to RequestBuilder.send, and recursive
+    //     /// async functions are not supported.
+    //     ///
+    //     /// [requestToken endpoint]: https://docs.ably.io/rest-api/#request-token
+    //     fn exchange(
+    //         &self,
+    //         req: &TokenRequest,
+    //     ) -> Pin<Box<dyn Future<Output = Result<TokenDetails>> + Send>> {
+    //         let req = self
+    //             .client
+    //             .request(
+    //                 http::Method::POST,
+    //                 format!("/keys/{}/requestToken", req.key_name),
+    //             )
+    //             .body(req);
+    //
+    //         Box::pin(async move { req.send().await?.body().await.map_err(Into::into) })
+    //     }
 }
 
 /// An AuthCallback which requests tokens from a URL.
 #[derive(Clone, Debug)]
 pub struct AuthUrlCallback {
     client: rest::Client,
-    url:    AuthUrl,
+    url: AuthUrl,
 }
 
 impl AuthUrlCallback {
@@ -469,20 +468,21 @@ impl AuthUrlCallback {
     }
 }
 
-impl AuthCallback for AuthUrlCallback {
-    fn token<'a>(&'a self, params: TokenParams) -> TokenFuture<'a> {
-        Box::pin(self.request(params))
-    }
-}
+// TODO(AD)
+// impl AuthCallback for AuthUrlCallback {
+//     fn token<'a>(&'a self, params: TokenParams) -> TokenFuture<'a> {
+//         Box::pin(self.request(params))
+//     }
+// }
 
 #[derive(Clone, Debug)]
 /// A URL to request a token from, along with the HTTP method, headers, and
 /// query params to include in the request.
 pub struct AuthUrl {
-    pub url:     reqwest::Url,
-    pub method:  http::Method,
+    pub url: reqwest::Url,
+    pub method: http::Method,
     pub headers: Option<http::HeaderMap>,
-    pub params:  Option<http::UrlQuery>,
+    pub params: Option<http::UrlQuery>,
 }
 
 impl AuthUrl {
@@ -518,10 +518,10 @@ impl From<reqwest::Url> for AuthUrl {
 #[derive(Clone, Debug, Default)]
 pub struct TokenParams {
     pub capability: Option<String>,
-    pub client_id:  Option<String>,
-    pub nonce:      Option<String>,
-    pub timestamp:  Option<DateTime<Utc>>,
-    pub ttl:        Option<i64>,
+    pub client_id: Option<String>,
+    pub nonce: Option<String>,
+    pub timestamp: Option<DateTime<Utc>>,
+    pub ttl: Option<i64>,
 }
 
 impl TokenParams {
@@ -538,13 +538,13 @@ impl TokenParams {
         }
 
         let mut req = TokenRequest {
-            key_name:   key.name.clone(),
-            timestamp:  self.timestamp.unwrap_or_else(Utc::now),
+            key_name: key.name.clone(),
+            timestamp: self.timestamp.unwrap_or_else(Utc::now),
             capability: self.capability,
-            client_id:  self.client_id,
-            nonce:      self.nonce.unwrap_or_else(Auth::generate_nonce),
-            ttl:        self.ttl,
-            mac:        None,
+            client_id: self.client_id,
+            nonce: self.nonce.unwrap_or_else(Auth::generate_nonce),
+            ttl: self.ttl,
+            mac: None,
         };
 
         req.mac = Some(Auth::compute_mac(key, &req)?);
@@ -559,19 +559,19 @@ impl TokenParams {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenRequest {
-    pub key_name:   String,
+    pub key_name: String,
     #[serde(with = "chrono::serde::ts_milliseconds")]
-    pub timestamp:  DateTime<Utc>,
+    pub timestamp: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capability: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_id:  Option<String>,
+    pub client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mac:        Option<String>,
+    pub mac: Option<String>,
     #[serde(skip_serializing_if = "String::is_empty")]
-    pub nonce:      String,
+    pub nonce: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ttl:        Option<i64>,
+    pub ttl: Option<i64>,
 }
 
 /// The token details returned in a successful response from the [REST
@@ -581,17 +581,17 @@ pub struct TokenRequest {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenDetails {
-    pub token:      String,
+    pub token: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(with = "chrono::serde::ts_milliseconds_option")]
-    pub expires:    Option<DateTime<Utc>>,
+    pub expires: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(with = "chrono::serde::ts_milliseconds_option")]
-    pub issued:     Option<DateTime<Utc>>,
+    pub issued: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capability: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_id:  Option<String>,
+    pub client_id: Option<String>,
 }
 
 impl From<String> for TokenDetails {

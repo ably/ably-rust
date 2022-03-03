@@ -15,10 +15,10 @@ use crate::{auth, crypto, history, http, json, presence, stats, Result};
 /// [Ably REST API]: https://ably.com/documentation/rest-api
 #[derive(Debug)]
 pub struct Rest {
-    pub auth:     auth::Auth,
+    pub auth: auth::Auth,
     pub channels: Channels,
-    pub client:   Client,
-    pub opts:     ClientOptions,
+    pub client: Client,
+    pub opts: ClientOptions,
 }
 
 impl Rest {
@@ -200,9 +200,9 @@ impl From<String> for Rest {
 /// send HTTP requests to the Ably REST API.
 pub struct Client {
     inner: reqwest::Client,
-    opts:  ClientOptions,
-    url:   reqwest::Url,
-    auth:  Option<Box<auth::Auth>>,
+    opts: ClientOptions,
+    url: reqwest::Url,
+    auth: Option<Box<auth::Auth>>,
 }
 
 impl Client {
@@ -372,7 +372,7 @@ impl From<CipherParams> for ChannelOptions {
 #[derive(Clone)]
 pub struct CipherParams {
     key: crypto::Key,
-    iv:  Option<crypto::IV>,
+    iv: Option<crypto::IV>,
 }
 
 impl CipherParams {
@@ -441,7 +441,7 @@ impl From<crypto::Key> for CipherParams {
 /// Start building a Channel to publish a message.
 pub struct ChannelBuilder {
     client: Client,
-    name:   String,
+    name: String,
     cipher: Option<CipherParams>,
 }
 
@@ -464,10 +464,10 @@ impl ChannelBuilder {
     pub fn get(self) -> Channel {
         let opts = self.cipher.map(Into::into);
         Channel {
-            name:     self.name.clone(),
+            name: self.name.clone(),
             presence: Presence::new(self.name.clone(), self.client.clone(), opts.clone()),
-            client:   self.client.clone(),
-            opts:     opts,
+            client: self.client.clone(),
+            opts: opts,
         }
     }
 }
@@ -496,10 +496,10 @@ impl Channels {
 
 /// An Ably Channel to publish messages to or retrieve history or presence for.
 pub struct Channel {
-    pub name:     String,
+    pub name: String,
     pub presence: Presence,
-    client:       Client,
-    opts:         Option<ChannelOptions>,
+    client: Client,
+    opts: Option<ChannelOptions>,
 }
 
 impl Channel {
@@ -530,9 +530,9 @@ impl Channel {
 }
 
 pub struct Presence {
-    name:   String,
+    name: String,
     client: Client,
-    opts:   Option<ChannelOptions>,
+    opts: Option<ChannelOptions>,
 }
 
 impl Presence {
@@ -565,8 +565,8 @@ impl Presence {
 
 /// A request to publish a message to a channel.
 pub struct PublishBuilder {
-    req:    http::RequestBuilder,
-    msg:    Result<Message>,
+    req: http::RequestBuilder,
+    msg: Result<Message>,
     format: Format,
     cipher: Option<CipherParams>,
 }
@@ -789,19 +789,19 @@ impl Default for Encoding {
 #[derive(Default, Deserialize, Serialize)]
 pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub id:            Option<String>,
+    pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub name:          Option<String>,
+    pub name: Option<String>,
     #[serde(skip_serializing_if = "Data::is_none")]
-    pub data:          Data,
+    pub data: Data,
     #[serde(default, skip_serializing_if = "Encoding::is_none")]
-    pub encoding:      Encoding,
+    pub encoding: Encoding,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_id:     Option<String>,
+    pub client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub extras:        Option<json::Map>,
+    pub extras: Option<json::Map>,
 }
 
 impl Message {
@@ -871,13 +871,13 @@ impl Decode for Message {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PresenceMessage {
-    pub action:        PresenceAction,
-    pub client_id:     String,
+    pub action: PresenceAction,
+    pub client_id: String,
     pub connection_id: String,
     #[serde(skip_serializing_if = "Data::is_none")]
-    pub data:          Data,
+    pub data: Data,
     #[serde(default, skip_serializing_if = "Encoding::is_none")]
-    pub encoding:      Encoding,
+    pub encoding: Encoding,
 }
 
 impl Decode for PresenceMessage {

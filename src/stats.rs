@@ -7,17 +7,17 @@ use serde::Deserialize;
 #[serde(default, rename_all = "camelCase")]
 pub struct Stats {
     pub interval_id: String,
-    pub unit:        Unit,
+    pub unit: Unit,
 
-    pub all:       Option<MessageTypes>,
-    pub inbound:   Option<MessageTraffic>,
-    pub outbound:  Option<MessageTraffic>,
+    pub all: Option<MessageTypes>,
+    pub inbound: Option<MessageTraffic>,
+    pub outbound: Option<MessageTraffic>,
     pub persisted: Option<MessageTypes>,
 
     pub connections: Option<ConnectionTypes>,
-    pub channels:    Option<ResourceCount>,
+    pub channels: Option<ResourceCount>,
 
-    pub api_requests:   Option<RequestCount>,
+    pub api_requests: Option<RequestCount>,
     pub token_requests: Option<RequestCount>,
 
     pub push: Option<Push>,
@@ -46,35 +46,35 @@ impl Default for Unit {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MessageCount {
-    pub count:   f64,
-    pub data:    f64,
-    pub failed:  f64,
+    pub count: f64,
+    pub data: f64,
+    pub failed: f64,
     pub refused: f64,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ResourceCount {
-    pub peak:    f64,
-    pub min:     f64,
-    pub mean:    f64,
-    pub opened:  f64,
-    pub failed:  f64,
+    pub peak: f64,
+    pub min: f64,
+    pub mean: f64,
+    pub opened: f64,
+    pub failed: f64,
     pub refused: f64,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RequestCount {
-    pub failed:    f64,
-    pub refused:   f64,
+    pub failed: f64,
+    pub refused: f64,
     pub succeeded: f64,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MessageTypes {
-    pub all:      MessageCount,
+    pub all: MessageCount,
     pub messages: MessageCount,
     pub presence: MessageCount,
 }
@@ -82,62 +82,62 @@ pub struct MessageTypes {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ConnectionTypes {
-    pub all:   ResourceCount,
+    pub all: ResourceCount,
     pub plain: ResourceCount,
-    pub tls:   ResourceCount,
+    pub tls: ResourceCount,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MessageTraffic {
-    pub all:            MessageTypes,
-    pub realtime:       MessageTypes,
-    pub rest:           MessageTypes,
-    pub webhook:        MessageTypes,
-    pub push:           MessageTypes,
+    pub all: MessageTypes,
+    pub realtime: MessageTypes,
+    pub rest: MessageTypes,
+    pub webhook: MessageTypes,
+    pub push: MessageTypes,
     pub external_queue: MessageTypes,
-    pub shared_queue:   MessageTypes,
-    pub http_event:     MessageTypes,
+    pub shared_queue: MessageTypes,
+    pub http_event: MessageTypes,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Push {
-    pub messages:         f64,
-    pub notifications:    PushNotifications,
+    pub messages: f64,
+    pub notifications: PushNotifications,
     pub direct_publishes: f64,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PushNotifications {
-    pub invalid:    f64,
-    pub attempted:  PushTransportCount,
+    pub invalid: f64,
+    pub attempted: PushTransportCount,
     pub successful: PushTransportCount,
-    pub failed:     PushNotificationFailures,
+    pub failed: PushNotificationFailures,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PushTransportCount {
     pub total: f64,
-    pub gcm:   f64,
-    pub fcm:   f64,
-    pub apns:  f64,
-    pub web:   f64,
+    pub gcm: f64,
+    pub fcm: f64,
+    pub apns: f64,
+    pub web: f64,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PushNotificationFailures {
     pub retriable: PushTransportCount,
-    pub final_:    PushTransportCount,
+    pub final_: PushTransportCount,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct XchgMessages {
-    pub all:           MessageTypes,
+    pub all: MessageTypes,
     pub producer_paid: MessageDirections,
     pub consumer_paid: MessageDirections,
 }
@@ -145,23 +145,23 @@ pub struct XchgMessages {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MessageDirections {
-    pub all:      MessageTypes,
-    pub inbound:  MessageTraffic,
+    pub all: MessageTypes,
+    pub inbound: MessageTraffic,
     pub outbound: MessageTraffic,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Rates {
-    pub messages:       f64,
-    pub api_requests:   f64,
+    pub messages: f64,
+    pub api_requests: f64,
     pub token_requests: f64,
-    pub reactor:        ReactorRates,
+    pub reactor: ReactorRates,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ReactorRates {
     pub http_event: f64,
-    pub amqp:       f64,
+    pub amqp: f64,
 }

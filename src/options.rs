@@ -1,6 +1,7 @@
 use std::convert::{TryFrom, TryInto};
 use std::time::Duration;
 
+use cfg_if::cfg_if;
 use crate::error::*;
 use crate::{auth, http, rest, Result};
 
@@ -63,7 +64,7 @@ pub struct ClientOptions {
     /// Encode requests using the binary msgpack encoding (true), or the JSON
     /// encoding (false). Defaults to true.
     pub(crate) use_binary_protocol: bool,
-    pub(crate) format:              rest::Format,
+    pub(crate) format: rest::Format,
 
     /// Query the Ably system for the current time when issuing tokens.
     /// Defaults to false.
@@ -399,10 +400,11 @@ impl ClientOptions {
             default_headers.insert("X-Ably-ClientId", base64::encode(client_id).parse()?);
         }
 
+        // TODO(AD)
         let http_client = reqwest::Client::builder()
             .default_headers(default_headers)
-            .timeout(self.http_request_timeout)
-            .connect_timeout(self.http_open_timeout)
+            // .timeout(self.http_request_timeout)
+            // .connect_timeout(self.http_open_timeout)
             .build()?;
 
         // To avoid a circular reference between auth::Auth and rest::Client,
