@@ -16,6 +16,7 @@ pub mod json;
 pub mod log;
 pub mod options;
 pub mod presence;
+pub mod realtime;
 pub mod rest;
 pub mod stats;
 
