@@ -41,8 +41,6 @@ serde_repr = { version = "0.1.7" }
 sha2 = { version = "0.10.1" }
 simplelog = { version = "0.11.2" }
 url = { version = "2.2.2" }
-
-[dev-dependencies]
 tokio = { version = "1.16.1", features = ["full"] }
 
 [[example]]
@@ -56,3 +54,6 @@ path = "examples/history.rs"
 [[example]]
 name = "encrypt"
 path = "examples/encrypt.rs"
+
+[lib]
+crate-type = ["cdylib", "lib"]

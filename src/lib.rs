@@ -19,6 +19,8 @@ pub mod presence;
 pub mod rest;
 pub mod stats;
 
+mod rest_c;
+
 pub use error::{ErrorInfo, Result};
 pub use options::ClientOptions;
 pub use rest::{Rest, Data};
