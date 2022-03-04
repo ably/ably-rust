@@ -90,9 +90,9 @@ impl RequestBuilder {
     }
 
     pub fn basic_auth<U: Display, P: Display>(mut self, username: U, password: Option<P>) -> Self {
-        if let Ok(req) = self.inner {
-            self.inner = Ok(req.basic_auth(username, password));
-        }
+        //if let Ok(req) = self.inner {
+        //    self.inner = Ok(req.basic_auth(username, password));
+        //}
         self
     }
 
@@ -177,88 +177,88 @@ impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U>
         self
     }
 
-    /// Request a stream of pages from the Ably REST API.
-    pub fn pages(self) -> impl Stream<Item = Result<PaginatedResult<T, U>>> {
-        // Use stream::unfold to create a stream of pages where the internal
-        // state holds the request for the next page, and the closure sends the
-        // request and returns both a PaginatedResult and the request for the
-        // next page if the response has a 'Link: ...; rel="next"' header.
-        let client = self.inner.client.clone();
-        let seed_state = PaginatedState {
-            next_req: Some(self.inner.build()),
-            client: client,
-            handler: self.handler,
-            phantom: PhantomData,
-        };
-        stream::unfold(seed_state, |mut state| {
-            async {
-                // If there is no request in the state, we're done, so unwrap
-                // the request to a Result<reqwest::Request>.
-                let req = state.next_req?;
+    // /// Request a stream of pages from the Ably REST API.
+    // pub fn pages(self) -> impl Stream<Item = Result<PaginatedResult<T, U>>> {
+    //     // Use stream::unfold to create a stream of pages where the internal
+    //     // state holds the request for the next page, and the closure sends the
+    //     // request and returns both a PaginatedResult and the request for the
+    //     // next page if the response has a 'Link: ...; rel="next"' header.
+    //     let client = self.inner.client.clone();
+    //     let seed_state = PaginatedState {
+    //         next_req: Some(self.inner.build()),
+    //         client: client,
+    //         handler: self.handler,
+    //         phantom: PhantomData,
+    //     };
+    //     stream::unfold(seed_state, |mut state| {
+    //         async {
+    //             // If there is no request in the state, we're done, so unwrap
+    //             // the request to a Result<reqwest::Request>.
+    //             let req = state.next_req?;
 
-                // If there was an error constructing the next request, yield
-                // that error and set the next request to None to end the
-                // stream on the next iteration.
-                let req = match req {
-                    Err(err) => {
-                        state.next_req = None;
-                        return Some((Err(err), state));
-                    }
-                    Ok(req) => req,
-                };
+    //             // If there was an error constructing the next request, yield
+    //             // that error and set the next request to None to end the
+    //             // stream on the next iteration.
+    //             let req = match req {
+    //                 Err(err) => {
+    //                     state.next_req = None;
+    //                     return Some((Err(err), state));
+    //                 }
+    //                 Ok(req) => req,
+    //             };
 
-                // Clone the request first so we can maintain the same headers
-                // for the next request before we consume the current request
-                // by sending it.
-                //
-                // If the request is not cloneable, for example because it has
-                // a streamed body, map it to an error which will be yielded on
-                // the next iteration of the stream.
-                let mut next_req = req
-                    .try_clone()
-                    .ok_or(error!(40000, "not a pageable request"));
+    //             // Clone the request first so we can maintain the same headers
+    //             // for the next request before we consume the current request
+    //             // by sending it.
+    //             //
+    //             // If the request is not cloneable, for example because it has
+    //             // a streamed body, map it to an error which will be yielded on
+    //             // the next iteration of the stream.
+    //             let mut next_req = req
+    //                 .try_clone()
+    //                 .ok_or(error!(40000, "not a pageable request"));
 
-                // Send the request and wrap the response in a PaginatedResult.
-                //
-                // If there's an error, yield the error and set the next
-                // request to None to end the stream on the next iteration.
-                let res = match state.client.send(req).await {
-                    Err(err) => {
-                        state.next_req = None;
-                        return Some((Err(err), state));
-                    }
-                    Ok(res) => PaginatedResult::new(res, state.handler.clone()),
-                };
+    //             // Send the request and wrap the response in a PaginatedResult.
+    //             //
+    //             // If there's an error, yield the error and set the next
+    //             // request to None to end the stream on the next iteration.
+    //             let res = match state.client.send(req).await {
+    //                 Err(err) => {
+    //                     state.next_req = None;
+    //                     return Some((Err(err), state));
+    //                 }
+    //                 Ok(res) => PaginatedResult::new(res, state.handler.clone()),
+    //             };
 
-                // If there's a next link in the response, merge its params
-                // into the next request if we have one, otherwise set the next
-                // request to None to end the stream on the next iteration.
-                state.next_req = None;
-                if let Some(link) = res.next_link() {
-                    if let Ok(req) = &mut next_req {
-                        req.url_mut().set_query(Some(&link.params));
-                    }
-                    state.next_req = Some(next_req)
-                };
+    //             // If there's a next link in the response, merge its params
+    //             // into the next request if we have one, otherwise set the next
+    //             // request to None to end the stream on the next iteration.
+    //             state.next_req = None;
+    //             if let Some(link) = res.next_link() {
+    //                 if let Ok(req) = &mut next_req {
+    //                     req.url_mut().set_query(Some(&link.params));
+    //                 }
+    //                 state.next_req = Some(next_req)
+    //             };
 
-                // Yield the PaginatedResult and the next state.
-                Some((Ok(res), state))
-            }
-            .boxed()
-        })
-    }
+    //             // Yield the PaginatedResult and the next state.
+    //             Some((Ok(res), state))
+    //         }
+    //         .boxed()
+    //     })
+    // }
 
-    /// Retrieve the first page of the paginated response.
-    pub async fn send(self) -> Result<PaginatedResult<T, U>> {
-        // The pages stream always returns at least one non-None value, even if
-        // the first request returns an error which would be Some(Err(err)), so
-        // we unwrap the Option with a generic error which we don't expect to
-        // be encountered by the caller.
-        self.pages()
-            .next()
-            .await
-            .unwrap_or(Err(error!(40000, "Unexpected error retrieving first page")))
-    }
+    // /// Retrieve the first page of the paginated response.
+    // pub async fn send(self) -> Result<PaginatedResult<T, U>> {
+    //     // The pages stream always returns at least one non-None value, even if
+    //     // the first request returns an error which would be Some(Err(err)), so
+    //     // we unwrap the Option with a generic error which we don't expect to
+    //     // be encountered by the caller.
+    //     self.pages()
+    //         .next()
+    //         .await
+    //         .unwrap_or(Err(error!(40000, "Unexpected error retrieving first page")))
+    // }
 }
 
 /// A Link HTTP header.

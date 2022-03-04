@@ -1,8 +1,5 @@
 use crate::rest::Rest as RestInternal;
-use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
-use wasm_bindgen_futures::JsFuture;
 
 #[wasm_bindgen]
 pub struct Rest {

@@ -41,13 +41,13 @@ impl RequestBuilder {
         self
     }
 
-    /// Request a stream of pages of presence messages.
-    pub fn pages(self) -> impl Stream<Item = Result<PaginatedResult>> {
-        self.inner.pages()
-    }
+    // /// Request a stream of pages of presence messages.
+    // pub fn pages(self) -> impl Stream<Item = Result<PaginatedResult>> {
+    //     self.inner.pages()
+    // }
 
-    /// Retrieve the first page of presence messages.
-    pub async fn send(self) -> Result<PaginatedResult> {
-        self.inner.send().await
-    }
+    // /// Retrieve the first page of presence messages.
+    // pub async fn send(self) -> Result<PaginatedResult> {
+    //     self.inner.send().await
+    // }
 }
