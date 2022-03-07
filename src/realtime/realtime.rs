@@ -74,11 +74,12 @@ impl Connection {
     }
 
     async fn sockets(&self) -> WebSocket {
+        let key = std::env::var("ABLY_KEY").unwrap();
         let mut url = url::Url::parse("wss://realtime.ably.io").unwrap();
         url.query_pairs_mut()
             .append_pair(
                 "key",
-                "zArFMQ.DmA_fA:wKcig3p80dTShe42ojT84ctaiVomNJn3cWTDTorex4g",
+                &key,
             )
             .append_pair("protocol", "json")
             .append_pair("echo", "true");
