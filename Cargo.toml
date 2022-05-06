@@ -1,13 +1,12 @@
 [package]
 name = "ably"
 version = "0.1.0"
-authors = ["Lewis Marshall <lewis.marshall@ably.com>"]
-edition = "2018"
+edition = "2021"
 description = "Ably client library SDK"
 documentation = "https://docs.rs/ably"
 readme = "README.md"
 homepage = "https://ably.com"
-repository = "https://github.com/ably-labs/ably-rust"
+repository = "https://github.com/ably/ably-rust"
 license = "Apache-2.0"
 keywords = ["ably", "realtime", "pubsub"]
 
@@ -18,41 +17,29 @@ include = [
 ]
 
 [dependencies]
-aes = { version = "0.7.5" }
-atty = { version = "0.2.14" }
-base64 = { version = "0.13.0" }
-block-modes = { version = "0.8.1" }
-cipher = { version = "0.3.0" }
+aes = "0.7.5"
+atty = "0.2.14"
+base64 = "0.13.0"
+block-modes = "0.8.1"
+cipher = "0.3.0"
 chrono = { version = "0.4.19", features = ["serde"] }
-dyn-clone = { version = "1.0.4" }
-futures = { version = "0.3.21" }
-hmac = { version = "0.12.0" }
-lazy_static = { version = "1.4.0" }
-log = { version = "0.4.14" }
-mime = { version = "0.3.16" }
-rand = { version = "0.8.4" }
-regex = { version = "1.5.4" }
+dyn-clone = "1.0.4"
+futures = "0.3.21"
+hmac = "0.12.0"
+lazy_static = "1.4.0"
+log = "0.4.14"
+mime = "0.3.16"
+rand = "0.8.4"
+regex = "1.5.4"
 reqwest = { version = "0.11.4", features = ["json"] }
-rmp-serde = { version = "0.15.5" }
+rmp-serde = "0.15.5"
 serde = { version = "1.0", features = ["derive"] }
-serde_bytes = { version = "0.11.5" }
-serde_json = { version = "1.0.78" }
-serde_repr = { version = "0.1.7" }
-sha2 = { version = "0.10.1" }
-simplelog = { version = "0.11.2" }
-url = { version = "2.2.2" }
+serde_bytes = "0.11.5"
+serde_json = "1.0.78"
+serde_repr = "0.1.7"
+sha2 = "0.10.1"
+simplelog = "0.11.2"
+url = "2.2.2"
 
 [dev-dependencies]
 tokio = { version = "1.16.1", features = ["full"] }
-
-[[example]]
-name = "publish"
-path = "examples/publish.rs"
-
-[[example]]
-name = "history"
-path = "examples/history.rs"
-
-[[example]]
-name = "encrypt"
-path = "examples/encrypt.rs"
