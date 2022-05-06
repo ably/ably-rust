@@ -464,9 +464,9 @@ impl ChannelBuilder {
     pub fn get(self) -> Channel {
         let opts = self.cipher.map(Into::into);
         Channel {
-            name:     self.name.clone(),
+            name: self.name.clone(),
             presence: Presence::new(self.name.clone(), self.client.clone(), opts.clone()),
-            client:   self.client,
+            client: self.client,
             opts,
         }
     }
@@ -935,10 +935,9 @@ fn decode_once(data: &mut Data, encoding: &str, opts: Option<&ChannelOptions>) -
         },
         "cipher" => match data {
             Data::Binary(ref mut data) => {
-                let opts = opts.ok_or_else(|| error!(
-                    40000,
-                    "unable to decrypt message, no channel options"
-                ))?;
+                let opts = opts.ok_or_else(|| {
+                    error!(40000, "unable to decrypt message, no channel options")
+                })?;
                 let cipher = opts
                     .cipher
                     .as_ref()

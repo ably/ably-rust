@@ -207,7 +207,7 @@ impl Auth {
                 .map(|t| t.to_string())
                 .as_ref()
                 .map(|t| t.as_bytes())
-                .unwrap_or_default()
+                .unwrap_or_default(),
         );
         mac.update(b"\n");
 
@@ -215,7 +215,7 @@ impl Auth {
             req.capability
                 .as_ref()
                 .map(|c| c.as_bytes())
-                .unwrap_or_default()
+                .unwrap_or_default(),
         );
         mac.update(b"\n");
 
@@ -223,7 +223,7 @@ impl Auth {
             req.client_id
                 .as_ref()
                 .map(|c| c.as_bytes())
-                .unwrap_or_default()
+                .unwrap_or_default(),
         );
         mac.update(b"\n");
 
@@ -285,10 +285,10 @@ impl CreateTokenRequestBuilder {
 
     /// Sign and return the TokenRequest.
     pub fn sign(self) -> Result<TokenRequest> {
-        let key = self.key.as_ref().ok_or_else(|| error!(
-            40106,
-            "API key is required to create signed token requests"
-        ))?;
+        let key = self
+            .key
+            .as_ref()
+            .ok_or_else(|| error!(40106, "API key is required to create signed token requests"))?;
         self.params.sign(key)
     }
 }
@@ -446,10 +446,9 @@ impl AuthUrlCallback {
         let res = self.url.request(&self.client).send().await?;
 
         // Parse the token response based on the Content-Type header.
-        let content_type = res.content_type().ok_or_else(|| error!(
-            40170,
-            "authUrl response is missing a content-type header"
-        ))?;
+        let content_type = res
+            .content_type()
+            .ok_or_else(|| error!(40170, "authUrl response is missing a content-type header"))?;
         match content_type.essence_str() {
             "application/json" => {
                 // Expect a JSON encoded TokenRequest or TokenDetails, and just

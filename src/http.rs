@@ -187,8 +187,8 @@ impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U>
         let seed_state = PaginatedState {
             next_req: Some(self.inner.build()),
             client,
-            handler:  self.handler,
-            phantom:  PhantomData,
+            handler: self.handler,
+            phantom: PhantomData,
         };
         stream::unfold(seed_state, |mut state| {
             async {

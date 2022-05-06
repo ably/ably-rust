@@ -13,7 +13,13 @@ async fn main() -> Result<()> {
     let channel = client.channels.get("rust-example");
 
     println!("Publishing a string");
-    match channel.publish().name("string").string("a string").send().await {
+    match channel
+        .publish()
+        .name("string")
+        .string("a string")
+        .send()
+        .await
+    {
         Ok(_) => println!("String published!"),
         Err(err) => println!("Error publishing message: {}", err),
     }

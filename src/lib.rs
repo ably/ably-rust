@@ -21,7 +21,7 @@ pub mod stats;
 
 pub use error::{ErrorInfo, Result};
 pub use options::ClientOptions;
-pub use rest::{Rest, Data};
+pub use rest::{Data, Rest};
 
 #[cfg(test)]
 mod tests {
