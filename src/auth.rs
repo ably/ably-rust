@@ -78,14 +78,14 @@ impl Key {
     /// # }
     /// ```
     pub async fn sign(&self, params: TokenParams) -> Result<Token> {
-        params.sign(self).map(|req| Token::Request(req))
+        params.sign(self).map(Token::Request)
     }
 }
 
 impl AuthCallback for Key {
     /// Support using the API key as an AuthCallback which always returns a
     /// signed token request.
-    fn token<'a>(&'a self, params: TokenParams) -> TokenFuture<'a> {
+    fn token(&self, params: TokenParams) -> TokenFuture {
         Box::pin(self.sign(params))
     }
 }
@@ -205,24 +205,25 @@ impl Auth {
         mac.update(
             req.ttl
                 .map(|t| t.to_string())
-                .unwrap_or(String::from(""))
-                .as_bytes(),
+                .as_ref()
+                .map(|t| t.as_bytes())
+                .unwrap_or_default()
         );
         mac.update(b"\n");
 
         mac.update(
             req.capability
                 .as_ref()
-                .unwrap_or(&String::from(""))
-                .as_bytes(),
+                .map(|c| c.as_bytes())
+                .unwrap_or_default()
         );
         mac.update(b"\n");
 
         mac.update(
             req.client_id
                 .as_ref()
-                .unwrap_or(&String::from(""))
-                .as_bytes(),
+                .map(|c| c.as_bytes())
+                .unwrap_or_default()
         );
         mac.update(b"\n");
 
@@ -284,7 +285,7 @@ impl CreateTokenRequestBuilder {
 
     /// Sign and return the TokenRequest.
     pub fn sign(self) -> Result<TokenRequest> {
-        let key = self.key.as_ref().ok_or(error!(
+        let key = self.key.as_ref().ok_or_else(|| error!(
             40106,
             "API key is required to create signed token requests"
         ))?;
@@ -367,7 +368,7 @@ impl RequestTokenBuilder {
         let callback = self
             .callback
             .as_ref()
-            .ok_or(error!(40171, "no means provided to renew auth token"))?;
+            .ok_or_else(|| error!(40171, "no means provided to renew auth token"))?;
 
         let details = match callback.token(self.params.clone()).await {
             // The callback may either:
@@ -445,7 +446,7 @@ impl AuthUrlCallback {
         let res = self.url.request(&self.client).send().await?;
 
         // Parse the token response based on the Content-Type header.
-        let content_type = res.content_type().ok_or(error!(
+        let content_type = res.content_type().ok_or_else(|| error!(
             40170,
             "authUrl response is missing a content-type header"
         ))?;
@@ -470,7 +471,7 @@ impl AuthUrlCallback {
 }
 
 impl AuthCallback for AuthUrlCallback {
-    fn token<'a>(&'a self, params: TokenParams) -> TokenFuture<'a> {
+    fn token(&self, params: TokenParams) -> TokenFuture {
         Box::pin(self.request(params))
     }
 }
@@ -609,13 +610,13 @@ pub type TokenFuture<'a> = Pin<Box<dyn Future<Output = Result<Token>> + Send + '
 /// An AuthCallback is used to provide a Token during a call to
 /// auth::request_token.
 pub trait AuthCallback: DynClone + std::fmt::Debug + Send + Sync {
-    fn token<'a>(&'a self, params: TokenParams) -> TokenFuture<'a>;
+    fn token(&self, params: TokenParams) -> TokenFuture;
 }
 
 dyn_clone::clone_trait_object!(AuthCallback);
 
 impl AuthCallback for Box<dyn AuthCallback> {
-    fn token<'a>(&'a self, params: TokenParams) -> TokenFuture<'a> {
+    fn token(&self, params: TokenParams) -> TokenFuture {
         (**self).token(params)
     }
 }
@@ -648,7 +649,7 @@ impl<T: Into<String>> From<T> for Token {
 }
 
 impl AuthCallback for Token {
-    fn token<'a>(&'a self, _: TokenParams) -> TokenFuture<'a> {
+    fn token(&self, _: TokenParams) -> TokenFuture {
         let token = self.clone();
         Box::pin(async move { Ok(token) })
     }

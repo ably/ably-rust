@@ -415,7 +415,7 @@ impl ClientOptions {
         let auth = auth::Auth::new(rest_client_no_auth, self.clone());
 
         let rest_client_with_auth =
-            rest::Client::new_with_auth(http_client, self.clone(), rest_url.clone(), auth.clone());
+            rest::Client::new_with_auth(http_client, self.clone(), rest_url, auth.clone());
 
         Ok(rest::Rest::new(auth, rest_client_with_auth, self.clone()))
     }

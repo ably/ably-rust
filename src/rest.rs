@@ -83,7 +83,7 @@ impl Rest {
 
         let time = res
             .pop()
-            .ok_or(error!(40000, "Invalid response from /time"))?;
+            .ok_or_else(|| error!(40000, "Invalid response from /time"))?;
 
         Ok(Utc.timestamp(time / 1000, time as u32 % 1000))
     }
@@ -416,7 +416,7 @@ impl CipherParams {
     }
 
     /// Decrypt the data using AES-CBC with PKCS7 padding.
-    pub fn decrypt(&self, data: &mut Vec<u8>) -> Result<Vec<u8>> {
+    pub fn decrypt(&self, data: &mut [u8]) -> Result<Vec<u8>> {
         if data.len() % aes::BLOCK_SIZE != 0 || data.len() < aes::BLOCK_SIZE {
             return Err(error!(
                 40013,
@@ -466,8 +466,8 @@ impl ChannelBuilder {
         Channel {
             name:     self.name.clone(),
             presence: Presence::new(self.name.clone(), self.client.clone(), opts.clone()),
-            client:   self.client.clone(),
-            opts:     opts,
+            client:   self.client,
+            opts,
         }
     }
 }
@@ -581,7 +581,7 @@ impl PublishBuilder {
         Self {
             req,
             msg: Ok(Message::default()),
-            format: client.opts.format.clone(),
+            format: client.opts.format,
             cipher: None,
         }
     }
@@ -679,10 +679,7 @@ pub enum Data {
 
 impl Data {
     fn is_none(&self) -> bool {
-        match self {
-            Self::None => true,
-            _ => false,
-        }
+        matches!(self, Self::None)
     }
 }
 
@@ -755,7 +752,7 @@ impl Encoding {
     }
 
     /// Append the given encoding to the current list of encodings.
-    fn push(&mut self, value: impl Into<String>) -> () {
+    fn push(&mut self, value: impl Into<String>) {
         *self = Self::Some(match self {
             Self::None => value.into(),
             Self::Some(s) => format!("{}/{}", s, value.into()),
@@ -770,7 +767,7 @@ impl Encoding {
             Self::None => return None,
         };
         let last = encodings.pop()?.to_string();
-        *self = if encodings.len() == 0 {
+        *self = if encodings.is_empty() {
             Self::None
         } else {
             Self::Some(encodings.join("/"))
@@ -863,7 +860,7 @@ impl Message {
 }
 
 impl Decode for Message {
-    fn decode(&mut self, opts: Option<&ChannelOptions>) -> () {
+    fn decode(&mut self, opts: Option<&ChannelOptions>) {
         decode(&mut self.data, &mut self.encoding, opts);
     }
 }
@@ -881,23 +878,23 @@ pub struct PresenceMessage {
 }
 
 impl Decode for PresenceMessage {
-    fn decode(&mut self, opts: Option<&ChannelOptions>) -> () {
+    fn decode(&mut self, opts: Option<&ChannelOptions>) {
         decode(&mut self.data, &mut self.encoding, opts);
     }
 }
 
 pub trait Decode {
-    fn decode(&mut self, opts: Option<&ChannelOptions>) -> ();
+    fn decode(&mut self, opts: Option<&ChannelOptions>);
 }
 
 /// Iteratively decode the given data based on the given list of encodings.
-fn decode(data: &mut Data, encoding: &mut Encoding, opts: Option<&ChannelOptions>) -> () {
+fn decode(data: &mut Data, encoding: &mut Encoding, opts: Option<&ChannelOptions>) {
     while let Some(enc) = encoding.pop() {
         *data = match decode_once(data, &enc, opts) {
             Ok(data) => data,
             Err(_) => {
                 encoding.push(enc);
-                return ();
+                return;
             }
         }
     }
@@ -912,10 +909,10 @@ lazy_static! {
 fn decode_once(data: &mut Data, encoding: &str, opts: Option<&ChannelOptions>) -> Result<Data> {
     let caps = ENCODING_RE
         .captures(encoding)
-        .ok_or(error!(40004, "Invalid encoding"))?;
+        .ok_or_else(|| error!(40004, "Invalid encoding"))?;
     let format = caps
         .name("format")
-        .ok_or(error!(40004, "Invalid encoding; missing format"))?
+        .ok_or_else(|| error!(40004, "Invalid encoding; missing format"))?
         .as_str();
 
     match format {
@@ -938,18 +935,18 @@ fn decode_once(data: &mut Data, encoding: &str, opts: Option<&ChannelOptions>) -
         },
         "cipher" => match data {
             Data::Binary(ref mut data) => {
-                let opts = opts.ok_or(error!(
+                let opts = opts.ok_or_else(|| error!(
                     40000,
                     "unable to decrypt message, no channel options"
                 ))?;
                 let cipher = opts
                     .cipher
                     .as_ref()
-                    .ok_or(error!(40000, "unable to decrypt message, no cipher params"))?;
+                    .ok_or_else(|| error!(40000, "unable to decrypt message, no cipher params"))?;
                 let params = caps
                     .name("params")
-                    .ok_or(error!(40004, "Invalid encoding; missing params"))?;
-                if params.as_str().to_string() != cipher.algorithm() {
+                    .ok_or_else(|| error!(40004, "Invalid encoding; missing params"))?;
+                if params.as_str() != cipher.algorithm() {
                     return Err(error!(
                         40000,
                         "unable to decrypt message, incompatible cipher params"
@@ -1004,7 +1001,7 @@ impl MessageItemHandler {
 }
 
 impl<T: Decode> http::PaginatedItemHandler<T> for MessageItemHandler {
-    fn handle(&self, msg: &mut T) -> () {
+    fn handle(&self, msg: &mut T) {
         msg.decode(self.opts.as_ref());
     }
 }
