@@ -177,8 +177,8 @@ mod tests {
 
     #[derive(Deserialize)]
     struct CryptoData {
-        key:   String,
-        iv:    String,
+        key: String,
+        iv: String,
         items: Vec<CryptoFixture>,
     }
 
@@ -214,7 +214,7 @@ mod tests {
 
     #[derive(Deserialize)]
     struct CryptoFixture {
-        encoded:   json::Value,
+        encoded: json::Value,
         encrypted: json::Value,
     }
 

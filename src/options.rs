@@ -63,7 +63,7 @@ pub struct ClientOptions {
     /// Encode requests using the binary msgpack encoding (true), or the JSON
     /// encoding (false). Defaults to true.
     pub(crate) use_binary_protocol: bool,
-    pub(crate) format:              rest::Format,
+    pub(crate) format: rest::Format,
 
     /// Query the Ably system for the current time when issuing tokens.
     /// Defaults to false.

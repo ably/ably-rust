@@ -1,2 +1,0 @@
-imports_granularity = "Module"
-struct_field_align_threshold = 20
