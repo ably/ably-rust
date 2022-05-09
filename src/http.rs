@@ -186,9 +186,9 @@ impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U>
         let client = self.inner.client.clone();
         let seed_state = PaginatedState {
             next_req: Some(self.inner.build()),
-            client:   client,
-            handler:  self.handler,
-            phantom:  PhantomData,
+            client,
+            handler: self.handler,
+            phantom: PhantomData,
         };
         stream::unfold(seed_state, |mut state| {
             async {
@@ -216,7 +216,7 @@ impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U>
                 // the next iteration of the stream.
                 let mut next_req = req
                     .try_clone()
-                    .ok_or(error!(40000, "not a pageable request"));
+                    .ok_or_else(|| error!(40000, "not a pageable request"));
 
                 // Send the request and wrap the response in a PaginatedResult.
                 //
@@ -257,7 +257,7 @@ impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U>
         self.pages()
             .next()
             .await
-            .unwrap_or(Err(error!(40000, "Unexpected error retrieving first page")))
+            .unwrap_or_else(|| Err(error!(40000, "Unexpected error retrieving first page")))
     }
 }
 
@@ -289,13 +289,13 @@ impl TryFrom<&reqwest::header::HeaderValue> for Link {
         // expression.
         let caps = LINK_RE
             .captures(link)
-            .ok_or(error!(40004, "Invalid Link header"))?;
+            .ok_or_else(|| error!(40004, "Invalid Link header"))?;
         let rel = caps
             .name("rel")
-            .ok_or(error!(40004, "Invalid Link header; missing rel"))?;
+            .ok_or_else(|| error!(40004, "Invalid Link header; missing rel"))?;
         let params = caps
             .name("params")
-            .ok_or(error!(40004, "Invalid Link header; missing params"))?;
+            .ok_or_else(|| error!(40004, "Invalid Link header; missing params"))?;
 
         Ok(Self {
             rel:    rel.as_str().to_string(),
@@ -327,17 +327,15 @@ impl Response {
         self.inner
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
-            .map(|v| v.to_str().ok())
-            .flatten()
-            .map(|v| v.parse().ok())
-            .flatten()
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
     }
 
     /// Deserialize the response body.
     pub async fn body<T: DeserializeOwned>(self) -> Result<T> {
         let content_type = self
             .content_type()
-            .ok_or(error!(40001, "missing content-type"))?;
+            .ok_or_else(|| error!(40001, "missing content-type"))?;
 
         match content_type.essence_str() {
             "application/json" => self.json().await,
@@ -370,14 +368,14 @@ impl Response {
 /// A handler for items in a paginated response, typically used to decode
 /// history messages before returning them to the caller.
 pub trait PaginatedItemHandler<T>: Send + Clone + 'static {
-    fn handle(&self, item: &mut T) -> ();
+    fn handle(&self, item: &mut T);
 }
 
 /// Provide a no-op implementation of PaginatedItemHandler for the unit type
 /// which is used as the default type for paginated responses which don't
 /// require a handler (e.g. paginated stats responses).
 impl<T> PaginatedItemHandler<T> for () {
-    fn handle(&self, _: &mut T) -> () {}
+    fn handle(&self, _: &mut T) {}
 }
 
 /// An item in a paginated response.
@@ -424,8 +422,7 @@ impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedResult<T, U> {
             .headers()
             .get_all(reqwest::header::LINK)
             .iter()
-            .map(Link::try_from)
-            .flatten()
+            .flat_map(Link::try_from)
             .find(|l| l.rel == "next")
     }
 }

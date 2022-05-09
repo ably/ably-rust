@@ -34,6 +34,7 @@ pub enum Key {
 
 impl Key {
     /// Returns the length of the key in bits.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         match self {
             Self::Key128(_) => 128,

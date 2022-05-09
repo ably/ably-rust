@@ -15,7 +15,11 @@ async fn main() -> Result<()> {
     // Publish 10 messages
     for n in 1..11 {
         println!("Publishing message {}", n);
-        channel.publish().string(format!("message {}", n)).send().await?;
+        channel
+            .publish()
+            .string(format!("message {}", n))
+            .send()
+            .await?;
     }
 
     // Retrieve the history

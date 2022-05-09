@@ -58,14 +58,14 @@ impl fmt::Display for ErrorInfo {
     /// [ErrorInfo: <msg>; statusCode=<statusCode>; code=<code>; see <url>]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[ErrorInfo")?;
-        if self.message.len() > 0 {
+        if !self.message.is_empty() {
             write!(f, ": {}", self.message)?;
         }
         if let Some(code) = self.status_code {
             write!(f, "; statusCode={}", code)?;
         }
         write!(f, "; code={}", self.code)?;
-        if self.href.len() > 0 {
+        if !self.href.is_empty() {
             write!(f, "; see {} ", self.href)?;
         }
         write!(f, "]")
