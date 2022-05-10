@@ -22,7 +22,7 @@ const MAX_TOKEN_LENGTH: usize = 128 * 1024;
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Key {
     #[serde(rename(deserialize = "keyName"))]
-    pub name:  String,
+    pub name: String,
     pub value: String,
 }
 
@@ -46,7 +46,7 @@ impl TryFrom<&str> for Key {
     fn try_from(s: &str) -> Result<Self> {
         if let [name, value] = s.splitn(2, ':').collect::<Vec<&str>>()[..] {
             Ok(Key {
-                name:  name.to_string(),
+                name: name.to_string(),
                 value: value.to_string(),
             })
         } else {
@@ -94,7 +94,7 @@ impl AuthCallback for Key {
 #[derive(Clone, Debug)]
 pub struct Auth {
     client: rest::Client,
-    opts:   ClientOptions,
+    opts: ClientOptions,
 }
 
 impl Auth {
@@ -125,10 +125,10 @@ impl Auth {
             builder = builder.auth_callback(callback.clone());
         } else if let Some(ref url) = self.opts.auth_url {
             builder = builder.auth_url(AuthUrl {
-                url:     url.clone(),
-                method:  self.opts.auth_method.clone(),
+                url: url.clone(),
+                method: self.opts.auth_method.clone(),
                 headers: self.opts.auth_headers.clone(),
-                params:  self.opts.auth_params.clone(),
+                params: self.opts.auth_params.clone(),
             });
         } else if let Some(ref key) = self.opts.key {
             builder = builder.key(key.clone());
@@ -241,14 +241,14 @@ impl Auth {
 
 /// A builder to create a signed TokenRequest.
 pub struct CreateTokenRequestBuilder {
-    key:    Option<Key>,
+    key: Option<Key>,
     params: TokenParams,
 }
 
 impl CreateTokenRequestBuilder {
     fn new() -> Self {
         Self {
-            key:    None,
+            key: None,
             params: TokenParams::default(),
         }
     }
@@ -295,9 +295,9 @@ impl CreateTokenRequestBuilder {
 
 /// A builder to request a token.
 pub struct RequestTokenBuilder {
-    client:   rest::Client,
+    client: rest::Client,
     callback: Option<Box<dyn AuthCallback>>,
-    params:   TokenParams,
+    params: TokenParams,
 }
 
 impl RequestTokenBuilder {
@@ -433,7 +433,7 @@ impl RequestTokenBuilder {
 #[derive(Clone, Debug)]
 pub struct AuthUrlCallback {
     client: rest::Client,
-    url:    AuthUrl,
+    url: AuthUrl,
 }
 
 impl AuthUrlCallback {
@@ -479,10 +479,10 @@ impl AuthCallback for AuthUrlCallback {
 /// A URL to request a token from, along with the HTTP method, headers, and
 /// query params to include in the request.
 pub struct AuthUrl {
-    pub url:     reqwest::Url,
-    pub method:  http::Method,
+    pub url: reqwest::Url,
+    pub method: http::Method,
     pub headers: Option<http::HeaderMap>,
-    pub params:  Option<http::UrlQuery>,
+    pub params: Option<http::UrlQuery>,
 }
 
 impl AuthUrl {
@@ -518,10 +518,10 @@ impl From<reqwest::Url> for AuthUrl {
 #[derive(Clone, Debug, Default)]
 pub struct TokenParams {
     pub capability: Option<String>,
-    pub client_id:  Option<String>,
-    pub nonce:      Option<String>,
-    pub timestamp:  Option<DateTime<Utc>>,
-    pub ttl:        Option<i64>,
+    pub client_id: Option<String>,
+    pub nonce: Option<String>,
+    pub timestamp: Option<DateTime<Utc>>,
+    pub ttl: Option<i64>,
 }
 
 impl TokenParams {
@@ -538,13 +538,13 @@ impl TokenParams {
         }
 
         let mut req = TokenRequest {
-            key_name:   key.name.clone(),
-            timestamp:  self.timestamp.unwrap_or_else(Utc::now),
+            key_name: key.name.clone(),
+            timestamp: self.timestamp.unwrap_or_else(Utc::now),
             capability: self.capability,
-            client_id:  self.client_id,
-            nonce:      self.nonce.unwrap_or_else(Auth::generate_nonce),
-            ttl:        self.ttl,
-            mac:        None,
+            client_id: self.client_id,
+            nonce: self.nonce.unwrap_or_else(Auth::generate_nonce),
+            ttl: self.ttl,
+            mac: None,
         };
 
         req.mac = Some(Auth::compute_mac(key, &req)?);
@@ -559,19 +559,19 @@ impl TokenParams {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenRequest {
-    pub key_name:   String,
+    pub key_name: String,
     #[serde(with = "chrono::serde::ts_milliseconds")]
-    pub timestamp:  DateTime<Utc>,
+    pub timestamp: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capability: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_id:  Option<String>,
+    pub client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mac:        Option<String>,
+    pub mac: Option<String>,
     #[serde(skip_serializing_if = "String::is_empty")]
-    pub nonce:      String,
+    pub nonce: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ttl:        Option<i64>,
+    pub ttl: Option<i64>,
 }
 
 /// The token details returned in a successful response from the [REST
@@ -581,17 +581,17 @@ pub struct TokenRequest {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenDetails {
-    pub token:      String,
+    pub token: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(with = "chrono::serde::ts_milliseconds_option")]
-    pub expires:    Option<DateTime<Utc>>,
+    pub expires: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(with = "chrono::serde::ts_milliseconds_option")]
-    pub issued:     Option<DateTime<Utc>>,
+    pub issued: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capability: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_id:  Option<String>,
+    pub client_id: Option<String>,
 }
 
 impl From<String> for TokenDetails {

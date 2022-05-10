@@ -22,7 +22,7 @@ pub type UrlQuery = Box<[(String, String)]>;
 /// [Ably REST API]: https://ably.com/documentation/rest-api
 pub struct RequestBuilder {
     client: rest::Client,
-    inner:  Result<reqwest::RequestBuilder>,
+    inner: Result<reqwest::RequestBuilder>,
     format: rest::Format,
 }
 
@@ -125,14 +125,14 @@ impl RequestBuilder {
 /// [stream::unfold]: https://docs.rs/futures/latest/futures/stream/fn.unfold.html
 struct PaginatedState<T, U: PaginatedItemHandler<T>> {
     next_req: Option<Result<reqwest::Request>>,
-    client:   rest::Client,
-    handler:  Option<U>,
-    phantom:  PhantomData<T>,
+    client: rest::Client,
+    handler: Option<U>,
+    phantom: PhantomData<T>,
 }
 
 /// A builder to construct a paginated REST request.
 pub struct PaginatedRequestBuilder<T: PaginatedItem, U: PaginatedItemHandler<T> = ()> {
-    inner:   RequestBuilder,
+    inner: RequestBuilder,
     handler: Option<U>,
     phantom: PhantomData<T>,
 }
@@ -263,7 +263,7 @@ impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U>
 
 /// A Link HTTP header.
 struct Link {
-    rel:    String,
+    rel: String,
     params: String,
 }
 
@@ -298,7 +298,7 @@ impl TryFrom<&reqwest::header::HeaderValue> for Link {
             .ok_or_else(|| error!(40004, "Invalid Link header; missing params"))?;
 
         Ok(Self {
-            rel:    rel.as_str().to_string(),
+            rel: rel.as_str().to_string(),
             params: params.as_str().to_string(),
         })
     }
@@ -390,7 +390,7 @@ impl<T> PaginatedItem for T where T: DeserializeOwned + Send + 'static {}
 
 /// A page of items from a paginated response.
 pub struct PaginatedResult<T: PaginatedItem, U: PaginatedItemHandler<T> = ()> {
-    res:     Response,
+    res: Response,
     handler: Option<U>,
     phantom: PhantomData<T>,
 }
