@@ -20,18 +20,20 @@ pub type UrlQuery = Box<[(String, String)]>;
 /// A builder to construct a HTTP request to the [Ably REST API].
 ///
 /// [Ably REST API]: https://ably.com/documentation/rest-api
-pub struct RequestBuilder {
-    client: rest::Client,
+pub struct RequestBuilder<'a> {
+    rest: &'a rest::Rest,
     inner: Result<reqwest::RequestBuilder>,
     format: rest::Format,
+    authenticate: bool,
 }
 
-impl RequestBuilder {
-    pub fn new(client: rest::Client, inner: reqwest::RequestBuilder, format: rest::Format) -> Self {
+impl<'a> RequestBuilder<'a> {
+    pub fn new(rest: &'a rest::Rest, inner: reqwest::RequestBuilder, format: rest::Format) -> Self {
         Self {
-            client,
+            rest,
             inner: Ok(inner),
             format,
+            authenticate: true,
         }
     }
 
@@ -62,6 +64,11 @@ impl RequestBuilder {
         if let Ok(req) = self.inner {
             self.inner = Ok(req.json(body));
         }
+        self
+    }
+
+    pub fn authenticate(mut self, authenticate: bool) -> Self {
+        self.authenticate = authenticate;
         self
     }
 
@@ -105,11 +112,10 @@ impl RequestBuilder {
 
     /// Send the request to the Ably REST API.
     pub async fn send(self) -> Result<Response> {
-        let client = self.client.clone();
-
+        let rest = self.rest;
+        let auth = self.authenticate;
         let req = self.build()?;
-
-        client.send(req).await
+        rest.send(req, auth).await
     }
 
     fn build(self) -> Result<reqwest::Request> {
@@ -123,22 +129,22 @@ impl RequestBuilder {
 /// optional item handler which is passed to each PaginatedResult.
 ///
 /// [stream::unfold]: https://docs.rs/futures/latest/futures/stream/fn.unfold.html
-struct PaginatedState<T, U: PaginatedItemHandler<T>> {
+struct PaginatedState<'a, T, U: PaginatedItemHandler<T>> {
     next_req: Option<Result<reqwest::Request>>,
-    client: rest::Client,
+    rest: &'a rest::Rest,
     handler: Option<U>,
     phantom: PhantomData<T>,
 }
 
 /// A builder to construct a paginated REST request.
-pub struct PaginatedRequestBuilder<T: PaginatedItem, U: PaginatedItemHandler<T> = ()> {
-    inner: RequestBuilder,
+pub struct PaginatedRequestBuilder<'a, T: PaginatedItem, U: PaginatedItemHandler<T> = ()> {
+    inner: RequestBuilder<'a>,
     handler: Option<U>,
     phantom: PhantomData<T>,
 }
 
-impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U> {
-    pub fn new(inner: RequestBuilder, handler: Option<U>) -> Self {
+impl<'a, T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<'a, T, U> {
+    pub fn new(inner: RequestBuilder<'a>, handler: Option<U>) -> Self {
         Self {
             inner,
             handler,
@@ -178,20 +184,21 @@ impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U>
     }
 
     /// Request a stream of pages from the Ably REST API.
-    pub fn pages(self) -> impl Stream<Item = Result<PaginatedResult<T, U>>> {
+    pub fn pages(self) -> impl Stream<Item = Result<PaginatedResult<T, U>>> + 'a {
         // Use stream::unfold to create a stream of pages where the internal
         // state holds the request for the next page, and the closure sends the
         // request and returns both a PaginatedResult and the request for the
         // next page if the response has a 'Link: ...; rel="next"' header.
-        let client = self.inner.client.clone();
+        let rest = self.inner.rest;
         let seed_state = PaginatedState {
             next_req: Some(self.inner.build()),
-            client,
+            rest,
             handler: self.handler,
             phantom: PhantomData,
         };
-        stream::unfold(seed_state, |mut state| {
-            async {
+
+        stream::unfold(seed_state, move |mut state| {
+            async move {
                 // If there is no request in the state, we're done, so unwrap
                 // the request to a Result<reqwest::Request>.
                 let req = state.next_req?;
@@ -222,7 +229,7 @@ impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U>
                 //
                 // If there's an error, yield the error and set the next
                 // request to None to end the stream on the next iteration.
-                let res = match state.client.send(req).await {
+                let res = match state.rest.send(req, true).await {
                     Err(err) => {
                         state.next_req = None;
                         return Some((Err(err), state));
@@ -254,6 +261,8 @@ impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<T, U>
         // the first request returns an error which would be Some(Err(err)), so
         // we unwrap the Option with a generic error which we don't expect to
         // be encountered by the caller.
+        //
+
         self.pages()
             .next()
             .await

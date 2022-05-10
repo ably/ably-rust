@@ -4,20 +4,20 @@ use crate::{http, rest, Result};
 
 /// A type alias for a PaginatedRequestBuilder which uses a MessageItemHandler
 /// to handle pages of presence messages returned from a presence request.
-pub type PaginatedRequestBuilder =
-    http::PaginatedRequestBuilder<rest::PresenceMessage, rest::MessageItemHandler>;
+pub type PaginatedRequestBuilder<'a> =
+    http::PaginatedRequestBuilder<'a, rest::PresenceMessage, rest::MessageItemHandler>;
 
 /// A type alias for a PaginatedResult which uses a MessageItemHandler to
 /// handle pages of presence messages returned from a presence request.
 pub type PaginatedResult = http::PaginatedResult<rest::PresenceMessage, rest::MessageItemHandler>;
 
 /// A builder to construct a REST presence request.
-pub struct RequestBuilder {
-    inner: PaginatedRequestBuilder,
+pub struct RequestBuilder<'a> {
+    inner: PaginatedRequestBuilder<'a>,
 }
 
-impl RequestBuilder {
-    pub fn new(inner: PaginatedRequestBuilder) -> Self {
+impl<'a> RequestBuilder<'a> {
+    pub fn new(inner: PaginatedRequestBuilder<'a>) -> Self {
         Self { inner }
     }
 
@@ -42,7 +42,7 @@ impl RequestBuilder {
     }
 
     /// Request a stream of pages of presence messages.
-    pub fn pages(self) -> impl Stream<Item = Result<PaginatedResult>> {
+    pub fn pages(self) -> impl Stream<Item = Result<PaginatedResult>> + 'a {
         self.inner.pages()
     }
 

@@ -6,28 +6,41 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
+use crate::auth::Auth;
 use crate::error::*;
 use crate::options::ClientOptions;
-use crate::{auth, crypto, history, http, json, presence, stats, Result};
+use crate::{crypto, history, http, json, presence, stats, Result};
 
 /// A client for the [Ably REST API].
 ///
 /// [Ably REST API]: https://ably.com/documentation/rest-api
 #[derive(Debug)]
 pub struct Rest {
-    pub auth: auth::Auth,
-    pub channels: Channels,
-    pub client: Client,
+    pub channels: (),
+    pub reqwest: reqwest::Client,
     pub opts: ClientOptions,
+    pub url: reqwest::Url,
 }
 
 impl Rest {
-    pub(crate) fn new(auth: auth::Auth, client: Client, opts: ClientOptions) -> Self {
+    pub fn auth(&self) -> Auth {
+        Auth { rest: self }
+    }
+
+    pub fn channels(&self) -> Channels {
+        Channels { rest: self }
+    }
+
+    pub fn new(key: &str) -> Result<Self> {
+        ClientOptions::from(key).client()
+    }
+
+    pub(crate) fn create(reqwest: reqwest::Client, opts: ClientOptions, url: reqwest::Url) -> Self {
         Self {
-            auth,
-            channels: Channels::new(client.clone()),
-            client,
+            reqwest,
             opts,
+            url,
+            channels: (),
         }
     }
 
@@ -56,8 +69,7 @@ impl Rest {
     /// # }
     /// ```
     pub fn stats(&self) -> http::PaginatedRequestBuilder<stats::Stats> {
-        self.client
-            .paginated_request(http::Method::GET, "/stats", None)
+        self.paginated_request(http::Method::GET, "/stats", None)
     }
 
     /// Sends a GET request to /time and returns the server time in UTC.
@@ -74,7 +86,6 @@ impl Rest {
     /// ```
     pub async fn time(&self) -> Result<DateTime<Utc>> {
         let mut res: Vec<i64> = self
-            .client
             .request(http::Method::GET, "/time")
             .send()
             .await?
@@ -121,7 +132,17 @@ impl Rest {
     /// response is unsuccessful (i.e. the status code is not in the 200-299
     /// range).
     pub fn request(&self, method: http::Method, path: &str) -> http::RequestBuilder {
-        self.client.request(method, path)
+        let mut url = self.url.clone();
+        url.set_path(path);
+        self.request_url(method, url)
+    }
+
+    pub(crate) fn request_url(
+        &self,
+        method: http::Method,
+        url: impl reqwest::IntoUrl,
+    ) -> http::RequestBuilder {
+        http::RequestBuilder::new(self, self.reqwest.request(method, url), self.opts.format)
     }
 
     /// Start building a paginated HTTP request to the Ably REST API.
@@ -158,112 +179,27 @@ impl Rest {
     /// Returns an error if sending the request fails or if the resulting
     /// response is unsuccessful (i.e. the status code is not in the 200-299
     /// range).
-    pub fn paginated_request(
-        &self,
-        method: http::Method,
-        path: &str,
-    ) -> http::PaginatedRequestBuilder<json::Value> {
-        self.client.paginated_request(method, path, None)
-    }
-}
-
-impl From<&str> for Rest {
-    /// Returns a Rest client initialised with an API key or token contained
-    /// in the given string.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// // Initialise a Rest client with an API key.
-    /// let client = ably::Rest::from("<api_key>");
-    /// ```
-    ///
-    /// ```
-    /// // Initialise a Rest client with a token.
-    /// let client = ably::Rest::from("<token>");
-    /// ```
-    fn from(s: &str) -> Self {
-        // unwrap the result since we're guaranteed to have a valid client when
-        // it's initialised with an API key or token.
-        ClientOptions::from(s).client().unwrap()
-    }
-}
-
-impl From<String> for Rest {
-    fn from(s: String) -> Self {
-        Rest::from(s.as_str())
-    }
-}
-
-#[derive(Clone, Debug)]
-/// An internal client which is shared by both rest::Rest and auth::Auth to
-/// send HTTP requests to the Ably REST API.
-pub struct Client {
-    inner: reqwest::Client,
-    opts: ClientOptions,
-    url: reqwest::Url,
-    auth: Option<Box<auth::Auth>>,
-}
-
-impl Client {
-    pub fn new(inner: reqwest::Client, opts: ClientOptions, url: reqwest::Url) -> Self {
-        Self {
-            inner,
-            opts,
-            url,
-            auth: None,
-        }
-    }
-
-    pub fn new_with_auth(
-        inner: reqwest::Client,
-        opts: ClientOptions,
-        url: reqwest::Url,
-        auth: auth::Auth,
-    ) -> Self {
-        Self {
-            inner,
-            opts,
-            url,
-            auth: Some(Box::new(auth)),
-        }
-    }
-
-    pub fn request(&self, method: http::Method, path: impl Into<String>) -> http::RequestBuilder {
-        let mut url = self.url.clone();
-        url.set_path(&path.into());
-        self.request_url(method, url)
-    }
-
-    pub fn request_url(
-        &self,
-        method: http::Method,
-        url: impl reqwest::IntoUrl,
-    ) -> http::RequestBuilder {
-        http::RequestBuilder::new(
-            self.clone(),
-            self.inner.request(method, url),
-            self.opts.format.clone(),
-        )
-    }
-
     pub fn paginated_request<T: http::PaginatedItem, U: http::PaginatedItemHandler<T>>(
         &self,
         method: http::Method,
-        path: impl Into<String>,
+        path: &str,
         handler: Option<U>,
     ) -> http::PaginatedRequestBuilder<T, U> {
         http::PaginatedRequestBuilder::new(self.request(method, path), handler)
     }
 
     /// Send the given request, retrying against fallback hosts if it fails.
-    pub async fn send(&self, req: reqwest::Request) -> Result<http::Response> {
+    pub(crate) async fn send(
+        &self,
+        req: reqwest::Request,
+        authenticate: bool,
+    ) -> Result<http::Response> {
         // Executing the request will consume it, so clone it first for a
         // potential retry later.
         let mut next_req = req.try_clone();
 
         // Execute the request, and return the response if it succeeds.
-        let mut err = match self.execute(req).await {
+        let mut err = match self.execute(req, authenticate).await {
             Ok(res) => return Ok(res),
             Err(err) => err,
         };
@@ -296,7 +232,7 @@ impl Client {
             })?;
 
             // Execute the request, and return the response if it succeeds.
-            err = match self.execute(req).await {
+            err = match self.execute(req, authenticate).await {
                 Ok(res) => return Ok(res),
                 Err(err) => err,
             };
@@ -310,12 +246,16 @@ impl Client {
         Err(err)
     }
 
-    async fn execute(&self, mut req: reqwest::Request) -> Result<http::Response> {
-        if let Some(auth) = &self.auth {
-            auth.with_auth_headers(&mut req).await?;
+    async fn execute(
+        &self,
+        mut req: reqwest::Request,
+        authenticate: bool,
+    ) -> Result<http::Response> {
+        if authenticate {
+            self.auth().with_auth_headers(&mut req).await?;
         }
 
-        let res = self.inner.execute(req).await?;
+        let res = self.reqwest.execute(req).await?;
 
         // Return the response if it was successful, otherwise try to decode a
         // JSON error from the response body, falling back to a generic error
@@ -339,6 +279,28 @@ impl Client {
             Some(code) => (500..=504).contains(&code),
             None => true,
         }
+    }
+}
+
+impl From<&str> for Rest {
+    /// Returns a Rest client initialised with an API key or token contained
+    /// in the given string.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// // Initialise a Rest client with an API key.
+    /// let client = ably::Rest::from("<api_key>");
+    /// ```
+    ///
+    /// ```
+    /// // Initialise a Rest client with a token.
+    /// let client = ably::Rest::from("<token>");
+    /// ```
+    fn from(s: &str) -> Self {
+        // unwrap the result since we're guaranteed to have a valid client when
+        // it's initialised with an API key or token.
+        ClientOptions::from(s).client().unwrap()
     }
 }
 
@@ -439,16 +401,16 @@ impl From<crypto::Key> for CipherParams {
 }
 
 /// Start building a Channel to publish a message.
-pub struct ChannelBuilder {
-    client: Client,
+pub struct ChannelBuilder<'a> {
+    rest: &'a Rest,
     name: String,
     cipher: Option<CipherParams>,
 }
 
-impl ChannelBuilder {
-    fn new(client: Client, name: String) -> Self {
+impl<'a> ChannelBuilder<'a> {
+    fn new(rest: &'a Rest, name: String) -> Self {
         Self {
-            client,
+            rest,
             name,
             cipher: None,
         }
@@ -461,12 +423,12 @@ impl ChannelBuilder {
     }
 
     /// Build the Channel.
-    pub fn get(self) -> Channel {
+    pub fn get(self) -> Channel<'a> {
         let opts = self.cipher.map(Into::into);
         Channel {
             name: self.name.clone(),
-            presence: Presence::new(self.name.clone(), self.client.clone(), opts.clone()),
-            client: self.client,
+            rest: self.rest,
+            presence: Presence::new(self.rest, self.name.clone(), opts.clone()),
             opts,
         }
     }
@@ -474,38 +436,38 @@ impl ChannelBuilder {
 
 /// A collection of Channels.
 #[derive(Clone, Debug)]
-pub struct Channels {
-    client: Client,
+pub struct Channels<'a> {
+    rest: &'a Rest,
 }
 
-impl Channels {
-    pub fn new(client: Client) -> Self {
-        Self { client }
+impl<'a> Channels<'a> {
+    pub fn new(rest: &'a Rest) -> Self {
+        Self { rest }
     }
 
     /// Start building a Channel with the given name.
-    pub fn name(&self, name: impl Into<String>) -> ChannelBuilder {
-        ChannelBuilder::new(self.client.clone(), name.into())
+    pub fn name(&self, name: impl Into<String>) -> ChannelBuilder<'a> {
+        ChannelBuilder::new(self.rest, name.into())
     }
 
     /// Build and return a Channel with the given name.
-    pub fn get(&self, name: impl Into<String>) -> Channel {
+    pub fn get(&self, name: impl Into<String>) -> Channel<'a> {
         self.name(name).get()
     }
 }
 
 /// An Ably Channel to publish messages to or retrieve history or presence for.
-pub struct Channel {
+pub struct Channel<'a> {
     pub name: String,
-    pub presence: Presence,
-    client: Client,
+    pub presence: Presence<'a>,
+    rest: &'a Rest,
     opts: Option<ChannelOptions>,
 }
 
-impl Channel {
+impl<'a> Channel<'a> {
     /// Start building a request to publish a message on the channel.
     pub fn publish(&self) -> PublishBuilder {
-        let mut builder = PublishBuilder::new(self.client.clone(), self.name.clone());
+        let mut builder = PublishBuilder::new(self.rest, self.name.clone());
 
         if let Some(opts) = &self.opts {
             if let Some(cipher) = &opts.cipher {
@@ -521,30 +483,30 @@ impl Channel {
     /// Returns a history::RequestBuilder which is used to set parameters
     /// before sending the history request.
     pub fn history(&self) -> history::PaginatedRequestBuilder<Message> {
-        self.client.paginated_request(
+        self.rest.paginated_request(
             http::Method::GET,
-            format!("/channels/{}/history", self.name),
+            &format!("/channels/{}/history", self.name),
             Some(MessageItemHandler::new(self.opts.clone())),
         )
     }
 }
 
-pub struct Presence {
+pub struct Presence<'a> {
+    rest: &'a Rest,
     name: String,
-    client: Client,
     opts: Option<ChannelOptions>,
 }
 
-impl Presence {
-    fn new(name: String, client: Client, opts: Option<ChannelOptions>) -> Self {
-        Self { name, client, opts }
+impl<'a> Presence<'a> {
+    fn new(rest: &'a Rest, name: String, opts: Option<ChannelOptions>) -> Self {
+        Self { rest, name, opts }
     }
 
     /// Start building a presence request for the channel.
     pub fn get(&self) -> presence::RequestBuilder {
-        let req = self.client.paginated_request(
+        let req = self.rest.paginated_request(
             http::Method::GET,
-            format!("/channels/{}/presence", self.name),
+            &format!("/channels/{}/presence", self.name),
             Some(MessageItemHandler::new(self.opts.clone())),
         );
         presence::RequestBuilder::new(req)
@@ -555,33 +517,33 @@ impl Presence {
     /// Returns a history::RequestBuilder which is used to set parameters
     /// before sending the history request.
     pub fn history(&self) -> history::PaginatedRequestBuilder<PresenceMessage> {
-        self.client.paginated_request(
+        self.rest.paginated_request(
             http::Method::GET,
-            format!("/channels/{}/presence/history", self.name),
+            &format!("/channels/{}/presence/history", self.name),
             Some(MessageItemHandler::new(self.opts.clone())),
         )
     }
 }
 
 /// A request to publish a message to a channel.
-pub struct PublishBuilder {
-    req: http::RequestBuilder,
+pub struct PublishBuilder<'a> {
+    req: http::RequestBuilder<'a>,
     msg: Result<Message>,
     format: Format,
     cipher: Option<CipherParams>,
 }
 
-impl PublishBuilder {
-    fn new(client: Client, channel: String) -> Self {
-        let req = client.request(
+impl<'a> PublishBuilder<'a> {
+    fn new(rest: &'a Rest, channel: String) -> Self {
+        let req = rest.request(
             http::Method::POST,
-            format!("/channels/{}/messages", channel),
+            &format!("/channels/{}/messages", channel),
         );
 
         Self {
             req,
             msg: Ok(Message::default()),
-            format: client.opts.format,
+            format: rest.opts.format,
             cipher: None,
         }
     }
@@ -970,7 +932,7 @@ pub enum PresenceAction {
     Update,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum Format {
     MessagePack,
     JSON,

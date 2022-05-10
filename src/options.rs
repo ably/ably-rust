@@ -405,19 +405,7 @@ impl ClientOptions {
             .connect_timeout(self.http_open_timeout)
             .build()?;
 
-        // To avoid a circular reference between auth::Auth and rest::Client,
-        // first create a client without auth to initialize an auth::Auth with
-        // (since it needs a client to request tokens from Ably), and then
-        // initialize the final client with auth to pass back to the caller.
-        let rest_client_no_auth =
-            rest::Client::new(http_client.clone(), self.clone(), rest_url.clone());
-
-        let auth = auth::Auth::new(rest_client_no_auth, self.clone());
-
-        let rest_client_with_auth =
-            rest::Client::new_with_auth(http_client, self.clone(), rest_url, auth.clone());
-
-        Ok(rest::Rest::new(auth, rest_client_with_auth, self.clone()))
+        Ok(rest::Rest::create(http_client, self.clone(), rest_url))
     }
 }
 
