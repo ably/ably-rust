@@ -13,7 +13,6 @@ pub mod crypto;
 pub mod history;
 pub mod http;
 mod json;
-pub mod log;
 pub mod options;
 pub mod presence;
 pub mod rest;

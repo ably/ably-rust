@@ -145,12 +145,6 @@ impl From<block_modes::BlockModeError> for ErrorInfo {
     }
 }
 
-impl From<log::SetLoggerError> for ErrorInfo {
-    fn from(err: log::SetLoggerError) -> Self {
-        error!(40000, format!("error initializing logger: {}", err))
-    }
-}
-
 /// Implement From<Infallible> to support ErrorInfo being the associated
 /// type for the TryInto trait bound in ClientOptions#key.
 impl From<Infallible> for ErrorInfo {
