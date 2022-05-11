@@ -12,7 +12,7 @@ pub mod auth;
 pub mod crypto;
 pub mod history;
 pub mod http;
-pub mod json;
+mod json;
 pub mod log;
 pub mod options;
 pub mod presence;
