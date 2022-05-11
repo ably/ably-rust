@@ -1,12 +1,10 @@
 use std::convert::TryFrom;
 
-use aes::{Aes128, Aes256};
-use block_modes::block_padding::Pkcs7;
-use block_modes::BlockMode;
 use cipher::generic_array::typenum::{U16, U32};
 use cipher::generic_array::{ArrayLength, GenericArray};
-use cipher::NewBlockCipher;
 use rand::{thread_rng, RngCore};
+use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use aes::cipher::block_padding::Pkcs7;
 
 use crate::{ErrorInfo, Result};
 
@@ -18,11 +16,12 @@ pub struct Key128(GenericArray<u8, U16>);
 #[derive(Clone)]
 pub struct Key256(GenericArray<u8, U32>);
 
-// Type alias for CBC mode with Pkcs7 padding.
-type Cbc<T> = block_modes::Cbc<T, Pkcs7>;
+type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
+type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
+type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 
-// An internal type for providing a deterministic IV in tests.
-pub(crate) type IV = [u8; aes::BLOCK_SIZE];
+pub(crate) type IV = [u8; Key::block_size()];
 
 #[derive(Clone)]
 pub enum Key {
@@ -42,24 +41,42 @@ impl Key {
         }
     }
 
+    pub const fn block_size() -> usize {
+        // aes blocksize is 128 bits
+        16
+    }
+
     /// Encrypts the given data using AES-CBC with Pkcs7 padding.
-    pub fn encrypt<'a>(&self, iv: &[u8], buf: &'a mut [u8], pos: usize) -> Result<&'a [u8]> {
+    pub fn encrypt<'a>(&self, iv: &[u8; Self::block_size()], buf: &'a mut [u8], len: usize) -> Result<&'a [u8]> {
         let iv = GenericArray::from_slice(iv);
         match self {
-            Self::Key128(key) => Cbc::new(Aes128::new(&key.0), iv).encrypt(buf, pos),
-            Self::Key256(key) => Cbc::new(Aes256::new(&key.0), iv).encrypt(buf, pos),
+            Self::Key128(key) => {
+                Aes128CbcEnc::new(&key.0.into(), iv)
+                    .encrypt_padded_mut::<Pkcs7>(buf, len)
+            },
+            Self::Key256(key) => {
+                Aes256CbcEnc::new(&key.0.into(), iv)
+                    .encrypt_padded_mut::<Pkcs7>(buf, len)
+            }
         }
-        .map_err(Into::into)
+        .map_err(|_| unimplemented!())
     }
 
     /// Decrypts the given data using AES-CBC with Pkcs7 padding.
-    pub fn decrypt<'a>(&self, iv: &[u8], buf: &'a mut [u8]) -> Result<&'a [u8]> {
+    pub fn decrypt<'a>(&self, iv: &[u8; Self::block_size()], buf: &'a mut [u8]) -> Result<&'a [u8]> {
         let iv = GenericArray::from_slice(iv);
         match self {
-            Self::Key128(key) => Cbc::new(Aes128::new(&key.0), iv).decrypt(buf),
-            Self::Key256(key) => Cbc::new(Aes256::new(&key.0), iv).decrypt(buf),
+            Self::Key128(key) => {
+
+                Aes128CbcDec::new(&key.0.into(), iv).decrypt_padded_mut::<Pkcs7>(buf)
+
+            },
+            Self::Key256(key) => {
+                Aes256CbcDec::new(&key.0.into(), iv).decrypt_padded_mut::<Pkcs7>(buf)
+
+            }
         }
-        .map_err(Into::into)
+        .map_err(|_| unimplemented!())
     }
 }
 

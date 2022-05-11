@@ -10,6 +10,7 @@ use crate::auth::Auth;
 use crate::error::*;
 use crate::options::ClientOptions;
 use crate::{crypto, history, http, json, presence, stats, Result};
+use crate::crypto::Key;
 
 /// A client for the [Ably REST API].
 ///
@@ -364,8 +365,8 @@ impl CipherParams {
         };
 
         // create a buffer big enough to store the data + padding.
-        let blocks = data.len() / aes::BLOCK_SIZE + 1;
-        let mut buf = vec![0u8; blocks * aes::BLOCK_SIZE];
+        let blocks = data.len() / Key::block_size() + 1;
+        let mut buf = vec![0u8; blocks * Key::block_size()];
 
         // copy the data into the buffer.
         buf[..data.len()].copy_from_slice(data);
@@ -379,7 +380,7 @@ impl CipherParams {
 
     /// Decrypt the data using AES-CBC with PKCS7 padding.
     pub fn decrypt(&self, data: &mut [u8]) -> Result<Vec<u8>> {
-        if data.len() % aes::BLOCK_SIZE != 0 || data.len() < aes::BLOCK_SIZE {
+        if data.len() % Key::block_size() != 0 || data.len() < Key::block_size() {
             return Err(error!(
                 40013,
                 format!(
@@ -388,8 +389,8 @@ impl CipherParams {
                 )
             ));
         }
-        let (iv, buf) = data.split_at_mut(aes::BLOCK_SIZE);
-        let decrypted = self.key.decrypt(iv, buf)?;
+        let (iv, buf) = data.split_at_mut(Key::block_size());
+        let decrypted = self.key.decrypt(&iv.try_into().unwrap(), buf)?;
         Ok(decrypted.to_vec())
     }
 }
