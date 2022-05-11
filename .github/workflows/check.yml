@@ -1,0 +1,54 @@
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+name: Check
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          submodules: 'recursive'
+
+      - name: Setup Rust Toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+
+      - name: Check Rust Version
+        run: rustc -V
+
+      - name: cargo check
+        uses: actions-rs/cargo@v1
+        with:
+          command: check
+
+      - name: cargo test
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+
+      - name: Install rustfmt
+        run: rustup component add rustfmt
+
+      - name: cargo fmt
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+
+      - name: Install clippy
+        run: rustup component add clippy
+
+      - name: cargo clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: -- -D warnings

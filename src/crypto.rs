@@ -115,13 +115,13 @@ impl TryFrom<&str> for Key {
 pub trait NewKey {
     type Length: ArrayLength<u8>;
 
-    fn new(data: GenericArray<u8, Self::Length>) -> Key;
+    fn key(data: GenericArray<u8, Self::Length>) -> Key;
 }
 
 impl NewKey for Key128 {
     type Length = U16;
 
-    fn new(data: GenericArray<u8, Self::Length>) -> Key {
+    fn key(data: GenericArray<u8, Self::Length>) -> Key {
         Key::Key128(Self(data))
     }
 }
@@ -129,7 +129,7 @@ impl NewKey for Key128 {
 impl NewKey for Key256 {
     type Length = U32;
 
-    fn new(data: GenericArray<u8, Self::Length>) -> Key {
+    fn key(data: GenericArray<u8, Self::Length>) -> Key {
         Key::Key256(Self(data))
     }
 }
@@ -150,7 +150,7 @@ impl NewKey for Key256 {
 pub fn generate_random_key<T: NewKey>() -> Key {
     let mut data = GenericArray::default();
     thread_rng().fill_bytes(&mut data);
-    T::new(data)
+    T::key(data)
 }
 
 #[cfg(test)]
