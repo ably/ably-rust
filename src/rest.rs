@@ -10,7 +10,6 @@ use crate::auth::Auth;
 use crate::error::*;
 use crate::options::ClientOptions;
 use crate::{crypto, history, http, json, presence, stats, Result};
-use crate::crypto::Key;
 
 /// A client for the [Ably REST API].
 ///
@@ -334,7 +333,7 @@ impl From<CipherParams> for ChannelOptions {
 /// ```
 #[derive(Clone)]
 pub struct CipherParams {
-    key: crypto::Key,
+    key: crypto::Cipher,
     iv: Option<crypto::IV>,
 }
 
@@ -344,7 +343,7 @@ impl CipherParams {
     }
 
     fn algorithm(&self) -> String {
-        format!("aes-{}-cbc", self.key.len())
+        format!("aes-{}-cbc", self.key.bits())
     }
 
     /// Set an IV rather than using a random one. This is for testing purposes
@@ -365,8 +364,8 @@ impl CipherParams {
         };
 
         // create a buffer big enough to store the data + padding.
-        let blocks = data.len() / Key::block_size() + 1;
-        let mut buf = vec![0u8; blocks * Key::block_size()];
+        let blocks = data.len() / self.key.block_size() + 1;
+        let mut buf = vec![0u8; blocks * self.key.block_size()];
 
         // copy the data into the buffer.
         buf[..data.len()].copy_from_slice(data);
@@ -380,7 +379,7 @@ impl CipherParams {
 
     /// Decrypt the data using AES-CBC with PKCS7 padding.
     pub fn decrypt(&self, data: &mut [u8]) -> Result<Vec<u8>> {
-        if data.len() % Key::block_size() != 0 || data.len() < Key::block_size() {
+        if data.len() % self.key.block_size() != 0 || data.len() < self.key.block_size() {
             return Err(error!(
                 40013,
                 format!(
@@ -389,14 +388,14 @@ impl CipherParams {
                 )
             ));
         }
-        let (iv, buf) = data.split_at_mut(Key::block_size());
-        let decrypted = self.key.decrypt(&iv.try_into().unwrap(), buf)?;
+        let (iv, buf) = data.split_at_mut(self.key.block_size());
+        let decrypted = self.key.decrypt(iv, buf)?;
         Ok(decrypted.to_vec())
     }
 }
 
-impl From<crypto::Key> for CipherParams {
-    fn from(key: crypto::Key) -> Self {
+impl From<crypto::Cipher> for CipherParams {
+    fn from(key: crypto::Cipher) -> Self {
         CipherParams { key, iv: None }
     }
 }

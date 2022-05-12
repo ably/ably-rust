@@ -12,7 +12,7 @@ async fn main() -> Result<()> {
 
     // Initialize a channel with cipher parameters so that published messages
     // get encrypted.
-    let cipher_key = ably::crypto::generate_random_key::<ably::crypto::Key256>();
+    let cipher_key = ably::crypto::Cipher::default();
     let params = ably::rest::CipherParams::from(cipher_key);
     let channel = client
         .channels()
