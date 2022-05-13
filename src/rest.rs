@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::auth::Auth;
+use crate::crypto::{Cipher, IV};
 use crate::error::*;
 use crate::options::ClientOptions;
-use crate::{crypto, history, http, json, presence, stats, Result};
+use crate::{history, http, json, presence, stats, Result};
 
 /// A client for the [Ably REST API].
 ///
@@ -307,104 +308,14 @@ impl From<&str> for Rest {
 /// Options for publishing messages on a channel.
 #[derive(Clone)]
 pub struct ChannelOptions {
-    cipher: Option<CipherParams>,
-}
-
-impl From<CipherParams> for ChannelOptions {
-    fn from(cipher: CipherParams) -> Self {
-        Self {
-            cipher: Some(cipher),
-        }
-    }
-}
-
-/// Parameters for encrypting and decrypting channel messages.
-///
-/// # Example
-///
-/// Initialize cipher params with a random 256 bit key.
-///
-/// ```
-/// use ably::crypto::*;
-///
-/// let key = generate_random_key::<Key256>();
-///
-/// let params = ably::rest::CipherParams::from(key);
-/// ```
-#[derive(Clone)]
-pub struct CipherParams {
-    key: crypto::Cipher,
-    iv: Option<crypto::IV>,
-}
-
-impl CipherParams {
-    fn encoding(&self) -> String {
-        format!("cipher+{}", self.algorithm())
-    }
-
-    fn algorithm(&self) -> String {
-        format!("aes-{}-cbc", self.key.bits())
-    }
-
-    /// Set an IV rather than using a random one. This is for testing purposes
-    /// only.
-    #[allow(dead_code)]
-    pub(crate) fn set_iv(mut self, iv: crypto::IV) -> Self {
-        self.iv = Some(iv);
-        self
-    }
-
-    /// Encrypt the data using AES-CBC with PKCS7 padding, returning the
-    /// ciphertext prefixed with the IV.
-    pub fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>> {
-        // generate a random IV if one isn't provided.
-        let iv = match self.iv {
-            Some(iv) => iv,
-            None => thread_rng().gen(),
-        };
-
-        // create a buffer big enough to store the data + padding.
-        let blocks = data.len() / self.key.block_size() + 1;
-        let mut buf = vec![0u8; blocks * self.key.block_size()];
-
-        // copy the data into the buffer.
-        buf[..data.len()].copy_from_slice(data);
-
-        // encrypt the data.
-        let encrypted = self.key.encrypt(&iv, &mut buf, data.len())?;
-
-        // return the encrypted data prefixed with the IV.
-        Ok([&iv[..], encrypted].concat())
-    }
-
-    /// Decrypt the data using AES-CBC with PKCS7 padding.
-    pub fn decrypt(&self, data: &mut [u8]) -> Result<Vec<u8>> {
-        if data.len() % self.key.block_size() != 0 || data.len() < self.key.block_size() {
-            return Err(error!(
-                40013,
-                format!(
-                    "invalid cipher message data; unexpected length: {}",
-                    data.len()
-                )
-            ));
-        }
-        let (iv, buf) = data.split_at_mut(self.key.block_size());
-        let decrypted = self.key.decrypt(iv, buf)?;
-        Ok(decrypted.to_vec())
-    }
-}
-
-impl From<crypto::Cipher> for CipherParams {
-    fn from(key: crypto::Cipher) -> Self {
-        CipherParams { key, iv: None }
-    }
+    pub(crate) cipher: Option<Cipher>,
 }
 
 /// Start building a Channel to publish a message.
 pub struct ChannelBuilder<'a> {
     rest: &'a Rest,
     name: String,
-    cipher: Option<CipherParams>,
+    cipher: Option<Cipher>,
 }
 
 impl<'a> ChannelBuilder<'a> {
@@ -417,14 +328,17 @@ impl<'a> ChannelBuilder<'a> {
     }
 
     /// Set the channel cipher parameters.
-    pub fn cipher(mut self, cipher: CipherParams) -> Self {
+    pub fn cipher(mut self, cipher: Cipher) -> Self {
         self.cipher = Some(cipher);
         self
     }
 
     /// Build the Channel.
     pub fn get(self) -> Channel<'a> {
-        let opts = self.cipher.map(Into::into);
+        let opts = Some(ChannelOptions {
+            cipher: self.cipher,
+        });
+
         Channel {
             name: self.name.clone(),
             rest: self.rest,
@@ -530,7 +444,7 @@ pub struct PublishBuilder<'a> {
     req: http::RequestBuilder<'a>,
     msg: Result<Message>,
     format: Format,
-    cipher: Option<CipherParams>,
+    cipher: Option<Cipher>,
 }
 
 impl<'a> PublishBuilder<'a> {
@@ -613,7 +527,7 @@ impl<'a> PublishBuilder<'a> {
     }
 
     /// Set the cipher to use to encrypt the message.
-    pub fn cipher(mut self, cipher: CipherParams) -> Self {
+    pub fn cipher(mut self, cipher: Cipher) -> Self {
         self.cipher = Some(cipher);
         self
     }
@@ -776,19 +690,29 @@ impl Message {
     /// Encode the message ready to be sent in the body of a HTTP request.
     ///
     /// If the cipher is set, then use it to encrypt the message.
-    pub fn encode(&mut self, format: &Format, cipher: Option<&CipherParams>) -> Result<()> {
+    pub fn encode(&mut self, format: &Format, cipher: Option<&Cipher>) -> Result<()> {
+        let iv: IV = thread_rng().gen();
+        self.encode_with_iv(format, cipher, &iv)
+    }
+
+    pub(crate) fn encode_with_iv(
+        &mut self,
+        format: &Format,
+        cipher: Option<&Cipher>,
+        iv: &[u8],
+    ) -> Result<()> {
         match &self.data {
             Data::String(data) => {
                 if let Some(cipher) = cipher {
                     let data = data.as_bytes();
-                    self.data = cipher.encrypt(data)?.into();
+                    self.data = cipher.encrypt_with_iv(iv, data)?.into();
                     self.encoding.push("utf-8");
                     self.encoding.push(cipher.encoding());
                 }
             }
             Data::Binary(data) => {
                 if let Some(cipher) = cipher {
-                    self.data = cipher.encrypt(data)?.into();
+                    self.data = cipher.encrypt_with_iv(iv, data)?.into();
                     self.encoding.push(cipher.encoding());
                 }
             }
@@ -797,7 +721,7 @@ impl Message {
 
                 if let Some(cipher) = cipher {
                     let data = json_str.as_bytes();
-                    self.data = cipher.encrypt(data)?.into();
+                    self.data = cipher.encrypt_with_iv(iv, data)?.into();
                     self.encoding.push("json");
                     self.encoding.push("utf-8");
                     self.encoding.push(cipher.encoding());

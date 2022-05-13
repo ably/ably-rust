@@ -123,13 +123,54 @@ impl Cipher {
         }
     }
 
+    pub fn encoding(&self) -> String {
+        format!("cipher+{}", self.algorithm())
+    }
+
+    pub fn algorithm(&self) -> String {
+        format!("aes-{}-cbc", self.bits())
+    }
+
     pub(crate) fn block_size(&self) -> usize {
         // aes blocksize is 128 bits
         16
     }
 
+    pub(crate) fn encrypt_with_iv(&self, iv: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+        // generate a random IV if one isn't provided.
+
+        // create a buffer big enough to store the data + padding.
+        let blocks = data.len() / self.block_size() + 1;
+        let mut buf = vec![0u8; blocks * self.block_size()];
+
+        // copy the data into the buffer.
+        buf[..data.len()].copy_from_slice(data);
+
+        // encrypt the data.
+        let encrypted = self.encrypt_raw(iv, &mut buf, data.len())?;
+
+        // return the encrypted data prefixed with the IV.
+        Ok([iv, encrypted].concat())
+    }
+
+    /// Decrypt the data using AES-CBC with PKCS7 padding.
+    pub fn decrypt(&self, data: &mut [u8]) -> Result<Vec<u8>> {
+        if data.len() % self.block_size() != 0 || data.len() < self.block_size() {
+            return Err(error!(
+                40013,
+                format!(
+                    "invalid cipher message data; unexpected length: {}",
+                    data.len()
+                )
+            ));
+        }
+        let (iv, buf) = data.split_at_mut(self.block_size());
+        let decrypted = self.decrypt_raw(iv, buf)?;
+        Ok(decrypted.to_vec())
+    }
+
     /// Encrypts the given data using AES-CBC with Pkcs7 padding.
-    pub fn encrypt<'a>(&self, iv: &[u8], buf: &'a mut [u8], len: usize) -> Result<&'a [u8]> {
+    fn encrypt_raw<'a>(&self, iv: &[u8], buf: &'a mut [u8], len: usize) -> Result<&'a [u8]> {
         let iv = GenericArray::from_slice(iv);
         match self {
             Self::Aes128Cbc(key) => {
@@ -143,7 +184,7 @@ impl Cipher {
     }
 
     /// Decrypts the given data using AES-CBC with Pkcs7 padding.
-    pub fn decrypt<'a>(&self, iv: &[u8], buf: &'a mut [u8]) -> Result<&'a [u8]> {
+    fn decrypt_raw<'a>(&self, iv: &[u8], buf: &'a mut [u8]) -> Result<&'a [u8]> {
         let iv = GenericArray::from_slice(iv);
         match self {
             Self::Aes128Cbc(key) => {
@@ -226,25 +267,26 @@ mod tests {
         }
 
         fn opts(&self) -> rest::ChannelOptions {
-            self.cipher_params().into()
+            rest::ChannelOptions {
+                cipher: Some(
+                    Cipher::builder()
+                        .string(&self.key)
+                        .unwrap()
+                        .build()
+                        .unwrap(),
+                ),
+            }
         }
 
-        fn cipher_params(&self) -> rest::CipherParams {
-            rest::CipherParams::from(self.cipher_key()).set_iv(self.cipher_iv())
-        }
-
-        fn cipher_key(&self) -> Cipher {
+        fn cipher(&self) -> Cipher {
             base64::decode(&self.key)
                 .expect("Expected base64 encoded cipher key")
                 .try_into()
                 .unwrap()
         }
 
-        fn cipher_iv(&self) -> IV {
-            base64::decode(&self.iv)
-                .expect("Expected base64 encoded IV")
-                .try_into()
-                .expect("Expected 16-byte IV")
+        fn cipher_iv(&self) -> Vec<u8> {
+            base64::decode(&self.iv).expect("Expected base64 encoded IV")
         }
     }
 
@@ -257,10 +299,10 @@ mod tests {
     #[tokio::test]
     async fn encrypt_message_128() -> Result<()> {
         let data = CryptoData::load("crypto-data-128.json");
-        let cipher = data.cipher_params();
+        let cipher = data.cipher();
         for item in data.items.iter() {
             let mut msg = rest::Message::from_encoded(item.encoded.clone(), None)?;
-            msg.encode(&rest::Format::MessagePack, Some(&cipher))?;
+            msg.encode_with_iv(&rest::Format::MessagePack, Some(&cipher), &data.cipher_iv())?;
             let expected = rest::Message::from_encoded(item.encrypted.clone(), None)?;
             assert_eq!(msg.data, expected.data);
             assert_eq!(msg.encoding, expected.encoding);
@@ -271,10 +313,10 @@ mod tests {
     #[tokio::test]
     async fn encrypt_message_256() -> Result<()> {
         let data = CryptoData::load("crypto-data-256.json");
-        let cipher = data.cipher_params();
+        let cipher = data.cipher();
         for item in data.items.iter() {
             let mut msg = rest::Message::from_encoded(item.encoded.clone(), None)?;
-            msg.encode(&rest::Format::MessagePack, Some(&cipher))?;
+            msg.encode_with_iv(&rest::Format::MessagePack, Some(&cipher), &data.cipher_iv())?;
             let expected = rest::Message::from_encoded(item.encrypted.clone(), None)?;
             assert_eq!(msg.data, expected.data);
             assert_eq!(msg.encoding, expected.encoding);
