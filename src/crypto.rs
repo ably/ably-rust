@@ -28,10 +28,15 @@ impl Default for Cipher {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub enum CipherKind {
-    #[default]
     AesCbc,
+}
+
+impl Default for CipherKind {
+    fn default() -> Self {
+        CipherKind::AesCbc
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
