@@ -8,9 +8,9 @@ use ably::Result;
 async fn main() -> Result<()> {
     let key = env::var("ABLY_API_KEY").expect("ABLY_API_KEY env var must be set");
 
-    let client = ably::Rest::from(key);
+    let client = ably::Rest::new(&key)?;
 
-    let channel = client.channels.get("rust-example");
+    let channel = client.channels().get("rust-example");
 
     println!("Publishing a string");
     match channel

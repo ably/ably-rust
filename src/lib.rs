@@ -12,8 +12,7 @@ pub mod auth;
 pub mod crypto;
 pub mod history;
 pub mod http;
-pub mod json;
-pub mod log;
+mod json;
 pub mod options;
 pub mod presence;
 pub mod rest;
@@ -41,14 +40,14 @@ mod tests {
     #[test]
     fn rest_client_from_string_with_colon_sets_key() {
         let s = "appID.keyID:keySecret";
-        let client = Rest::from(s);
+        let client = Rest::new(s).unwrap();
         assert!(client.opts.key.is_some());
     }
 
     #[test]
     fn rest_client_from_string_without_colon_sets_token_literal() {
         let s = "appID.tokenID";
-        let client = Rest::from(s);
+        let client = Rest::new(s).unwrap();
         assert!(client.opts.token.is_some());
     }
 
@@ -139,7 +138,11 @@ mod tests {
     }
 
     impl auth::AuthCallback for TestApp {
-        fn token<'a>(&'a self, params: auth::TokenParams) -> auth::TokenFuture<'a> {
+        fn token<'a>(
+            &'a self,
+            _rest: &rest::Rest,
+            params: auth::TokenParams,
+        ) -> auth::TokenFuture<'a> {
             Box::pin(self.token_request(params))
         }
     }
@@ -180,7 +183,7 @@ mod tests {
         let client = test_client();
 
         let res = client
-            .paginated_request(Method::GET, "/time")
+            .paginated_request::<json::Value, ()>(Method::GET, "/time", None)
             .send()
             .await?;
 
@@ -196,7 +199,7 @@ mod tests {
         let client = test_client();
 
         let mut pages = client
-            .paginated_request(Method::GET, "/time")
+            .paginated_request::<json::Value, ()>(Method::GET, "/time", None)
             .pages()
             .try_collect::<Vec<_>>()
             .await?;
@@ -312,7 +315,7 @@ mod tests {
     fn auth_create_token_request_no_options() -> Result<()> {
         let client = test_client();
 
-        let req = client.auth.create_token_request().sign()?;
+        let req = client.auth().create_token_request().sign()?;
 
         assert!(
             req.mac.unwrap().len() > 0,
@@ -343,7 +346,7 @@ mod tests {
         let capability = r#"{"*":["*"]}"#;
 
         let req = client
-            .auth
+            .auth()
             .create_token_request()
             .capability(capability)
             .sign()?;
@@ -360,7 +363,7 @@ mod tests {
         let client_id = "test@ably.com";
 
         let req = client
-            .auth
+            .auth()
             .create_token_request()
             .client_id(client_id)
             .sign()?;
@@ -376,7 +379,7 @@ mod tests {
 
         let ttl = 60000;
 
-        let req = client.auth.create_token_request().ttl(ttl).sign()?;
+        let req = client.auth().create_token_request().ttl(ttl).sign()?;
 
         assert_eq!(req.ttl, Some(ttl));
 
@@ -393,7 +396,7 @@ mod tests {
         let server_time = client.time().await?;
 
         // Request a token.
-        let token = client.auth.request_token().send().await?;
+        let token = client.auth().request_token().send().await?;
 
         // Check the token details.
         assert!(token.token.len() > 0, "Expected token to be set");
@@ -443,7 +446,7 @@ mod tests {
 
         // Request a token from the authUrl.
         let token = client
-            .auth
+            .auth()
             .request_token()
             .auth_url(auth_url)
             .send()
@@ -463,7 +466,7 @@ mod tests {
 
         // Request a token with a custom authCallback.
         let token = client
-            .auth
+            .auth()
             .request_token()
             .auth_callback(app)
             .send()
@@ -485,7 +488,7 @@ mod tests {
         let client = app.options().client_id(client_id).client()?;
 
         // Request a token.
-        let token = client.auth.request_token().send().await?;
+        let token = client.auth().request_token().send().await?;
 
         // Check the token details include the client_id.
         assert!(token.token.len() > 0, "Expected token to be set");
@@ -501,7 +504,7 @@ mod tests {
         let client = app.client();
 
         // Publish a message with string data.
-        let channel = client.channels.get("test_channel_publish_string");
+        let channel = client.channels().get("test_channel_publish_string");
         let data = "a string";
         channel.publish().name("name").string(data).send().await?;
 
@@ -521,7 +524,7 @@ mod tests {
         let client = app.client();
 
         // Publish a message with JSON serializable data.
-        let channel = client.channels.get("test_channel_publish_json_object");
+        let channel = client.channels().get("test_channel_publish_json_object");
         #[derive(Serialize)]
         struct TestData<'a> {
             b: bool,
@@ -562,7 +565,7 @@ mod tests {
         let client = app.client();
 
         // Publish a message with binary data.
-        let channel = client.channels.get("test_channel_publish_binary");
+        let channel = client.channels().get("test_channel_publish_binary");
         let data = vec![0x1, 0x2, 0x3, 0x4];
         channel.publish().name("name").binary(data).send().await?;
 
@@ -582,7 +585,7 @@ mod tests {
         let client = app.client();
 
         // Publish a message with extras.
-        let channel = client.channels.get("test_channel_publish_extras");
+        let channel = client.channels().get("test_channel_publish_extras");
         let data = "a string";
         let mut extras = json::Map::new();
         extras.insert("headers".to_string(), json!({"some":"metadata"}));
@@ -611,7 +614,7 @@ mod tests {
 
         // Publish a message with params '_forceNack=true' which should
         // result in the publish being rejected with a 40099 error code
-        let channel = client.channels.get("test_channel_publish_params");
+        let channel = client.channels().get("test_channel_publish_params");
         let data = "a string";
         let err = channel
             .publish()
@@ -633,7 +636,7 @@ mod tests {
         let client = app.client();
 
         // Retrieve the presence set
-        let channel = client.channels.get("persisted:presence_fixtures");
+        let channel = client.channels().get("persisted:presence_fixtures");
         let res = channel.presence.get().send().await?;
         let presence = res.items().await?;
         assert_eq!(presence.len(), 3);
@@ -657,7 +660,7 @@ mod tests {
         let client = app.client();
 
         // Retrieve the presence history
-        let channel = client.channels.get("persisted:presence_fixtures");
+        let channel = client.channels().get("persisted:presence_fixtures");
         let res = channel.presence.history().send().await?;
         let presence = res.items().await?;
         assert_eq!(presence.len(), 3);
@@ -681,7 +684,7 @@ mod tests {
         let client = app.client();
 
         // Publish some messages.
-        let channel = client.channels.get("persisted:history_count");
+        let channel = client.channels().get("persisted:history_count");
         futures::try_join!(
             channel.publish().name("event0").string("some data").send(),
             channel
@@ -727,7 +730,9 @@ mod tests {
         let client = app.client();
 
         // Publish some messages.
-        let channel = client.channels.get("persisted:history_paginate_backwards");
+        let channel = client
+            .channels()
+            .get("persisted:history_paginate_backwards");
         channel
             .publish()
             .name("event0")

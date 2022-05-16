@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 use crate::error::ErrorInfo;
-use crate::options::ClientOptions;
 use crate::{http, rest, Result};
 
 /// The maximum length of a valid token. Tokens with a length longer than this
@@ -85,32 +84,31 @@ impl Key {
 impl AuthCallback for Key {
     /// Support using the API key as an AuthCallback which always returns a
     /// signed token request.
-    fn token(&self, params: TokenParams) -> TokenFuture {
+    fn token(&self, _rest: &rest::Rest, params: TokenParams) -> TokenFuture {
         Box::pin(self.sign(params))
     }
 }
 
 /// Provides functions relating to Ably API authentication.
 #[derive(Clone, Debug)]
-pub struct Auth {
-    client: rest::Client,
-    opts: ClientOptions,
+pub struct Auth<'a> {
+    pub(crate) rest: &'a rest::Rest,
 }
 
-impl Auth {
-    pub fn new(client: rest::Client, opts: ClientOptions) -> Self {
-        Self { client, opts }
+impl<'a> Auth<'a> {
+    pub fn new(rest: &'a rest::Rest) -> Self {
+        Self { rest }
     }
 
     /// Start building a TokenRequest to be signed by a local API key.
     pub fn create_token_request(&self) -> CreateTokenRequestBuilder {
         let mut builder = CreateTokenRequestBuilder::new();
 
-        if let Some(key) = &self.opts.key {
+        if let Some(key) = &self.rest.opts.key {
             builder = builder.key(key.clone());
         }
 
-        if let Some(client_id) = &self.opts.client_id {
+        if let Some(client_id) = &self.rest.opts.client_id {
             builder = builder.client_id(client_id);
         }
 
@@ -119,28 +117,28 @@ impl Auth {
 
     /// Start building a request for a token.
     pub fn request_token(&self) -> RequestTokenBuilder {
-        let mut builder = RequestTokenBuilder::new(self.client.clone());
+        let mut builder = RequestTokenBuilder::new(self.rest);
 
-        if let Some(ref callback) = self.opts.auth_callback {
+        if let Some(ref callback) = self.rest.opts.auth_callback {
             builder = builder.auth_callback(callback.clone());
-        } else if let Some(ref url) = self.opts.auth_url {
+        } else if let Some(ref url) = self.rest.opts.auth_url {
             builder = builder.auth_url(AuthUrl {
                 url: url.clone(),
-                method: self.opts.auth_method.clone(),
-                headers: self.opts.auth_headers.clone(),
-                params: self.opts.auth_params.clone(),
+                method: self.rest.opts.auth_method.clone(),
+                headers: self.rest.opts.auth_headers.clone(),
+                params: self.rest.opts.auth_params.clone(),
             });
-        } else if let Some(ref key) = self.opts.key {
+        } else if let Some(ref key) = self.rest.opts.key {
             builder = builder.key(key.clone());
-        } else if let Some(ref token) = self.opts.token {
+        } else if let Some(ref token) = self.rest.opts.token {
             builder = builder.token(token.clone());
         }
 
-        if let Some(params) = &self.opts.default_token_params {
+        if let Some(params) = &self.rest.opts.default_token_params {
             builder = builder.params(params.clone());
         }
 
-        if let Some(client_id) = &self.opts.client_id {
+        if let Some(client_id) = &self.rest.opts.client_id {
             builder = builder.client_id(client_id);
         }
 
@@ -149,8 +147,8 @@ impl Auth {
 
     /// Set the Authorization header in the given request.
     pub async fn with_auth_headers(&self, req: &mut reqwest::Request) -> Result<()> {
-        if let Some(ref key) = self.opts.key {
-            if !self.opts.use_token_auth {
+        if let Some(ref key) = self.rest.opts.key {
+            if !self.rest.opts.use_token_auth {
                 return Self::set_basic_auth(req, key);
             }
         }
@@ -294,16 +292,16 @@ impl CreateTokenRequestBuilder {
 }
 
 /// A builder to request a token.
-pub struct RequestTokenBuilder {
-    client: rest::Client,
+pub struct RequestTokenBuilder<'a> {
+    rest: &'a rest::Rest,
     callback: Option<Box<dyn AuthCallback>>,
     params: TokenParams,
 }
 
-impl RequestTokenBuilder {
-    fn new(client: rest::Client) -> Self {
+impl<'a> RequestTokenBuilder<'a> {
+    fn new(rest: &'a rest::Rest) -> Self {
         Self {
-            client,
+            rest,
             callback: None,
             params: TokenParams::default(),
         }
@@ -321,7 +319,7 @@ impl RequestTokenBuilder {
 
     /// Use a URL as the AuthCallback.
     pub fn auth_url(self, url: impl Into<AuthUrl>) -> Self {
-        let callback = AuthUrlCallback::new(self.client.clone(), url.into());
+        let callback = AuthUrlCallback::new(url.into());
         self.auth_callback(callback)
     }
 
@@ -370,7 +368,7 @@ impl RequestTokenBuilder {
             .as_ref()
             .ok_or_else(|| error!(40171, "no means provided to renew auth token"))?;
 
-        let details = match callback.token(self.params.clone()).await {
+        let details = match callback.token(self.rest, self.params.clone()).await {
             // The callback may either:
             // - return a TokenRequest which we'll exchange for a TokenDetails
             // - return a token literal which we'll wrap in a TokenDetails
@@ -416,13 +414,14 @@ impl RequestTokenBuilder {
     fn exchange(
         &self,
         req: &TokenRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<TokenDetails>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<TokenDetails>> + Send + 'a>> {
         let req = self
-            .client
+            .rest
             .request(
                 http::Method::POST,
-                format!("/keys/{}/requestToken", req.key_name),
+                &format!("/keys/{}/requestToken", req.key_name),
             )
+            .authenticate(false)
             .body(req);
 
         Box::pin(async move { req.send().await?.body().await.map_err(Into::into) })
@@ -432,18 +431,17 @@ impl RequestTokenBuilder {
 /// An AuthCallback which requests tokens from a URL.
 #[derive(Clone, Debug)]
 pub struct AuthUrlCallback {
-    client: rest::Client,
     url: AuthUrl,
 }
 
 impl AuthUrlCallback {
-    fn new(client: rest::Client, url: AuthUrl) -> Self {
-        Self { client, url }
+    fn new(url: AuthUrl) -> Self {
+        Self { url }
     }
 
     /// Request a token from the URL.
-    async fn request(&self, _params: TokenParams) -> Result<Token> {
-        let res = self.url.request(&self.client).send().await?;
+    async fn request(&self, rest: &rest::Rest, _params: TokenParams) -> Result<Token> {
+        let res = self.url.request(rest).send().await?;
 
         // Parse the token response based on the Content-Type header.
         let content_type = res
@@ -470,8 +468,8 @@ impl AuthUrlCallback {
 }
 
 impl AuthCallback for AuthUrlCallback {
-    fn token(&self, params: TokenParams) -> TokenFuture {
-        Box::pin(self.request(params))
+    fn token<'a>(&'a self, rest: &'a rest::Rest, params: TokenParams) -> TokenFuture<'a> {
+        Box::pin(self.request(rest, params))
     }
 }
 
@@ -486,8 +484,8 @@ pub struct AuthUrl {
 }
 
 impl AuthUrl {
-    fn request(&self, client: &rest::Client) -> http::RequestBuilder {
-        let mut req = client.request_url(self.method.clone(), self.url.clone());
+    fn request<'a>(&self, rest: &'a rest::Rest) -> http::RequestBuilder<'a> {
+        let mut req = rest.request_url(self.method.clone(), self.url.clone());
 
         if let Some(ref headers) = self.headers {
             req = req.headers(headers.clone());
@@ -609,14 +607,14 @@ pub type TokenFuture<'a> = Pin<Box<dyn Future<Output = Result<Token>> + Send + '
 /// An AuthCallback is used to provide a Token during a call to
 /// auth::request_token.
 pub trait AuthCallback: DynClone + std::fmt::Debug + Send + Sync {
-    fn token(&self, params: TokenParams) -> TokenFuture;
+    fn token<'a>(&'a self, rest: &'a rest::Rest, params: TokenParams) -> TokenFuture<'a>;
 }
 
 dyn_clone::clone_trait_object!(AuthCallback);
 
 impl AuthCallback for Box<dyn AuthCallback> {
-    fn token(&self, params: TokenParams) -> TokenFuture {
-        (**self).token(params)
+    fn token<'a>(&'a self, rest: &'a rest::Rest, params: TokenParams) -> TokenFuture<'a> {
+        self.as_ref().token(rest, params)
     }
 }
 
@@ -648,7 +646,7 @@ impl<T: Into<String>> From<T> for Token {
 }
 
 impl AuthCallback for Token {
-    fn token(&self, _: TokenParams) -> TokenFuture {
+    fn token<'a>(&'a self, _rest: &'a rest::Rest, _params: TokenParams) -> TokenFuture<'a> {
         let token = self.clone();
         Box::pin(async move { Ok(token) })
     }
