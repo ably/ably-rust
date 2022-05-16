@@ -161,7 +161,7 @@ impl Rest {
     /// let client = ably::Rest::from("<api_key>");
     ///
     /// let mut pages = client
-    ///     .paginated_request(Method::GET, "/time")
+    ///     .paginated_request::<String, ()>(Method::GET, "/time", None)
     ///     .forwards()
     ///     .limit(1)
     ///     .pages();
