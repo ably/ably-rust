@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 use crate::error::ErrorInfo;
+use crate::rest::RestInner;
 use crate::{http, rest, Result};
 
 /// The maximum length of a valid token. Tokens with a length longer than this
@@ -100,15 +101,19 @@ impl<'a> Auth<'a> {
         Self { rest }
     }
 
+    fn inner(&self) -> &RestInner {
+        &self.rest.inner
+    }
+
     /// Start building a TokenRequest to be signed by a local API key.
     pub fn create_token_request(&self) -> CreateTokenRequestBuilder {
         let mut builder = CreateTokenRequestBuilder::new();
 
-        if let Some(key) = &self.rest.opts.key {
+        if let Some(key) = &self.inner().opts.key {
             builder = builder.key(key.clone());
         }
 
-        if let Some(client_id) = &self.rest.opts.client_id {
+        if let Some(client_id) = &self.inner().opts.client_id {
             builder = builder.client_id(client_id);
         }
 
@@ -119,26 +124,26 @@ impl<'a> Auth<'a> {
     pub fn request_token(&self) -> RequestTokenBuilder {
         let mut builder = RequestTokenBuilder::new(self.rest);
 
-        if let Some(ref callback) = self.rest.opts.auth_callback {
+        if let Some(ref callback) = self.inner().opts.auth_callback {
             builder = builder.auth_callback(callback.clone());
-        } else if let Some(ref url) = self.rest.opts.auth_url {
+        } else if let Some(ref url) = self.inner().opts.auth_url {
             builder = builder.auth_url(AuthUrl {
                 url: url.clone(),
-                method: self.rest.opts.auth_method.clone(),
-                headers: self.rest.opts.auth_headers.clone(),
-                params: self.rest.opts.auth_params.clone(),
+                method: self.inner().opts.auth_method.clone(),
+                headers: self.inner().opts.auth_headers.clone(),
+                params: self.inner().opts.auth_params.clone(),
             });
-        } else if let Some(ref key) = self.rest.opts.key {
+        } else if let Some(ref key) = self.inner().opts.key {
             builder = builder.key(key.clone());
-        } else if let Some(ref token) = self.rest.opts.token {
+        } else if let Some(ref token) = self.inner().opts.token {
             builder = builder.token(token.clone());
         }
 
-        if let Some(params) = &self.rest.opts.default_token_params {
+        if let Some(params) = &self.inner().opts.default_token_params {
             builder = builder.params(params.clone());
         }
 
-        if let Some(client_id) = &self.rest.opts.client_id {
+        if let Some(client_id) = &self.inner().opts.client_id {
             builder = builder.client_id(client_id);
         }
 
@@ -147,8 +152,8 @@ impl<'a> Auth<'a> {
 
     /// Set the Authorization header in the given request.
     pub async fn with_auth_headers(&self, req: &mut reqwest::Request) -> Result<()> {
-        if let Some(ref key) = self.rest.opts.key {
-            if !self.rest.opts.use_token_auth {
+        if let Some(ref key) = self.inner().opts.key {
+            if !self.inner().opts.use_token_auth {
                 return Self::set_basic_auth(req, key);
             }
         }

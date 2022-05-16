@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::prelude::*;
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
@@ -16,11 +18,16 @@ use crate::{history, http, json, presence, stats, Result};
 ///
 /// [Ably REST API]: https://ably.com/documentation/rest-api
 #[derive(Debug)]
-pub struct Rest {
+pub(crate) struct RestInner {
     pub channels: (),
     pub reqwest: reqwest::Client,
     pub opts: ClientOptions,
     pub url: reqwest::Url,
+}
+
+#[derive(Debug, Clone)]
+pub struct Rest {
+    pub(crate) inner: Arc<RestInner>,
 }
 
 impl Rest {
@@ -38,10 +45,12 @@ impl Rest {
 
     pub(crate) fn create(reqwest: reqwest::Client, opts: ClientOptions, url: reqwest::Url) -> Self {
         Self {
-            reqwest,
-            opts,
-            url,
-            channels: (),
+            inner: Arc::new(RestInner {
+                reqwest,
+                opts,
+                url,
+                channels: (),
+            }),
         }
     }
 
@@ -133,7 +142,7 @@ impl Rest {
     /// response is unsuccessful (i.e. the status code is not in the 200-299
     /// range).
     pub fn request(&self, method: http::Method, path: &str) -> http::RequestBuilder {
-        let mut url = self.url.clone();
+        let mut url = self.inner.url.clone();
         url.set_path(path);
         self.request_url(method, url)
     }
@@ -143,7 +152,11 @@ impl Rest {
         method: http::Method,
         url: impl reqwest::IntoUrl,
     ) -> http::RequestBuilder {
-        http::RequestBuilder::new(self, self.reqwest.request(method, url), self.opts.format)
+        http::RequestBuilder::new(
+            self,
+            self.inner.reqwest.request(method, url),
+            self.inner.opts.format,
+        )
     }
 
     /// Start building a paginated HTTP request to the Ably REST API.
@@ -211,7 +224,7 @@ impl Rest {
         }
 
         // Create a randomised list of fallback hosts if they're set.
-        let mut hosts = match &self.opts.fallback_hosts {
+        let mut hosts = match &self.inner.opts.fallback_hosts {
             None => return Err(err),
             Some(hosts) => hosts.clone(),
         };
@@ -219,7 +232,7 @@ impl Rest {
 
         // Try sending the request to the fallback hosts, capped at
         // ClientOptions.httpMaxRetryCount.
-        for host in hosts.iter().take(self.opts.http_max_retry_count) {
+        for host in hosts.iter().take(self.inner.opts.http_max_retry_count) {
             // Check we have a next request to send.
             let mut req = match next_req {
                 Some(req) => req,
@@ -256,7 +269,7 @@ impl Rest {
             self.auth().with_auth_headers(&mut req).await?;
         }
 
-        let res = self.reqwest.execute(req).await?;
+        let res = self.inner.reqwest.execute(req).await?;
 
         // Return the response if it was successful, otherwise try to decode a
         // JSON error from the response body, falling back to a generic error
@@ -457,7 +470,7 @@ impl<'a> PublishBuilder<'a> {
         Self {
             req,
             msg: Ok(Message::default()),
-            format: rest.opts.format,
+            format: rest.inner.opts.format,
             cipher: None,
         }
     }

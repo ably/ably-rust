@@ -41,14 +41,14 @@ mod tests {
     fn rest_client_from_string_with_colon_sets_key() {
         let s = "appID.keyID:keySecret";
         let client = Rest::new(s).unwrap();
-        assert!(client.opts.key.is_some());
+        assert!(client.inner.opts.key.is_some());
     }
 
     #[test]
     fn rest_client_from_string_without_colon_sets_token_literal() {
         let s = "appID.tokenID";
         let client = Rest::new(s).unwrap();
-        assert!(client.opts.token.is_some());
+        assert!(client.inner.opts.token.is_some());
     }
 
     #[test]
@@ -334,7 +334,7 @@ mod tests {
             req.client_id.is_none(),
             "expected tokenRequest.client_id to not be set by default"
         );
-        assert_eq!(req.key_name, client.opts.key.unwrap().name);
+        assert_eq!(req.key_name, client.inner.opts.key.as_ref().unwrap().name);
 
         Ok(())
     }
