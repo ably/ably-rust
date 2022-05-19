@@ -1,9 +1,9 @@
 use std::convert::TryFrom;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
-use chrono::prelude::*;
-use dyn_clone::DynClone;
+use chrono::{DateTime, Duration, Utc};
 use hmac::{Hmac, Mac};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
@@ -17,6 +17,76 @@ use crate::{http, rest, Result};
 /// The maximum length of a valid token. Tokens with a length longer than this
 /// are rejected with a 40170 error code.
 const MAX_TOKEN_LENGTH: usize = 128 * 1024;
+
+mod duration {
+    use std::fmt;
+
+    use super::*;
+    use serde::{de, Deserializer, Serializer};
+
+    #[derive(Debug)]
+    pub struct MilliSecondsTimestampVisitor;
+
+    impl<'de> de::Visitor<'de> for MilliSecondsTimestampVisitor {
+        type Value = Duration;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a duration in milliseconds")
+        }
+
+        /// Deserialize a timestamp in milliseconds since the epoch
+        fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Duration::milliseconds(value))
+        }
+    }
+
+    pub fn deserialize<'de, D>(d: D) -> std::result::Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        d.deserialize_u64(MilliSecondsTimestampVisitor)
+    }
+
+    pub fn serialize<S>(d: &Duration, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let n = d.num_milliseconds();
+        serializer.serialize_i64(n)
+    }
+}
+
+#[derive(Clone)]
+pub enum TokenSource {
+    TokenDetails(TokenDetails),
+    TokenRequest(TokenRequest),
+    Callback(Arc<dyn AuthCallback>),
+    Key(Key),
+    Url(reqwest::Url),
+}
+
+impl std::fmt::Debug for TokenSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TokenDetails(arg0) => f.debug_tuple("TokenDetails").field(arg0).finish(),
+            Self::TokenRequest(arg0) => f.debug_tuple("TokenRequest").field(arg0).finish(),
+            Self::Key(arg0) => f.debug_tuple("Key").field(arg0).finish(),
+            Self::Callback(_) => f.debug_tuple("Callback").field(&"Fn").finish(),
+            Self::Url(arg0) => f.debug_tuple("Url").field(arg0).finish(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AuthOptions {
+    pub token: Option<TokenSource>,
+    pub headers: Option<http::HeaderMap>,
+    pub method: http::Method,
+    pub params: Option<http::UrlQuery>,
+}
 
 /// An API Key used to authenticate with the REST API using HTTP Basic Auth.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -71,22 +141,12 @@ impl Key {
     /// let mut params = auth::TokenParams::default();
     /// params.client_id = Some("test@example.com".to_string());
     ///
-    /// let req = key.sign(params).await.unwrap();
-    ///
-    /// assert!(matches!(req, auth::Token::Request(_)));
+    /// let req = key.sign(&params).unwrap();
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn sign(&self, params: TokenParams) -> Result<Token> {
-        params.sign(self).map(Token::Request)
-    }
-}
-
-impl AuthCallback for Key {
-    /// Support using the API key as an AuthCallback which always returns a
-    /// signed token request.
-    fn token(&self, _rest: &rest::Rest, params: TokenParams) -> TokenFuture {
-        Box::pin(self.sign(params))
+    pub fn sign(&self, params: &TokenParams) -> Result<TokenRequest> {
+        params.sign(self)
     }
 }
 
@@ -106,59 +166,151 @@ impl<'a> Auth<'a> {
     }
 
     /// Start building a TokenRequest to be signed by a local API key.
-    pub fn create_token_request(&self) -> CreateTokenRequestBuilder {
-        let mut builder = CreateTokenRequestBuilder::new();
-
-        if let Some(key) = &self.inner().opts.key {
-            builder = builder.key(key.clone());
-        }
-
-        if let Some(client_id) = &self.inner().opts.client_id {
-            builder = builder.client_id(client_id);
-        }
-
-        builder
+    pub fn create_token_request(
+        &self,
+        params: &TokenParams,
+        options: &AuthOptions,
+    ) -> Result<TokenRequest> {
+        let key = match &options.token {
+            Some(TokenSource::Key(k)) => k,
+            _ => {
+                return Err(error!(
+                    40106,
+                    "API key is required to create signed token requests"
+                ))
+            }
+        };
+        params.sign(key)
     }
 
-    /// Start building a request for a token.
-    pub fn request_token(&self) -> RequestTokenBuilder {
-        let mut builder = RequestTokenBuilder::new(self.rest);
+    /// Exchange a TokenRequest for a token by making a HTTP request to the
+    /// [requestToken endpoint] in the Ably REST API.
+    ///
+    /// Returns a boxed future rather than using async since this is both
+    /// called from and calls out to RequestBuilder.send, and recursive
+    /// async functions are not supported.
+    ///
+    /// [requestToken endpoint]: https://docs.ably.io/rest-api/#request-token
+    pub(crate) fn exchange(
+        &self,
+        req: &TokenRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<TokenDetails>> + Send + 'a>> {
+        let req = self
+            .rest
+            .request(
+                http::Method::POST,
+                &format!("/keys/{}/requestToken", req.key_name),
+            )
+            .authenticate(false)
+            .body(req);
 
-        if let Some(ref callback) = self.inner().opts.auth_callback {
-            builder = builder.auth_callback(callback.clone());
-        } else if let Some(ref url) = self.inner().opts.auth_url {
-            builder = builder.auth_url(AuthUrl {
-                url: url.clone(),
-                method: self.inner().opts.auth_method.clone(),
-                headers: self.inner().opts.auth_headers.clone(),
-                params: self.inner().opts.auth_params.clone(),
-            });
-        } else if let Some(ref key) = self.inner().opts.key {
-            builder = builder.key(key.clone());
-        } else if let Some(ref token) = self.inner().opts.token {
-            builder = builder.token(token.clone());
+        Box::pin(async move { req.send().await?.body().await.map_err(Into::into) })
+    }
+
+    /// Request a token from the URL.
+    fn request_url<'b>(
+        &'b self,
+        url: &'b reqwest::Url,
+    ) -> Pin<Box<dyn Future<Output = Result<TokenDetails>> + Send + 'b>> {
+        let fut = async move {
+            let res = self
+                .rest
+                .request_url(Default::default(), url.clone())
+                .authenticate(false)
+                .send()
+                .await?;
+
+            // Parse the token response based on the Content-Type header.
+            let content_type = res.content_type().ok_or_else(|| {
+                error!(40170, "authUrl response is missing a content-type header")
+            })?;
+            match content_type.essence_str() {
+            "application/json" => {
+                // Expect a JSON encoded TokenRequest or TokenDetails, and just
+                // let serde figure out which Token variant to decode the JSON
+                // response into.
+                let token: RequestOrDetails = res.json().await?;
+                match token {
+                    RequestOrDetails::Request(r) => self.exchange(&r).await,
+                    RequestOrDetails::Details(d) => Ok(d),
+                }
+            },
+
+            "text/plain" | "application/jwt" => {
+                // Expect a literal token string.
+                let token = res.text().await?;
+                Ok(TokenDetails::from(token))
+            },
+
+            // Anything else is an error.
+            _ => Err(error!(40170, format!("authUrl responded with unacceptable content-type {}, should be either text/plain, application/jwt or application/json", content_type))),
+        }
+        };
+
+        Box::pin(fut)
+    }
+
+    pub async fn request_token(
+        &self,
+        params: &TokenParams,
+        options: &AuthOptions,
+    ) -> Result<TokenDetails> {
+        let token = options
+            .token
+            .as_ref()
+            .ok_or_else(|| error!(40171, "no means provided to renew auth token"))?;
+
+        let mut details = match token {
+            TokenSource::TokenDetails(token) => Ok(token.clone()),
+            TokenSource::TokenRequest(r) => self.exchange(r).await,
+            TokenSource::Callback(f) => match f.token(params).await {
+                Ok(token) => token.into_details(self).await,
+                Err(e) => Err(e),
+            },
+            TokenSource::Key(k) => self.exchange(&params.sign(k)?).await,
+            TokenSource::Url(url) => self.request_url(url).await,
+        };
+
+        if matches!(token, TokenSource::Callback(_) | TokenSource::Url(_)) {
+            if let Err(ref mut err) = details {
+                // Normalise auth error according to RSA4e.
+                if err.code == 40000 {
+                    err.code = 40170;
+                    err.status_code = Some(401);
+                }
+            };
         }
 
-        if let Some(params) = &self.inner().opts.default_token_params {
-            builder = builder.params(params.clone());
+        let details = details?;
+
+        // Reject tokens with size greater than 128KiB (RSA4f).
+        if details.token.len() > MAX_TOKEN_LENGTH {
+            return Err(error!(
+                40170,
+                format!(
+                    "Token string exceeded max permitted length (was {} bytes)",
+                    details.token.len()
+                ),
+                401
+            ));
         }
 
-        if let Some(client_id) = &self.inner().opts.client_id {
-            builder = builder.client_id(client_id);
-        }
-
-        builder
+        Ok(details)
     }
 
     /// Set the Authorization header in the given request.
-    pub async fn with_auth_headers(&self, req: &mut reqwest::Request) -> Result<()> {
-        if let Some(ref key) = self.inner().opts.key {
-            if !self.inner().opts.use_token_auth {
-                return Self::set_basic_auth(req, key);
-            }
+    pub(crate) async fn with_auth_headers(&self, req: &mut reqwest::Request) -> Result<()> {
+        if let Some(TokenSource::Key(k)) = &self.inner().opts.token {
+            return Self::set_basic_auth(req, k);
         }
 
-        let res = self.request_token().send().await?;
+        let options = AuthOptions {
+            token: self.inner().opts.token.clone(),
+            ..Default::default()
+        };
+
+        // TODO defaults
+        let res = self.request_token(&Default::default(), &options).await?;
         Self::set_bearer_auth(req, &res.token)
     }
 
@@ -199,340 +351,96 @@ impl<'a> Auth<'a> {
     /// See the [REST API Token Request Spec] for further details.
     ///
     /// [REST API Token Request Spec]: https://docs.ably.io/rest-api/token-request-spec/
-    fn compute_mac(key: &Key, req: &TokenRequest) -> Result<String> {
+    fn compute_mac(
+        key: &Key,
+        ttl: Duration,
+        capability: &str,
+        client_id: Option<&str>,
+        timestamp: DateTime<Utc>,
+        nonce: &str,
+    ) -> Result<String> {
         let mut mac = Hmac::<Sha256>::new_from_slice(key.value.as_bytes())?;
 
         mac.update(key.name.as_bytes());
         mac.update(b"\n");
 
-        mac.update(
-            req.ttl
-                .map(|t| t.to_string())
-                .as_ref()
-                .map(|t| t.as_bytes())
-                .unwrap_or_default(),
-        );
+        mac.update(ttl.num_milliseconds().to_string().as_bytes());
         mac.update(b"\n");
 
-        mac.update(
-            req.capability
-                .as_ref()
-                .map(|c| c.as_bytes())
-                .unwrap_or_default(),
-        );
+        mac.update(capability.as_bytes());
         mac.update(b"\n");
 
-        mac.update(
-            req.client_id
-                .as_ref()
-                .map(|c| c.as_bytes())
-                .unwrap_or_default(),
-        );
+        mac.update(client_id.map(|c| c.as_bytes()).unwrap_or_default());
         mac.update(b"\n");
 
-        let timestamp_ms =
-            req.timestamp.timestamp() * 1000 + req.timestamp.timestamp_subsec_millis() as i64;
-        mac.update(timestamp_ms.to_string().as_bytes());
+        mac.update(timestamp.timestamp_millis().to_string().as_bytes());
         mac.update(b"\n");
 
-        mac.update(req.nonce.as_bytes());
+        mac.update(nonce.as_bytes());
         mac.update(b"\n");
 
         Ok(base64::encode(mac.finalize().into_bytes()))
     }
 }
 
-/// A builder to create a signed TokenRequest.
-pub struct CreateTokenRequestBuilder {
-    key: Option<Key>,
-    params: TokenParams,
-}
-
-impl CreateTokenRequestBuilder {
-    fn new() -> Self {
-        Self {
-            key: None,
-            params: TokenParams::default(),
-        }
-    }
-
-    /// Set the key to use to sign the TokenRequest.
-    pub fn key(mut self, key: Key) -> Self {
-        self.key = Some(key);
-        self
-    }
-
-    /// Set the desired capability.
-    pub fn capability(mut self, capability: &str) -> Self {
-        self.params.capability = Some(capability.to_string());
-        self
-    }
-
-    /// Set the desired client_id.
-    pub fn client_id(mut self, client_id: &str) -> Self {
-        self.params.client_id = Some(client_id.to_string());
-        self
-    }
-
-    /// Set the desired TTL.
-    pub fn ttl(mut self, ttl: i64) -> Self {
-        self.params.ttl = Some(ttl);
-        self
-    }
-
-    /// Set the timestamp.
-    pub fn timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
-        self.params.timestamp = Some(timestamp);
-        self
-    }
-
-    /// Sign and return the TokenRequest.
-    pub fn sign(self) -> Result<TokenRequest> {
-        let key = self
-            .key
-            .as_ref()
-            .ok_or_else(|| error!(40106, "API key is required to create signed token requests"))?;
-        self.params.sign(key)
-    }
-}
-
-/// A builder to request a token.
-pub struct RequestTokenBuilder<'a> {
-    rest: &'a rest::Rest,
-    callback: Option<Box<dyn AuthCallback>>,
-    params: TokenParams,
-}
-
-impl<'a> RequestTokenBuilder<'a> {
-    fn new(rest: &'a rest::Rest) -> Self {
-        Self {
-            rest,
-            callback: None,
-            params: TokenParams::default(),
-        }
-    }
-
-    /// Use a key as the AuthCallback.
-    pub fn key(self, key: Key) -> Self {
-        self.auth_callback(key)
-    }
-
-    /// Use a token as the AuthCallback.
-    pub fn token(self, token: Token) -> Self {
-        self.auth_callback(token)
-    }
-
-    /// Use a URL as the AuthCallback.
-    pub fn auth_url(self, url: impl Into<AuthUrl>) -> Self {
-        let callback = AuthUrlCallback::new(url.into());
-        self.auth_callback(callback)
-    }
-
-    /// Use a custom AuthCallback.
-    pub fn auth_callback(mut self, callback: impl AuthCallback + 'static) -> Self {
-        self.callback = Some(Box::new(callback));
-        self
-    }
-
-    /// Set the TokenParams.
-    pub fn params(mut self, params: TokenParams) -> Self {
-        self.params = params;
-        self
-    }
-
-    /// Set the desired capability.
-    pub fn capability(mut self, capability: &str) -> Self {
-        self.params.capability = Some(capability.to_string());
-        self
-    }
-
-    /// Set the desired client_id.
-    pub fn client_id(mut self, client_id: &str) -> Self {
-        self.params.client_id = Some(client_id.to_string());
-        self
-    }
-
-    /// Set the desired TTL.
-    pub fn ttl(mut self, ttl: i64) -> Self {
-        self.params.ttl = Some(ttl);
-        self
-    }
-
-    /// Set the timestamp.
-    pub fn timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
-        self.params.timestamp = Some(timestamp);
-        self
-    }
-
-    /// Request a token response from the configured AuthCallback.
-    ///
-    /// If the response is a TokenRequest, exchange it for a token.
-    pub async fn send(self) -> Result<TokenDetails> {
-        let callback = self
-            .callback
-            .as_ref()
-            .ok_or_else(|| error!(40171, "no means provided to renew auth token"))?;
-
-        let details = match callback.token(self.rest, self.params.clone()).await {
-            // The callback may either:
-            // - return a TokenRequest which we'll exchange for a TokenDetails
-            // - return a token literal which we'll wrap in a TokenDetails
-            // - return a TokenDetails which we'll just return as is
-            Ok(token) => match token {
-                Token::Request(req) => self.exchange(&req).await?,
-                Token::Literal(token) => TokenDetails::from(token),
-                Token::Details(details) => details,
-            },
-            Err(mut err) => {
-                // Normalise auth error according to RSA4e.
-                if err.code == 40000 {
-                    err.code = 40170;
-                    err.status_code = Some(401);
-                }
-                return Err(err);
-            }
-        };
-
-        // Reject tokens with size greater than 128KiB (RSA4f).
-        if details.token.len() > MAX_TOKEN_LENGTH {
-            return Err(error!(
-                40170,
-                format!(
-                    "Token string exceeded max permitted length (was {} bytes)",
-                    details.token.len()
-                ),
-                401
-            ));
-        }
-
-        Ok(details)
-    }
-
-    /// Exchange a TokenRequest for a token by making a HTTP request to the
-    /// [requestToken endpoint] in the Ably REST API.
-    ///
-    /// Returns a boxed future rather than using async since this is both
-    /// called from and calls out to RequestBuilder.send, and recursive
-    /// async functions are not supported.
-    ///
-    /// [requestToken endpoint]: https://docs.ably.io/rest-api/#request-token
-    fn exchange(
-        &self,
-        req: &TokenRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<TokenDetails>> + Send + 'a>> {
-        let req = self
-            .rest
-            .request(
-                http::Method::POST,
-                &format!("/keys/{}/requestToken", req.key_name),
-            )
-            .authenticate(false)
-            .body(req);
-
-        Box::pin(async move { req.send().await?.body().await.map_err(Into::into) })
-    }
-}
-
-/// An AuthCallback which requests tokens from a URL.
-#[derive(Clone, Debug)]
-pub struct AuthUrlCallback {
-    url: AuthUrl,
-}
-
-impl AuthUrlCallback {
-    fn new(url: AuthUrl) -> Self {
-        Self { url }
-    }
-
-    /// Request a token from the URL.
-    async fn request(&self, rest: &rest::Rest, _params: TokenParams) -> Result<Token> {
-        let res = self.url.request(rest).authenticate(false).send().await?;
-
-        // Parse the token response based on the Content-Type header.
-        let content_type = res
-            .content_type()
-            .ok_or_else(|| error!(40170, "authUrl response is missing a content-type header"))?;
-        match content_type.essence_str() {
-            "application/json" => {
-                // Expect a JSON encoded TokenRequest or TokenDetails, and just
-                // let serde figure out which Token variant to decode the JSON
-                // response into.
-                res.json().await
-            },
-
-            "text/plain" | "application/jwt" => {
-                // Expect a literal token string.
-                let token = res.text().await?;
-                Ok(Token::Literal(token))
-            },
-
-            // Anything else is an error.
-            _ => Err(error!(40170, format!("authUrl responded with unacceptable content-type {}, should be either text/plain, application/jwt or application/json", content_type))),
-        }
-    }
-}
-
-impl AuthCallback for AuthUrlCallback {
-    fn token<'a>(&'a self, rest: &'a rest::Rest, params: TokenParams) -> TokenFuture<'a> {
-        Box::pin(self.request(rest, params))
-    }
-}
-
-#[derive(Clone, Debug)]
-/// A URL to request a token from, along with the HTTP method, headers, and
-/// query params to include in the request.
-pub struct AuthUrl {
-    pub url: reqwest::Url,
-    pub method: http::Method,
-    pub headers: Option<http::HeaderMap>,
-    pub params: Option<http::UrlQuery>,
-}
-
-impl AuthUrl {
-    fn request<'a>(&self, rest: &'a rest::Rest) -> http::RequestBuilder<'a> {
-        let mut req = rest.request_url(self.method.clone(), self.url.clone());
-
-        if let Some(ref headers) = self.headers {
-            req = req.headers(headers.clone());
-        }
-
-        if let Some(ref params) = self.params {
-            req = req.params(params);
-        }
-
-        req
-    }
-}
-
-impl From<reqwest::Url> for AuthUrl {
-    fn from(url: reqwest::Url) -> Self {
-        Self {
-            url,
-            method: http::Method::GET,
-            headers: None,
-            params: None,
-        }
-    }
-}
-
 /// An Ably [TokenParams] object.
 ///
 /// [TokenParams]: https://docs.ably.io/realtime/types/#token-params
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct TokenParams {
-    pub capability: Option<String>,
+    pub capability: String,
     pub client_id: Option<String>,
     pub nonce: Option<String>,
     pub timestamp: Option<DateTime<Utc>>,
-    pub ttl: Option<i64>,
+    pub ttl: Duration,
+}
+
+impl Default for TokenParams {
+    fn default() -> Self {
+        Self {
+            capability: "{\"*\":[\"*\"]}".to_string(),
+            client_id: Default::default(),
+            nonce: Default::default(),
+            timestamp: Default::default(),
+            ttl: Duration::minutes(60),
+        }
+    }
 }
 
 impl TokenParams {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    /// Set the desired capability.
+    pub fn capability(mut self, capability: &str) -> Self {
+        self.capability = capability.to_string();
+        self
+    }
+
+    /// Set the desired client_id.
+    pub fn client_id(mut self, client_id: &str) -> Self {
+        self.client_id = Some(client_id.to_string());
+        self
+    }
+
+    /// Set the desired TTL.
+    pub fn ttl(mut self, ttl: Duration) -> Self {
+        self.ttl = ttl;
+        self
+    }
+
+    /// Set the timestamp.
+    pub fn timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
+        self.timestamp = Some(timestamp);
+        self
+    }
+
     /// Generate a signed TokenRequest for these TokenParams using the steps
     /// described in the [REST API Token Request Spec].
     ///
     /// [REST API Token Request Spec]: https://ably.com/documentation/rest-api/token-request-spec
-    pub fn sign(self, key: &Key) -> Result<TokenRequest> {
+    fn sign(&self, key: &Key) -> Result<TokenRequest> {
         // if client_id is set, it must be a non-empty string
         if let Some(ref client_id) = self.client_id {
             if client_id.is_empty() {
@@ -540,17 +448,26 @@ impl TokenParams {
             }
         }
 
-        let mut req = TokenRequest {
-            key_name: key.name.clone(),
-            timestamp: self.timestamp.unwrap_or_else(Utc::now),
-            capability: self.capability,
-            client_id: self.client_id,
-            nonce: self.nonce.unwrap_or_else(Auth::generate_nonce),
-            ttl: self.ttl,
-            mac: None,
-        };
+        let nonce = self.nonce.clone().unwrap_or_else(Auth::generate_nonce);
+        let timestamp = self.timestamp.unwrap_or_else(Utc::now);
+        let key_name = key.name.clone();
 
-        req.mac = Some(Auth::compute_mac(key, &req)?);
+        let req = TokenRequest {
+            mac: Auth::compute_mac(
+                key,
+                self.ttl,
+                &self.capability,
+                self.client_id.as_deref(),
+                timestamp,
+                &nonce,
+            )?,
+            key_name,
+            timestamp,
+            capability: self.capability.clone(),
+            client_id: self.client_id.clone(),
+            nonce,
+            ttl: self.ttl,
+        };
 
         Ok(req)
     }
@@ -565,94 +482,67 @@ pub struct TokenRequest {
     pub key_name: String,
     #[serde(with = "chrono::serde::ts_milliseconds")]
     pub timestamp: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub capability: Option<String>,
+    pub capability: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mac: Option<String>,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    pub mac: String,
     pub nonce: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ttl: Option<i64>,
+    #[serde(with = "duration")]
+    pub ttl: Duration,
 }
 
 /// The token details returned in a successful response from the [REST
 /// requestToken endpoint].
 ///
 /// [REST requestToken endpoint]: https://docs.ably.io/rest-api/#request-token
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenDetails {
     pub token: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(with = "chrono::serde::ts_milliseconds_option")]
-    pub expires: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(with = "chrono::serde::ts_milliseconds_option")]
-    pub issued: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub capability: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_id: Option<String>,
+    #[serde(flatten)]
+    pub metadata: Option<TokenMetadata>,
 }
 
 impl From<String> for TokenDetails {
     fn from(token: String) -> Self {
-        Self {
+        TokenDetails {
             token,
-            ..Default::default()
+            metadata: None,
         }
     }
 }
 
-/// A future returned from an AuthCallback which resolves to a Token.
-pub type TokenFuture<'a> = Pin<Box<dyn Future<Output = Result<Token>> + Send + 'a>>;
-
-/// An AuthCallback is used to provide a Token during a call to
-/// auth::request_token.
-pub trait AuthCallback: DynClone + std::fmt::Debug + Send + Sync {
-    fn token<'a>(&'a self, rest: &'a rest::Rest, params: TokenParams) -> TokenFuture<'a>;
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenMetadata {
+    #[serde(with = "chrono::serde::ts_milliseconds")]
+    pub expires: DateTime<Utc>,
+    #[serde(with = "chrono::serde::ts_milliseconds")]
+    pub issued: DateTime<Utc>,
+    pub capability: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
 }
 
-dyn_clone::clone_trait_object!(AuthCallback);
-
-impl AuthCallback for Box<dyn AuthCallback> {
-    fn token<'a>(&'a self, rest: &'a rest::Rest, params: TokenParams) -> TokenFuture<'a> {
-        self.as_ref().token(rest, params)
-    }
-}
-
-/// A response from requesting a token from an AuthCallback.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
-pub enum Token {
+pub enum RequestOrDetails {
     Request(TokenRequest),
     Details(TokenDetails),
-    Literal(String),
 }
 
-impl From<TokenRequest> for Token {
-    fn from(t: TokenRequest) -> Self {
-        Self::Request(t)
+impl RequestOrDetails {
+    async fn into_details(self, auth: &Auth<'_>) -> Result<TokenDetails> {
+        match self {
+            RequestOrDetails::Request(r) => auth.exchange(&r).await,
+            RequestOrDetails::Details(d) => Ok(d),
+        }
     }
 }
 
-impl From<TokenDetails> for Token {
-    fn from(t: TokenDetails) -> Self {
-        Self::Details(t)
-    }
-}
-
-impl<T: Into<String>> From<T> for Token {
-    fn from(s: T) -> Self {
-        Self::Literal(s.into())
-    }
-}
-
-impl AuthCallback for Token {
-    fn token<'a>(&'a self, _rest: &'a rest::Rest, _params: TokenParams) -> TokenFuture<'a> {
-        let token = self.clone();
-        Box::pin(async move { Ok(token) })
-    }
+pub trait AuthCallback: Send + Sync {
+    fn token<'a>(
+        &'a self,
+        params: &'a TokenParams,
+    ) -> Pin<Box<dyn Send + Future<Output = Result<RequestOrDetails>> + 'a>>;
 }

@@ -39,6 +39,10 @@ impl Rest {
         Channels { rest: self }
     }
 
+    pub fn options(&self) -> &ClientOptions {
+        &self.inner.opts
+    }
+
     pub fn new(key: &str) -> Result<Self> {
         ClientOptions::from(key).client()
     }
@@ -106,7 +110,7 @@ impl Rest {
             .pop()
             .ok_or_else(|| error!(40000, "Invalid response from /time"))?;
 
-        Ok(Utc.timestamp(time / 1000, time as u32 % 1000))
+        Ok(Utc.timestamp_millis(time))
     }
 
     /// Start building a HTTP request to the Ably REST API.

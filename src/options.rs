@@ -1,6 +1,8 @@
 use std::convert::{TryFrom, TryInto};
+use std::sync::Arc;
 use std::time::Duration;
 
+use crate::auth::{AuthCallback, TokenSource};
 use crate::error::*;
 use crate::{auth, http, rest, Result};
 
@@ -9,21 +11,7 @@ use crate::{auth, http, rest, Result};
 /// [Ably client options]: https://ably.com/documentation/rest/types#client-options
 #[derive(Clone, Debug)]
 pub struct ClientOptions {
-    /// An Ably API key.
-    pub(crate) key: Option<auth::Key>,
-
-    /// An Ably authentication token, either as a string literal, a
-    /// TokenDetails object, or a TokenRequest object.
-    pub(crate) token: Option<auth::Token>,
-
-    /// A callback which is called to obtain an Ably authentication token,
-    /// either as a string literal, a TokenDetails object, or a TokenRequest
-    /// object.
-    pub(crate) auth_callback: Option<Box<dyn auth::AuthCallback>>,
-
-    /// A URL to request an Ably authentication token from, either as a string
-    /// literal, a TokenDetails object, or a TokenRequest object.
-    pub(crate) auth_url: Option<reqwest::Url>,
+    pub(crate) token: Option<auth::TokenSource>,
 
     /// The HTTP method to use when requesting a token from auth_url. Defaults
     /// to GET.
@@ -159,6 +147,16 @@ impl ClientOptions {
         Self::default()
     }
 
+    pub fn auth_url(mut self, url: reqwest::Url) -> Self {
+        self.token = Some(TokenSource::Url(url));
+        self
+    }
+
+    pub fn auth_callback(mut self, callback: Arc<dyn AuthCallback>) -> Self {
+        self.token = Some(TokenSource::Callback(callback));
+        self
+    }
+
     /// Sets the API key.
     ///
     /// # Example
@@ -178,7 +176,7 @@ impl ClientOptions {
     {
         match key.try_into() {
             Ok(key) => {
-                self.key = Some(key);
+                self.token = Some(TokenSource::Key(key));
             }
             Err(err) => {
                 self.error = Some(err.into());
@@ -202,35 +200,6 @@ impl ClientOptions {
             self.client_id = Some(client_id);
         }
 
-        self
-    }
-
-    /// Sets the token.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # fn main() -> ably::Result<()> {
-    /// let client = ably::ClientOptions::new()
-    ///     .token("aaaaaa.dddddddddddd")
-    ///     .client()?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn token(mut self, token: impl Into<auth::Token>) -> Self {
-        self.token = Some(token.into());
-        self
-    }
-
-    /// Sets a custom auth callback.
-    pub fn auth_callback(mut self, callback: impl auth::AuthCallback + 'static) -> Self {
-        self.auth_callback = Some(Box::new(callback));
-        self
-    }
-
-    /// Sets a custom auth URL.
-    pub fn auth_url(mut self, url: reqwest::Url) -> Self {
-        self.auth_url = Some(url);
         self
     }
 
@@ -374,11 +343,7 @@ impl ClientOptions {
             return Err(err.clone());
         }
 
-        if self.key.is_none()
-            && self.token.is_none()
-            && self.auth_url.is_none()
-            && self.auth_callback.is_none()
-        {
+        if self.token.is_none() {
             return Err(error!(
                 40106,
                 "must provide either an API key, a token, authUrl, or authCallback"
@@ -412,10 +377,7 @@ impl ClientOptions {
 impl Default for ClientOptions {
     fn default() -> Self {
         Self {
-            key: None,
             token: None,
-            auth_callback: None,
-            auth_url: None,
             auth_method: http::Method::GET,
             auth_headers: None,
             auth_params: None,
@@ -480,9 +442,9 @@ impl From<&str> for ClientOptions {
         let mut options = Self::new();
 
         if let Ok(key) = auth::Key::try_from(s) {
-            options.key = Some(key)
+            options.token = Some(TokenSource::Key(key))
         } else {
-            options.token = Some(s.into())
+            options.token = Some(TokenSource::TokenDetails(s.to_string().into()))
         }
 
         options
