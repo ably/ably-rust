@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::auth::Auth;
-use crate::crypto::{Cipher, IV};
+use crate::crypto::{CipherParams, IV};
 use crate::error::*;
 use crate::options::ClientOptions;
 use crate::{history, http, json, presence, stats, Result};
@@ -308,14 +308,14 @@ impl From<&str> for Rest {
 /// Options for publishing messages on a channel.
 #[derive(Clone)]
 pub struct ChannelOptions {
-    pub(crate) cipher: Option<Cipher>,
+    pub(crate) cipher: Option<CipherParams>,
 }
 
 /// Start building a Channel to publish a message.
 pub struct ChannelBuilder<'a> {
     rest: &'a Rest,
     name: String,
-    cipher: Option<Cipher>,
+    cipher: Option<CipherParams>,
 }
 
 impl<'a> ChannelBuilder<'a> {
@@ -328,7 +328,7 @@ impl<'a> ChannelBuilder<'a> {
     }
 
     /// Set the channel cipher parameters.
-    pub fn cipher(mut self, cipher: Cipher) -> Self {
+    pub fn cipher(mut self, cipher: CipherParams) -> Self {
         self.cipher = Some(cipher);
         self
     }
@@ -444,7 +444,7 @@ pub struct PublishBuilder<'a> {
     req: http::RequestBuilder<'a>,
     msg: Result<Message>,
     format: Format,
-    cipher: Option<Cipher>,
+    cipher: Option<CipherParams>,
 }
 
 impl<'a> PublishBuilder<'a> {
@@ -527,7 +527,7 @@ impl<'a> PublishBuilder<'a> {
     }
 
     /// Set the cipher to use to encrypt the message.
-    pub fn cipher(mut self, cipher: Cipher) -> Self {
+    pub fn cipher(mut self, cipher: CipherParams) -> Self {
         self.cipher = Some(cipher);
         self
     }
@@ -690,7 +690,7 @@ impl Message {
     /// Encode the message ready to be sent in the body of a HTTP request.
     ///
     /// If the cipher is set, then use it to encrypt the message.
-    pub fn encode(&mut self, format: &Format, cipher: Option<&Cipher>) -> Result<()> {
+    pub fn encode(&mut self, format: &Format, cipher: Option<&CipherParams>) -> Result<()> {
         let iv: IV = thread_rng().gen();
         self.encode_with_iv(format, cipher, &iv)
     }
@@ -698,7 +698,7 @@ impl Message {
     pub(crate) fn encode_with_iv(
         &mut self,
         format: &Format,
-        cipher: Option<&Cipher>,
+        cipher: Option<&CipherParams>,
         iv: &[u8],
     ) -> Result<()> {
         match &self.data {

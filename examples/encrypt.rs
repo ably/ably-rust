@@ -12,7 +12,7 @@ async fn main() -> Result<()> {
 
     // Initialize a channel with cipher parameters so that published messages
     // get encrypted.
-    let cipher = ably::crypto::Cipher::default();
+    let cipher = ably::crypto::CipherParams::default();
     let channel = client
         .channels()
         .name("rust-example")

@@ -15,14 +15,14 @@ type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 pub(crate) type IV = [u8; 16];
 
 #[derive(Clone, Debug)]
-pub enum Cipher {
+pub enum CipherParams {
     /// A 128 bit AES key.
     Aes128Cbc([u8; 16]),
     /// A 256 bit AES key.
     Aes256Cbc([u8; 32]),
 }
 
-impl Default for Cipher {
+impl Default for CipherParams {
     fn default() -> Self {
         Self::builder().build().unwrap()
     }
@@ -46,13 +46,13 @@ pub enum KeyLen {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct CipherBuilder {
+pub struct CipherParamsBuilder {
     kind: CipherKind,
     len: Option<KeyLen>,
     key: Option<Vec<u8>>,
 }
 
-impl CipherBuilder {
+impl CipherParamsBuilder {
     pub fn kind(mut self, kind: CipherKind) -> Self {
         self.kind = kind;
         self
@@ -69,12 +69,12 @@ impl CipherBuilder {
         Ok(self)
     }
 
-    pub fn len(mut self, len: KeyLen) -> Self {
+    pub fn key_len(mut self, len: KeyLen) -> Self {
         self.len = Some(len);
         self
     }
 
-    pub fn build(self) -> Result<Cipher> {
+    pub fn build(self) -> Result<CipherParams> {
         let len = self.len.or_else(|| {
             self.key.as_ref().and_then(|key| match key.len() {
                 16 => Some(KeyLen::Bits128),
@@ -95,7 +95,7 @@ impl CipherBuilder {
                         data
                     };
 
-                    Cipher::Aes128Cbc(key)
+                    CipherParams::Aes128Cbc(key)
                 }
                 Some(KeyLen::Bits256) | None => {
                     let key = if let Some(key) = self.key {
@@ -106,7 +106,7 @@ impl CipherBuilder {
                         thread_rng().fill_bytes(&mut data);
                         data
                     };
-                    Cipher::Aes256Cbc(key)
+                    CipherParams::Aes256Cbc(key)
                 }
             },
         };
@@ -115,9 +115,9 @@ impl CipherBuilder {
     }
 }
 
-impl Cipher {
-    pub fn builder() -> CipherBuilder {
-        CipherBuilder::default()
+impl CipherParams {
+    pub fn builder() -> CipherParamsBuilder {
+        CipherParamsBuilder::default()
     }
 
     /// Returns the length of the key in bits.
@@ -125,6 +125,13 @@ impl Cipher {
         match self {
             Self::Aes128Cbc(_) => 128,
             Self::Aes256Cbc(_) => 256,
+        }
+    }
+
+    pub fn key(&self) -> &[u8] {
+        match self {
+            CipherParams::Aes128Cbc(b) => b,
+            CipherParams::Aes256Cbc(b) => b,
         }
     }
 
@@ -142,8 +149,6 @@ impl Cipher {
     }
 
     pub(crate) fn encrypt_with_iv(&self, iv: &[u8], data: &[u8]) -> Result<Vec<u8>> {
-        // generate a random IV if one isn't provided.
-
         // create a buffer big enough to store the data + padding.
         let blocks = data.len() / self.block_size() + 1;
         let mut buf = vec![0u8; blocks * self.block_size()];
@@ -185,7 +190,7 @@ impl Cipher {
                 Aes256CbcEnc::new(key.into(), iv).encrypt_padded_mut::<Pkcs7>(buf, len)
             }
         }
-        .map_err(|_| unimplemented!())
+        .map_err(|_| error!(4000, "failed to decrypt message, malformed padding"))
     }
 
     /// Decrypts the given data using AES-CBC with Pkcs7 padding.
@@ -199,11 +204,11 @@ impl Cipher {
                 Aes256CbcDec::new(key.into(), iv).decrypt_padded_mut::<Pkcs7>(buf)
             }
         }
-        .map_err(|_| unimplemented!())
+        .map_err(|_| error!(4000, "failed to decrypt message, malformed padding"))
     }
 }
 
-impl TryFrom<&str> for Cipher {
+impl TryFrom<&str> for CipherParams {
     type Error = ErrorInfo;
 
     fn try_from(value: &str) -> Result<Self> {
@@ -211,7 +216,7 @@ impl TryFrom<&str> for Cipher {
     }
 }
 
-impl TryFrom<String> for Cipher {
+impl TryFrom<String> for CipherParams {
     type Error = ErrorInfo;
 
     fn try_from(value: String) -> Result<Self> {
@@ -219,7 +224,7 @@ impl TryFrom<String> for Cipher {
     }
 }
 
-impl TryFrom<&[u8]> for Cipher {
+impl TryFrom<&[u8]> for CipherParams {
     type Error = ErrorInfo;
 
     fn try_from(value: &[u8]) -> Result<Self> {
@@ -227,7 +232,7 @@ impl TryFrom<&[u8]> for Cipher {
     }
 }
 
-impl TryFrom<Vec<u8>> for Cipher {
+impl TryFrom<Vec<u8>> for CipherParams {
     type Error = ErrorInfo;
 
     fn try_from(value: Vec<u8>) -> Result<Self> {
@@ -247,13 +252,19 @@ mod tests {
 
     #[test]
     fn generate_random_key_128() {
-        let key = Cipher::builder().len(KeyLen::Bits128).build().unwrap();
+        let key = CipherParams::builder()
+            .key_len(KeyLen::Bits128)
+            .build()
+            .unwrap();
         assert_eq!(key.bits(), 128);
     }
 
     #[test]
     fn generate_random_key_256() {
-        let key = Cipher::builder().len(KeyLen::Bits256).build().unwrap();
+        let key = CipherParams::builder()
+            .key_len(KeyLen::Bits256)
+            .build()
+            .unwrap();
         assert_eq!(key.bits(), 256);
     }
 
@@ -274,7 +285,7 @@ mod tests {
         fn opts(&self) -> rest::ChannelOptions {
             rest::ChannelOptions {
                 cipher: Some(
-                    Cipher::builder()
+                    CipherParams::builder()
                         .string(&self.key)
                         .unwrap()
                         .build()
@@ -283,7 +294,7 @@ mod tests {
             }
         }
 
-        fn cipher(&self) -> Cipher {
+        fn cipher(&self) -> CipherParams {
             base64::decode(&self.key)
                 .expect("Expected base64 encoded cipher key")
                 .try_into()
