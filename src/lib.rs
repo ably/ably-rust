@@ -54,12 +54,12 @@ mod tests {
 
     #[test]
     fn client_options_errors_with_no_key_or_token() {
-        let err = ClientOptions::new().client().unwrap_err();
+        let err = ClientOptions::token_source().client().unwrap_err();
         assert_eq!(err.code, 40106);
     }
 
     fn test_client() -> Rest {
-        ClientOptions::new()
+        ClientOptions::token_source()
             .key("aaaaaa.bbbbbb:cccccc")
             .environment("sandbox")
             .client()
@@ -134,7 +134,9 @@ mod tests {
         }
 
         fn options(&self) -> ClientOptions {
-            ClientOptions::new().key(self.key()).environment("sandbox")
+            ClientOptions::token_source()
+                .key(self.key())
+                .environment("sandbox")
         }
 
         fn key(&self) -> auth::Key {
@@ -241,7 +243,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_request_with_bad_rest_host_returns_network_error() -> Result<()> {
-        let client = ClientOptions::new()
+        let client = ClientOptions::token_source()
             .key("aaaaaa.bbbbbb:cccccc")
             .rest_host("i-dont-exist.ably.com")
             .client()?;
@@ -776,7 +778,7 @@ mod tests {
     async fn client_fallback() -> Result<()> {
         // IANA reserved; requests to it will hang forever
         let unroutable_host = "10.255.255.1";
-        let client = ClientOptions::new()
+        let client = ClientOptions::token_source()
             .key("aaaaaa.bbbbbb:cccccc")
             .rest_host(unroutable_host)
             .fallback_hosts(vec!["sandbox-a-fallback.ably-realtime.com".to_string()])
@@ -802,7 +804,7 @@ mod tests {
         .unwrap();
 
         // Configure a client with an authUrl.
-        let client = ClientOptions::new()
+        let client = ClientOptions::token_source()
             .auth_url(auth_url)
             .environment("sandbox")
             .client()
@@ -824,7 +826,7 @@ mod tests {
         let app = Arc::new(TestApp::create().await?);
 
         // Configure a client with the test app as the authCallback.
-        let client = ClientOptions::new()
+        let client = ClientOptions::token_source()
             .auth_callback(app)
             .environment("sandbox")
             .client()
@@ -846,7 +848,7 @@ mod tests {
         let app = TestApp::create().await?;
 
         // Configure a client with a key and useTokenAuth=true.
-        let client = ClientOptions::new()
+        let client = ClientOptions::token_source()
             .key(app.key())
             .use_token_auth(true)
             .environment("sandbox")

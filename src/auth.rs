@@ -96,6 +96,19 @@ pub struct Key {
     pub value: String,
 }
 
+impl Key {
+    pub fn new(s: &str) -> Result<Self> {
+        if let [name, value] = s.splitn(2, ':').collect::<Vec<&str>>()[..] {
+            Ok(Key {
+                name: name.to_string(),
+                value: value.to_string(),
+            })
+        } else {
+            Err(error!(40000, "Invalid key"))
+        }
+    }
+}
+
 impl TryFrom<&str> for Key {
     type Error = ErrorInfo;
 
@@ -114,14 +127,7 @@ impl TryFrom<&str> for Key {
     /// assert!(res.is_err());
     /// ```
     fn try_from(s: &str) -> Result<Self> {
-        if let [name, value] = s.splitn(2, ':').collect::<Vec<&str>>()[..] {
-            Ok(Key {
-                name: name.to_string(),
-                value: value.to_string(),
-            })
-        } else {
-            Err(error!(40000, "Invalid key"))
-        }
+        Self::new(s)
     }
 }
 
@@ -300,12 +306,12 @@ impl<'a> Auth<'a> {
 
     /// Set the Authorization header in the given request.
     pub(crate) async fn with_auth_headers(&self, req: &mut reqwest::Request) -> Result<()> {
-        if let Some(TokenSource::Key(k)) = &self.inner().opts.token {
+        if let TokenSource::Key(k) = &self.inner().opts.token {
             return Self::set_basic_auth(req, k);
         }
 
         let options = AuthOptions {
-            token: self.inner().opts.token.clone(),
+            token: Some(self.inner().opts.token.clone()),
             ..Default::default()
         };
 
@@ -501,6 +507,15 @@ pub struct TokenDetails {
     pub token: String,
     #[serde(flatten)]
     pub metadata: Option<TokenMetadata>,
+}
+
+impl TokenDetails {
+    pub fn token(s: String) -> Self {
+        Self {
+            token: s,
+            metadata: None,
+        }
+    }
 }
 
 impl From<String> for TokenDetails {
