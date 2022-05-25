@@ -19,6 +19,7 @@ use crate::{history, http, json, presence, stats, Result};
 /// [Ably REST API]: https://ably.com/documentation/rest-api
 #[derive(Debug)]
 pub(crate) struct RestInner {
+    #[allow(dead_code)]
     pub channels: (),
     pub reqwest: reqwest::Client,
     pub opts: ClientOptions,

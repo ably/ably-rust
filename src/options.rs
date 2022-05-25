@@ -9,6 +9,7 @@ use crate::{auth, http, rest, Result};
 /// [Ably client options] for initialising a REST or Realtime client.
 ///
 /// [Ably client options]: https://ably.com/documentation/rest/types#client-options
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct ClientOptions {
     pub(crate) token: Option<auth::TokenSource>,
@@ -41,7 +42,6 @@ pub struct ClientOptions {
     /// Enable idempotent REST publishing. Defaults to false.
     ///
     /// See https://faqs.ably.com/what-is-idempotent-publishing
-    #[allow(dead_code)]
     pub(crate) idempotent_rest_publishing: bool,
 
     /// The list of fallback hosts to use in the case of an error necessitating
@@ -55,7 +55,6 @@ pub struct ClientOptions {
 
     /// Query the Ably system for the current time when issuing tokens.
     /// Defaults to false.
-    #[allow(dead_code)]
     pub(crate) query_time: bool,
 
     /// Override the default parameters used to request Ably tokens.
@@ -63,7 +62,6 @@ pub struct ClientOptions {
 
     /// Automatically connect when the Realtime library is instantiated.
     /// Defaults to true.
-    #[allow(dead_code)]
     pub(crate) auto_connect: bool,
 
     // pub queue_messages: bool,
@@ -74,31 +72,25 @@ pub struct ClientOptions {
 
     /// The hostname used in the Realtime API URL. Defaults to
     /// realtime.ably.io.
-    #[allow(dead_code)]
     pub(crate) realtime_host: String,
 
     /// The TCP port for non-TLS requests. Defaults to 80.
-    #[allow(dead_code)]
     pub(crate) port: u32,
 
     /// The TCP port for TLS requests. Defaults to 443.
-    #[allow(dead_code)]
     pub(crate) tls_port: u32,
 
     /// How long to wait before attempting to re-establish a connection which
     /// is in the DISCONNECTED state. Defaults to 15s.
-    #[allow(dead_code)]
     pub(crate) disconnected_retry_timeout: Duration,
 
     /// How long to wait before attempting to re-establish a connection which
     /// is in the SUSPENDED state. Defaults to 30s.
-    #[allow(dead_code)]
     pub(crate) suspended_retry_timeout: Duration,
 
     /// How long to wait before attempting to re-attach a channel which is in
     /// the SUSPENDED state following a server initiated detach. Defaults to
     /// 15s.
-    #[allow(dead_code)]
     pub(crate) channel_retry_timeout: Duration,
 
     /// How long to wait for a TCP connection to be established. Defaults to
@@ -115,27 +107,22 @@ pub struct ClientOptions {
 
     /// How long to wait for fallback requests to succeed before considering
     /// the request as failed. Defaults to 15s.
-    #[allow(dead_code)]
     pub(crate) http_max_retry_duration: Duration,
 
     /// The maximum size of messages that can be published in a single request.
     /// Defaults to 64KiB.
-    #[allow(dead_code)]
     pub(crate) max_message_size: u64,
 
     /// The maximum size of a single POST body or WebSocket frame. Defaults to
     /// 512KiB.
-    #[allow(dead_code)]
     pub(crate) max_frame_size: u64,
 
     /// How long to wait before switching back to the primary host after a
     /// successful request to a fallback endpoint. Defaults to 10m.
-    #[allow(dead_code)]
     pub(crate) fallback_retry_timeout: Duration,
 
     /// Include a random request_id in the query string of all API requests.
     /// Defaults to false.
-    #[allow(dead_code)]
     pub(crate) add_request_ids: bool,
 
     error: Option<ErrorInfo>,
