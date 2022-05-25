@@ -318,9 +318,9 @@ impl ClientOptions {
     /// - the REST API URL must be valid
     ///
     /// [RSC1b]: https://docs.ably.io/client-lib-development-guide/features/#RSC1b
-    pub fn client(&self) -> Result<rest::Rest> {
-        if let Some(err) = &self.error {
-            return Err(err.clone());
+    pub fn client(self) -> Result<rest::Rest> {
+        if let Some(err) = self.error {
+            return Err(err);
         }
 
         let rest_url = if self.tls {
@@ -343,7 +343,7 @@ impl ClientOptions {
             .connect_timeout(self.http_open_timeout)
             .build()?;
 
-        Ok(rest::Rest::create(http_client, self.clone(), rest_url))
+        Ok(rest::Rest::create(http_client, self, rest_url))
     }
 
     pub fn token_source(token: TokenSource) -> Self {
