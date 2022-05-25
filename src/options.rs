@@ -132,16 +132,16 @@ pub struct ClientOptions {
 impl ClientOptions {
     pub fn new(s: &str) -> Self {
         match auth::Key::new(s) {
-            Ok(k) => Self::key(k),
-            Err(_) => Self::token(s.to_string()),
+            Ok(k) => Self::with_key(k),
+            Err(_) => Self::with_token(s.to_string()),
         }
     }
 
-    pub fn auth_url(url: reqwest::Url) -> Self {
+    pub fn with_auth_url(url: reqwest::Url) -> Self {
         Self::token_source(TokenSource::Url(url))
     }
 
-    pub fn auth_callback(callback: Arc<dyn AuthCallback>) -> Self {
+    pub fn with_auth_callback(callback: Arc<dyn AuthCallback>) -> Self {
         Self::token_source(TokenSource::Callback(callback))
     }
 
@@ -157,11 +157,11 @@ impl ClientOptions {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn key(key: auth::Key) -> Self {
+    pub fn with_key(key: auth::Key) -> Self {
         Self::token_source(TokenSource::Key(key))
     }
 
-    pub fn token(token: String) -> Self {
+    pub fn with_token(token: String) -> Self {
         Self::token_source(TokenSource::TokenDetails(auth::TokenDetails::token(token)))
     }
 
