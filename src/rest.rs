@@ -1,13 +1,13 @@
 use chrono::prelude::*;
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
-use rand::{thread_rng, Rng};
+use rand::thread_rng;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::auth::Auth;
-use crate::crypto::{CipherParams, IV};
+use crate::crypto::CipherParams;
 use crate::error::*;
 use crate::options::ClientOptions;
 use crate::{history, http, json, presence, stats, Result};
@@ -691,28 +691,27 @@ impl Message {
     ///
     /// If the cipher is set, then use it to encrypt the message.
     pub fn encode(&mut self, format: &Format, cipher: Option<&CipherParams>) -> Result<()> {
-        let iv: IV = thread_rng().gen();
-        self.encode_with_iv(format, cipher, &iv)
+        self.encode_with_iv(format, cipher, None)
     }
 
     pub(crate) fn encode_with_iv(
         &mut self,
         format: &Format,
         cipher: Option<&CipherParams>,
-        iv: &[u8],
+        iv: Option<Vec<u8>>,
     ) -> Result<()> {
         match &self.data {
             Data::String(data) => {
                 if let Some(cipher) = cipher {
                     let data = data.as_bytes();
-                    self.data = cipher.encrypt_with_iv(iv, data)?.into();
+                    self.data = cipher.encrypt(iv, data)?.into();
                     self.encoding.push("utf-8");
                     self.encoding.push(cipher.encoding());
                 }
             }
             Data::Binary(data) => {
                 if let Some(cipher) = cipher {
-                    self.data = cipher.encrypt_with_iv(iv, data)?.into();
+                    self.data = cipher.encrypt(iv, data)?.into();
                     self.encoding.push(cipher.encoding());
                 }
             }
@@ -721,7 +720,7 @@ impl Message {
 
                 if let Some(cipher) = cipher {
                     let data = json_str.as_bytes();
-                    self.data = cipher.encrypt_with_iv(iv, data)?.into();
+                    self.data = cipher.encrypt(iv, data)?.into();
                     self.encoding.push("json");
                     self.encoding.push("utf-8");
                     self.encoding.push(cipher.encoding());

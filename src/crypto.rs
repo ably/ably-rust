@@ -3,7 +3,7 @@ use std::convert::TryFrom;
 use aes::cipher::block_padding::Pkcs7;
 use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use cipher::generic_array::GenericArray;
-use rand::{thread_rng, RngCore};
+use rand::{thread_rng, Rng, RngCore};
 
 use crate::{ErrorInfo, Result};
 
@@ -148,7 +148,7 @@ impl CipherParams {
         16
     }
 
-    pub(crate) fn encrypt_with_iv(&self, iv: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn encrypt(&self, iv: Option<Vec<u8>>, data: &[u8]) -> Result<Vec<u8>> {
         // create a buffer big enough to store the data + padding.
         let blocks = data.len() / self.block_size() + 1;
         let mut buf = vec![0u8; blocks * self.block_size()];
@@ -156,11 +156,15 @@ impl CipherParams {
         // copy the data into the buffer.
         buf[..data.len()].copy_from_slice(data);
 
+        let iv = iv.unwrap_or_else(|| thread_rng().gen::<IV>().to_vec());
+
         // encrypt the data.
-        let encrypted = self.encrypt_raw(iv, &mut buf, data.len())?;
+        let encrypted = self.encrypt_raw(&iv, &mut buf, data.len())?;
 
         // return the encrypted data prefixed with the IV.
-        Ok([iv, encrypted].concat())
+        let mut ret = iv;
+        ret.extend(encrypted);
+        Ok(ret)
     }
 
     /// Decrypt the data using AES-CBC with PKCS7 padding.
@@ -318,7 +322,11 @@ mod tests {
         let cipher = data.cipher();
         for item in data.items.iter() {
             let mut msg = rest::Message::from_encoded(item.encoded.clone(), None)?;
-            msg.encode_with_iv(&rest::Format::MessagePack, Some(&cipher), &data.cipher_iv())?;
+            msg.encode_with_iv(
+                &rest::Format::MessagePack,
+                Some(&cipher),
+                Some(data.cipher_iv().clone()),
+            )?;
             let expected = rest::Message::from_encoded(item.encrypted.clone(), None)?;
             assert_eq!(msg.data, expected.data);
             assert_eq!(msg.encoding, expected.encoding);
@@ -332,7 +340,11 @@ mod tests {
         let cipher = data.cipher();
         for item in data.items.iter() {
             let mut msg = rest::Message::from_encoded(item.encoded.clone(), None)?;
-            msg.encode_with_iv(&rest::Format::MessagePack, Some(&cipher), &data.cipher_iv())?;
+            msg.encode_with_iv(
+                &rest::Format::MessagePack,
+                Some(&cipher),
+                Some(data.cipher_iv().clone()),
+            )?;
             let expected = rest::Message::from_encoded(item.encrypted.clone(), None)?;
             assert_eq!(msg.data, expected.data);
             assert_eq!(msg.encoding, expected.encoding);
