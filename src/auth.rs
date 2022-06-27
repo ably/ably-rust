@@ -441,7 +441,7 @@ impl AuthUrlCallback {
 
     /// Request a token from the URL.
     async fn request(&self, rest: &rest::Rest, _params: TokenParams) -> Result<Token> {
-        let res = self.url.request(rest).send().await?;
+        let res = self.url.request(rest).authenticate(false).send().await?;
 
         // Parse the token response based on the Content-Type header.
         let content_type = res

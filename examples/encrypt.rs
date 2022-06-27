@@ -12,12 +12,11 @@ async fn main() -> Result<()> {
 
     // Initialize a channel with cipher parameters so that published messages
     // get encrypted.
-    let cipher_key = ably::crypto::generate_random_key::<ably::crypto::Key256>();
-    let params = ably::rest::CipherParams::from(cipher_key);
+    let cipher = ably::crypto::CipherParams::default();
     let channel = client
         .channels()
         .name("rust-example")
-        .cipher(params.clone())
+        .cipher(cipher.clone())
         .get();
 
     // Publish a message as normal.
@@ -48,7 +47,7 @@ async fn main() -> Result<()> {
         ably::Data::Binary(data) => data.into_vec(),
         _ => return Err(ably::error!(40000, "Expected binary data")),
     };
-    let decrypted = params.decrypt(&mut data)?;
+    let decrypted = cipher.decrypt(&mut data)?;
     println!("Decrypted = {:?}", decrypted);
     assert_eq!(decrypted, "a string".as_bytes());
 

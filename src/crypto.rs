@@ -1,156 +1,247 @@
 use std::convert::TryFrom;
 
-use aes::{Aes128, Aes256};
-use block_modes::block_padding::Pkcs7;
-use block_modes::BlockMode;
-use cipher::generic_array::typenum::{U16, U32};
-use cipher::generic_array::{ArrayLength, GenericArray};
-use cipher::NewBlockCipher;
-use rand::{thread_rng, RngCore};
+use aes::cipher::block_padding::Pkcs7;
+use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use cipher::generic_array::GenericArray;
+use rand::{thread_rng, Rng, RngCore};
 
 use crate::{ErrorInfo, Result};
 
-/// A 128 bit AES key.
-#[derive(Clone)]
-pub struct Key128(GenericArray<u8, U16>);
+type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
+type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
+type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
 
-/// A 256 bit AES key.
-#[derive(Clone)]
-pub struct Key256(GenericArray<u8, U32>);
+pub(crate) type IV = [u8; 16];
 
-// Type alias for CBC mode with Pkcs7 padding.
-type Cbc<T> = block_modes::Cbc<T, Pkcs7>;
-
-// An internal type for providing a deterministic IV in tests.
-pub(crate) type IV = [u8; aes::BLOCK_SIZE];
-
-#[derive(Clone)]
-pub enum Key {
+#[derive(Clone, Debug)]
+pub enum CipherParams {
     /// A 128 bit AES key.
-    Key128(Key128),
+    Aes128Cbc([u8; 16]),
     /// A 256 bit AES key.
-    Key256(Key256),
+    Aes256Cbc([u8; 32]),
 }
 
-impl Key {
+impl Default for CipherParams {
+    fn default() -> Self {
+        Self::builder().build().unwrap()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum CipherKind {
+    AesCbc,
+}
+
+impl Default for CipherKind {
+    fn default() -> Self {
+        CipherKind::AesCbc
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum KeyLen {
+    Bits128,
+    Bits256,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CipherParamsBuilder {
+    kind: CipherKind,
+    len: Option<KeyLen>,
+    key: Option<Vec<u8>>,
+}
+
+impl CipherParamsBuilder {
+    pub fn kind(mut self, kind: CipherKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    pub fn key(mut self, key: Vec<u8>) -> Self {
+        self.key = Some(key);
+        self
+    }
+
+    pub fn string(mut self, key: &str) -> Result<Self> {
+        let key = base64::decode(key)?;
+        self.key = Some(key);
+        Ok(self)
+    }
+
+    pub fn key_len(mut self, len: KeyLen) -> Self {
+        self.len = Some(len);
+        self
+    }
+
+    pub fn build(self) -> Result<CipherParams> {
+        let len = self.len.or_else(|| {
+            self.key.as_ref().and_then(|key| match key.len() {
+                16 => Some(KeyLen::Bits128),
+                32 => Some(KeyLen::Bits256),
+                _ => None,
+            })
+        });
+
+        let cipher = match self.kind {
+            CipherKind::AesCbc => match len {
+                Some(KeyLen::Bits128) => {
+                    let key = if let Some(key) = self.key {
+                        key.try_into()
+                            .map_err(|_| error!(40000, "Invalid key size"))?
+                    } else {
+                        let mut data = [0; 16];
+                        thread_rng().fill_bytes(&mut data);
+                        data
+                    };
+
+                    CipherParams::Aes128Cbc(key)
+                }
+                Some(KeyLen::Bits256) | None => {
+                    let key = if let Some(key) = self.key {
+                        key.try_into()
+                            .map_err(|_| error!(40000, "Invalid key size"))?
+                    } else {
+                        let mut data = [0; 32];
+                        thread_rng().fill_bytes(&mut data);
+                        data
+                    };
+                    CipherParams::Aes256Cbc(key)
+                }
+            },
+        };
+
+        Ok(cipher)
+    }
+}
+
+impl CipherParams {
+    pub fn builder() -> CipherParamsBuilder {
+        CipherParamsBuilder::default()
+    }
+
     /// Returns the length of the key in bits.
-    #[allow(clippy::len_without_is_empty)]
-    pub fn len(&self) -> usize {
+    pub fn bits(&self) -> usize {
         match self {
-            Self::Key128(_) => 128,
-            Self::Key256(_) => 256,
+            Self::Aes128Cbc(_) => 128,
+            Self::Aes256Cbc(_) => 256,
         }
+    }
+
+    pub fn key(&self) -> &[u8] {
+        match self {
+            CipherParams::Aes128Cbc(b) => b,
+            CipherParams::Aes256Cbc(b) => b,
+        }
+    }
+
+    pub fn encoding(&self) -> String {
+        format!("cipher+{}", self.algorithm())
+    }
+
+    pub fn algorithm(&self) -> String {
+        format!("aes-{}-cbc", self.bits())
+    }
+
+    pub(crate) fn block_size(&self) -> usize {
+        // aes blocksize is 128 bits
+        16
+    }
+
+    pub(crate) fn encrypt(&self, iv: Option<Vec<u8>>, data: &[u8]) -> Result<Vec<u8>> {
+        // create a buffer big enough to store the data + padding.
+        let blocks = data.len() / self.block_size() + 1;
+        let mut buf = vec![0u8; blocks * self.block_size()];
+
+        // copy the data into the buffer.
+        buf[..data.len()].copy_from_slice(data);
+
+        let iv = iv.unwrap_or_else(|| thread_rng().gen::<IV>().to_vec());
+
+        // encrypt the data.
+        let encrypted = self.encrypt_raw(&iv, &mut buf, data.len())?;
+
+        // return the encrypted data prefixed with the IV.
+        let mut ret = iv;
+        ret.extend(encrypted);
+        Ok(ret)
+    }
+
+    /// Decrypt the data using AES-CBC with PKCS7 padding.
+    pub fn decrypt(&self, data: &mut [u8]) -> Result<Vec<u8>> {
+        if data.len() % self.block_size() != 0 || data.len() < self.block_size() {
+            return Err(error!(
+                40013,
+                format!(
+                    "invalid cipher message data; unexpected length: {}",
+                    data.len()
+                )
+            ));
+        }
+        let (iv, buf) = data.split_at_mut(self.block_size());
+        let decrypted = self.decrypt_raw(iv, buf)?;
+        Ok(decrypted.to_vec())
     }
 
     /// Encrypts the given data using AES-CBC with Pkcs7 padding.
-    pub fn encrypt<'a>(&self, iv: &[u8], buf: &'a mut [u8], pos: usize) -> Result<&'a [u8]> {
+    fn encrypt_raw<'a>(&self, iv: &[u8], buf: &'a mut [u8], len: usize) -> Result<&'a [u8]> {
         let iv = GenericArray::from_slice(iv);
         match self {
-            Self::Key128(key) => Cbc::new(Aes128::new(&key.0), iv).encrypt(buf, pos),
-            Self::Key256(key) => Cbc::new(Aes256::new(&key.0), iv).encrypt(buf, pos),
+            Self::Aes128Cbc(key) => {
+                Aes128CbcEnc::new(key.into(), iv).encrypt_padded_mut::<Pkcs7>(buf, len)
+            }
+            Self::Aes256Cbc(key) => {
+                Aes256CbcEnc::new(key.into(), iv).encrypt_padded_mut::<Pkcs7>(buf, len)
+            }
         }
-        .map_err(Into::into)
+        .map_err(|_| error!(4000, "failed to decrypt message, malformed padding"))
     }
 
     /// Decrypts the given data using AES-CBC with Pkcs7 padding.
-    pub fn decrypt<'a>(&self, iv: &[u8], buf: &'a mut [u8]) -> Result<&'a [u8]> {
+    fn decrypt_raw<'a>(&self, iv: &[u8], buf: &'a mut [u8]) -> Result<&'a [u8]> {
         let iv = GenericArray::from_slice(iv);
         match self {
-            Self::Key128(key) => Cbc::new(Aes128::new(&key.0), iv).decrypt(buf),
-            Self::Key256(key) => Cbc::new(Aes256::new(&key.0), iv).decrypt(buf),
+            Self::Aes128Cbc(key) => {
+                Aes128CbcDec::new(key.into(), iv).decrypt_padded_mut::<Pkcs7>(buf)
+            }
+            Self::Aes256Cbc(key) => {
+                Aes256CbcDec::new(key.into(), iv).decrypt_padded_mut::<Pkcs7>(buf)
+            }
         }
-        .map_err(Into::into)
+        .map_err(|_| error!(4000, "failed to decrypt message, malformed padding"))
     }
 }
 
-impl TryFrom<Vec<u8>> for Key {
+impl TryFrom<&str> for CipherParams {
     type Error = ErrorInfo;
 
-    /// Try to instantiate a 128 or 256 bit Key from the given byte vector.
-    ///
-    /// Returns an error if the byte vector has an unsupported length.
-    fn try_from(v: Vec<u8>) -> Result<Self> {
-        match v.len() {
-            16 => Ok(Self::Key128(Key128(*GenericArray::from_slice(&v)))),
-            32 => Ok(Self::Key256(Key256(*GenericArray::from_slice(&v)))),
-            _ => Err(error!(
-                40000,
-                format!(
-                    "invalid cipher key length {}, must be 128 or 256 bits",
-                    v.len()
-                )
-            )),
-        }
+    fn try_from(value: &str) -> Result<Self> {
+        Self::builder().string(value)?.build()
     }
 }
 
-impl TryFrom<String> for Key {
+impl TryFrom<String> for CipherParams {
     type Error = ErrorInfo;
 
-    /// Try to instantiate a 128 or 256 bit Key from the given base64 encoded
-    /// string.
-    ///
-    /// Returns an error if the decoded bytes have an unsupported length.
-    fn try_from(s: String) -> Result<Self> {
-        Self::try_from(base64::decode(s)?)
+    fn try_from(value: String) -> Result<Self> {
+        Self::builder().string(&value)?.build()
     }
 }
 
-impl TryFrom<&str> for Key {
+impl TryFrom<&[u8]> for CipherParams {
     type Error = ErrorInfo;
 
-    /// Try to instantiate a 128 or 256 bit Key from the given base64 encoded
-    /// string.
-    ///
-    /// Returns an error if the decoded bytes have an unsupported length.
-    fn try_from(s: &str) -> Result<Self> {
-        Self::try_from(base64::decode(s)?)
+    fn try_from(value: &[u8]) -> Result<Self> {
+        Self::builder().key(value.to_vec()).build()
     }
 }
 
-/// Instantiate a Key of a particular length.
-///
-/// This is used as a generic parameter to generate_random_key to generate keys
-/// of a supported length.
-pub trait NewKey {
-    type Length: ArrayLength<u8>;
+impl TryFrom<Vec<u8>> for CipherParams {
+    type Error = ErrorInfo;
 
-    fn key(data: GenericArray<u8, Self::Length>) -> Key;
-}
-
-impl NewKey for Key128 {
-    type Length = U16;
-
-    fn key(data: GenericArray<u8, Self::Length>) -> Key {
-        Key::Key128(Self(data))
+    fn try_from(value: Vec<u8>) -> Result<Self> {
+        Self::builder().key(value).build()
     }
-}
-
-impl NewKey for Key256 {
-    type Length = U32;
-
-    fn key(data: GenericArray<u8, Self::Length>) -> Key {
-        Key::Key256(Self(data))
-    }
-}
-
-/// Generate a random 128 or 256 bit Key.
-///
-/// # Example
-///
-/// ```
-/// use ably::crypto::*;
-///
-/// let key = generate_random_key::<Key128>();
-/// assert_eq!(key.len(), 128);
-///
-/// let key = generate_random_key::<Key256>();
-/// assert_eq!(key.len(), 256);
-/// ```
-pub fn generate_random_key<T: NewKey>() -> Key {
-    let mut data = GenericArray::default();
-    thread_rng().fill_bytes(&mut data);
-    T::key(data)
 }
 
 #[cfg(test)]
@@ -165,14 +256,20 @@ mod tests {
 
     #[test]
     fn generate_random_key_128() {
-        let key = generate_random_key::<Key128>();
-        assert_eq!(key.len(), 128);
+        let key = CipherParams::builder()
+            .key_len(KeyLen::Bits128)
+            .build()
+            .unwrap();
+        assert_eq!(key.bits(), 128);
     }
 
     #[test]
     fn generate_random_key_256() {
-        let key = generate_random_key::<Key256>();
-        assert_eq!(key.len(), 256);
+        let key = CipherParams::builder()
+            .key_len(KeyLen::Bits256)
+            .build()
+            .unwrap();
+        assert_eq!(key.bits(), 256);
     }
 
     #[derive(Deserialize)]
@@ -190,25 +287,26 @@ mod tests {
         }
 
         fn opts(&self) -> rest::ChannelOptions {
-            self.cipher_params().into()
+            rest::ChannelOptions {
+                cipher: Some(
+                    CipherParams::builder()
+                        .string(&self.key)
+                        .unwrap()
+                        .build()
+                        .unwrap(),
+                ),
+            }
         }
 
-        fn cipher_params(&self) -> rest::CipherParams {
-            rest::CipherParams::from(self.cipher_key()).set_iv(self.cipher_iv())
-        }
-
-        fn cipher_key(&self) -> Key {
+        fn cipher(&self) -> CipherParams {
             base64::decode(&self.key)
                 .expect("Expected base64 encoded cipher key")
                 .try_into()
                 .unwrap()
         }
 
-        fn cipher_iv(&self) -> IV {
-            base64::decode(&self.iv)
-                .expect("Expected base64 encoded IV")
-                .try_into()
-                .expect("Expected 16-byte IV")
+        fn cipher_iv(&self) -> Vec<u8> {
+            base64::decode(&self.iv).expect("Expected base64 encoded IV")
         }
     }
 
@@ -221,10 +319,14 @@ mod tests {
     #[tokio::test]
     async fn encrypt_message_128() -> Result<()> {
         let data = CryptoData::load("crypto-data-128.json");
-        let cipher = data.cipher_params();
+        let cipher = data.cipher();
         for item in data.items.iter() {
             let mut msg = rest::Message::from_encoded(item.encoded.clone(), None)?;
-            msg.encode(&rest::Format::MessagePack, Some(&cipher))?;
+            msg.encode_with_iv(
+                &rest::Format::MessagePack,
+                Some(&cipher),
+                Some(data.cipher_iv().clone()),
+            )?;
             let expected = rest::Message::from_encoded(item.encrypted.clone(), None)?;
             assert_eq!(msg.data, expected.data);
             assert_eq!(msg.encoding, expected.encoding);
@@ -235,10 +337,14 @@ mod tests {
     #[tokio::test]
     async fn encrypt_message_256() -> Result<()> {
         let data = CryptoData::load("crypto-data-256.json");
-        let cipher = data.cipher_params();
+        let cipher = data.cipher();
         for item in data.items.iter() {
             let mut msg = rest::Message::from_encoded(item.encoded.clone(), None)?;
-            msg.encode(&rest::Format::MessagePack, Some(&cipher))?;
+            msg.encode_with_iv(
+                &rest::Format::MessagePack,
+                Some(&cipher),
+                Some(data.cipher_iv().clone()),
+            )?;
             let expected = rest::Message::from_encoded(item.encrypted.clone(), None)?;
             assert_eq!(msg.data, expected.data);
             assert_eq!(msg.encoding, expected.encoding);
