@@ -35,32 +35,28 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::auth::{AuthCallback, AuthOptions, TokenParams, TokenSource};
+    use crate::auth::{AuthOptions, TokenParams, TokenSource};
     use crate::http::Method;
 
     #[test]
     fn rest_client_from_string_with_colon_sets_key() {
         let s = "appID.keyID:keySecret";
         let client = Rest::new(s).unwrap();
-        assert!(matches!(client.inner.opts.token, Some(TokenSource::Key(_))));
+        assert!(matches!(client.inner.opts.token, TokenSource::Key(_)));
     }
 
     #[test]
     fn rest_client_from_string_without_colon_sets_token_literal() {
         let s = "appID.tokenID";
         let client = Rest::new(s).unwrap();
-        assert!(client.inner.opts.token.is_some());
-    }
-
-    #[test]
-    fn client_options_errors_with_no_key_or_token() {
-        let err = ClientOptions::token_source().client().unwrap_err();
-        assert_eq!(err.code, 40106);
+        assert!(matches!(
+            client.inner.opts.token,
+            TokenSource::TokenDetails(_)
+        ));
     }
 
     fn test_client() -> Rest {
-        ClientOptions::token_source()
-            .key("aaaaaa.bbbbbb:cccccc")
+        ClientOptions::new("aaaaaa.bbbbbb:cccccc")
             .environment("sandbox")
             .client()
             .unwrap()
@@ -134,9 +130,7 @@ mod tests {
         }
 
         fn options(&self) -> ClientOptions {
-            ClientOptions::token_source()
-                .key(self.key())
-                .environment("sandbox")
+            ClientOptions::with_key(self.key()).environment("sandbox")
         }
 
         fn key(&self) -> auth::Key {
@@ -149,7 +143,7 @@ mod tests {
 
         fn auth_options(&self) -> AuthOptions {
             AuthOptions {
-                token: self.options().token,
+                token: Some(self.options().token),
                 headers: None,
                 method: Default::default(),
                 params: None,
@@ -243,8 +237,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_request_with_bad_rest_host_returns_network_error() -> Result<()> {
-        let client = ClientOptions::token_source()
-            .key("aaaaaa.bbbbbb:cccccc")
+        let client = ClientOptions::new("aaaaaa.bbbbbb:cccccc")
             .rest_host("i-dont-exist.ably.com")
             .client()?;
 
@@ -333,7 +326,7 @@ mod tests {
         };
 
         let options = AuthOptions {
-            token: client.options().token.clone(),
+            token: Some(client.options().token.clone()),
             ..Default::default()
         };
 
@@ -778,8 +771,7 @@ mod tests {
     async fn client_fallback() -> Result<()> {
         // IANA reserved; requests to it will hang forever
         let unroutable_host = "10.255.255.1";
-        let client = ClientOptions::token_source()
-            .key("aaaaaa.bbbbbb:cccccc")
+        let client = ClientOptions::new("aaaaaa.bbbbbb:cccccc")
             .rest_host(unroutable_host)
             .fallback_hosts(vec!["sandbox-a-fallback.ably-realtime.com".to_string()])
             .http_request_timeout(std::time::Duration::from_secs(3))
@@ -804,8 +796,7 @@ mod tests {
         .unwrap();
 
         // Configure a client with an authUrl.
-        let client = ClientOptions::token_source()
-            .auth_url(auth_url)
+        let client = ClientOptions::with_auth_url(auth_url)
             .environment("sandbox")
             .client()
             .expect("Expected client to initialise");
@@ -826,8 +817,7 @@ mod tests {
         let app = Arc::new(TestApp::create().await?);
 
         // Configure a client with the test app as the authCallback.
-        let client = ClientOptions::token_source()
-            .auth_callback(app)
+        let client = ClientOptions::with_auth_callback(app)
             .environment("sandbox")
             .client()
             .expect("Expected client to initialise");
@@ -848,8 +838,7 @@ mod tests {
         let app = TestApp::create().await?;
 
         // Configure a client with a key and useTokenAuth=true.
-        let client = ClientOptions::token_source()
-            .key(app.key())
+        let client = ClientOptions::with_key(app.key())
             .use_token_auth(true)
             .environment("sandbox")
             .client()
