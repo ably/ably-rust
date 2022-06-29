@@ -9,11 +9,24 @@ use serde_repr::Deserialize_repr;
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(
-    Clone, Copy, Debug, Deserialize_repr, FromPrimitive, PartialEq, PartialOrd, Eq, Ord, Hash,
+    Clone,
+    Copy,
+    Debug,
+    Deserialize_repr,
+    FromPrimitive,
+    PartialEq,
+    PartialOrd,
+    Eq,
+    Ord,
+    Hash,
+    Default,
 )]
 #[repr(u32)]
 pub enum ErrorCode {
+    #[default]
     NotSet = 0,
+    #[serde(other)]
+    UnknownError = 1,
     NoError = 10000,
     BadRequest = 40000,
     InvalidRequestBody = 40001,
@@ -157,6 +170,7 @@ pub struct Error {
     /// The [Ably error code].
     ///
     /// [Ably error code]: https://knowledge.ably.com/ably-error-codes
+    #[serde(default)]
     pub code: ErrorCode,
 
     /// Additional message information, where available.
@@ -343,5 +357,25 @@ mod tests {
     fn error_fmt() {
         let err = Error::with_status(ErrorCode::InvalidCredentials, 401, "error message");
         assert_eq!(format!("{}", err), "[ErrorInfo: error message; statusCode=401; code=40101; see https://help.ably.io/error/40101 ]");
+    }
+
+    #[test]
+    fn unkown_code() {
+        let err: Error =
+            serde_json::from_str(r#"{"code": 99991212, "message": "", "href": ""}"#).unwrap();
+        assert_eq!(err.code, ErrorCode::UnknownError);
+    }
+
+    #[test]
+    fn no_code() {
+        let err: Error = serde_json::from_str(r#"{"message": "", "href": ""}"#).unwrap();
+        assert_eq!(err.code, ErrorCode::NotSet);
+    }
+
+    #[test]
+    fn bad_request() {
+        let err: Error =
+            serde_json::from_str(r#"{"code": 40000, "message": "", "href": ""}"#).unwrap();
+        assert_eq!(err.code, ErrorCode::BadRequest);
     }
 }
