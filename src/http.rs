@@ -12,7 +12,7 @@ use regex::Regex;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::error::ErrorInfo;
+use crate::error::Error;
 use crate::{rest, Result};
 
 pub type UrlQuery = Box<[(String, String)]>;
@@ -285,7 +285,7 @@ lazy_static! {
 }
 
 impl TryFrom<&reqwest::header::HeaderValue> for Link {
-    type Error = ErrorInfo;
+    type Error = Error;
 
     /// Try and extract a Link object from a Link HTTP header.
     fn try_from(v: &reqwest::header::HeaderValue) -> Result<Link> {

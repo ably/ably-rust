@@ -5,7 +5,7 @@ use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use cipher::generic_array::GenericArray;
 use rand::{thread_rng, Rng, RngCore};
 
-use crate::{ErrorInfo, Result};
+use crate::{Error, Result};
 
 type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
 type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
@@ -213,7 +213,7 @@ impl CipherParams {
 }
 
 impl TryFrom<&str> for CipherParams {
-    type Error = ErrorInfo;
+    type Error = Error;
 
     fn try_from(value: &str) -> Result<Self> {
         Self::builder().string(value)?.build()
@@ -221,7 +221,7 @@ impl TryFrom<&str> for CipherParams {
 }
 
 impl TryFrom<String> for CipherParams {
-    type Error = ErrorInfo;
+    type Error = Error;
 
     fn try_from(value: String) -> Result<Self> {
         Self::builder().string(&value)?.build()
@@ -229,7 +229,7 @@ impl TryFrom<String> for CipherParams {
 }
 
 impl TryFrom<&[u8]> for CipherParams {
-    type Error = ErrorInfo;
+    type Error = Error;
 
     fn try_from(value: &[u8]) -> Result<Self> {
         Self::builder().key(value.to_vec()).build()
@@ -237,7 +237,7 @@ impl TryFrom<&[u8]> for CipherParams {
 }
 
 impl TryFrom<Vec<u8>> for CipherParams {
-    type Error = ErrorInfo;
+    type Error = Error;
 
     fn try_from(value: Vec<u8>) -> Result<Self> {
         Self::builder().key(value).build()

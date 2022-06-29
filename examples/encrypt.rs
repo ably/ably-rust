@@ -2,7 +2,7 @@ use std::env;
 
 use futures::StreamExt;
 
-use ably::{ErrorInfo, Result};
+use ably::{Error, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {

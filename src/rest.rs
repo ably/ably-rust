@@ -293,7 +293,7 @@ impl Rest {
 
     /// Return whether a request can be retried based on the error which
     /// resulted from attempting to send it.
-    fn is_retriable(err: &ErrorInfo) -> bool {
+    fn is_retriable(err: &Error) -> bool {
         match err.status_code {
             Some(code) => (500..=504).contains(&code),
             None => true,

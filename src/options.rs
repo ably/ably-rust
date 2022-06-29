@@ -126,7 +126,7 @@ pub struct ClientOptions {
     /// Defaults to false.
     pub(crate) add_request_ids: bool,
 
-    error: Option<ErrorInfo>,
+    error: Option<Error>,
 }
 
 impl ClientOptions {

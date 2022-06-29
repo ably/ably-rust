@@ -3,19 +3,19 @@ use std::fmt;
 
 use serde::Deserialize;
 
-/// A `Result` alias where the `Err` variant contains an `ErrorInfo`.
-pub type Result<T> = std::result::Result<T, ErrorInfo>;
+/// A `Result` alias where the `Err` variant contains an `Error`.
+pub type Result<T> = std::result::Result<T, Error>;
 
-/// Creates an [`ErrorInfo`] with the given code and message.
+/// Creates an [`Error`] with the given code and message.
 ///
-/// [`ErrorInfo`]: ably::ErrorInfo
+/// [`Error`]: ably::Error
 #[macro_export]
 macro_rules! error {
     ($code:expr, $message:expr) => {
-        ErrorInfo::new($code, $message, None)
+        Error::new($code, $message, None)
     };
     ($code:expr, $message:expr, $status_code:expr) => {
-        ErrorInfo::new($code, $message, Some($status_code))
+        Error::new($code, $message, Some($status_code))
     };
 }
 
@@ -23,7 +23,7 @@ macro_rules! error {
 ///
 /// [Ably error]: https://ably.com/documentation/rest/types#error-info
 #[derive(Clone, Debug, Deserialize)]
-pub struct ErrorInfo {
+pub struct Error {
     /// The [Ably error code].
     ///
     /// [Ably error code]: https://knowledge.ably.com/ably-error-codes
@@ -40,8 +40,8 @@ pub struct ErrorInfo {
     pub href: String,
 }
 
-impl ErrorInfo {
-    /// Returns an ErrorInfo with the given code, message, and status_code.
+impl Error {
+    /// Returns an Error with the given code, message, and status_code.
     pub fn new<S: Into<String>>(code: u32, message: S, status_code: Option<u32>) -> Self {
         Self {
             code,
@@ -52,7 +52,7 @@ impl ErrorInfo {
     }
 }
 
-impl fmt::Display for ErrorInfo {
+impl fmt::Display for Error {
     /// Format the error like:
     ///
     /// [ErrorInfo: <msg>; statusCode=<statusCode>; code=<code>; see <url>]
@@ -72,7 +72,7 @@ impl fmt::Display for ErrorInfo {
     }
 }
 
-impl From<reqwest::Error> for ErrorInfo {
+impl From<reqwest::Error> for Error {
     fn from(err: reqwest::Error) -> Self {
         match err.status() {
             Some(s) => error!(
@@ -85,63 +85,63 @@ impl From<reqwest::Error> for ErrorInfo {
     }
 }
 
-impl From<url::ParseError> for ErrorInfo {
+impl From<url::ParseError> for Error {
     fn from(err: url::ParseError) -> Self {
         error!(40000, format!("invalid URL: {}", err))
     }
 }
 
-impl From<reqwest::header::InvalidHeaderValue> for ErrorInfo {
+impl From<reqwest::header::InvalidHeaderValue> for Error {
     fn from(_: reqwest::header::InvalidHeaderValue) -> Self {
         error!(40000, "invalid HTTP header")
     }
 }
 
-impl From<hmac::digest::InvalidLength> for ErrorInfo {
+impl From<hmac::digest::InvalidLength> for Error {
     fn from(_: hmac::digest::InvalidLength) -> Self {
         error!(40101, "invalid credentials")
     }
 }
 
-impl From<base64::DecodeError> for ErrorInfo {
+impl From<base64::DecodeError> for Error {
     fn from(err: base64::DecodeError) -> Self {
         error!(40013, format!("invalid base64 data: {}", err))
     }
 }
 
-impl From<serde_json::Error> for ErrorInfo {
+impl From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Self {
         error!(40001, format!("invalid JSON data: {}", err))
     }
 }
 
-impl From<rmp_serde::encode::Error> for ErrorInfo {
+impl From<rmp_serde::encode::Error> for Error {
     fn from(err: rmp_serde::encode::Error) -> Self {
         error!(40001, format!("invalid MessagePack data: {}", err))
     }
 }
 
-impl From<rmp_serde::decode::Error> for ErrorInfo {
+impl From<rmp_serde::decode::Error> for Error {
     fn from(err: rmp_serde::decode::Error) -> Self {
         error!(40001, format!("invalid MessagePack data: {}", err))
     }
 }
 
-impl From<std::str::Utf8Error> for ErrorInfo {
+impl From<std::str::Utf8Error> for Error {
     fn from(err: std::str::Utf8Error) -> Self {
         error!(40001, format!("invalid utf-8 data: {}", err))
     }
 }
 
-/// Implement From<Infallible> to support ErrorInfo being the associated
+/// Implement From<Infallible> to support Error being the associated
 /// type for the TryInto trait bound in ClientOptions#key.
-impl From<Infallible> for ErrorInfo {
+impl From<Infallible> for Error {
     fn from(_: Infallible) -> Self {
         unreachable!()
     }
 }
 
-/// Used to deserialize a wrapped ErrorInfo from a JSON error response.
+/// Used to deserialize a wrapped Error from a JSON error response.
 ///
 /// # Example
 ///
@@ -169,12 +169,12 @@ impl From<Infallible> for ErrorInfo {
 /// ```
 #[derive(Deserialize)]
 pub struct WrappedError {
-    pub error: ErrorInfo,
+    pub error: Error,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::ErrorInfo;
+    use super::Error;
 
     #[test]
     fn error_no_status() {

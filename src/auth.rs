@@ -10,7 +10,7 @@ use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
-use crate::error::ErrorInfo;
+use crate::error::Error;
 use crate::rest::RestInner;
 use crate::{http, rest, Result};
 
@@ -110,7 +110,7 @@ impl Key {
 }
 
 impl TryFrom<&str> for Key {
-    type Error = ErrorInfo;
+    type Error = Error;
 
     /// Parse an API Key from a string of the form '<keyName>:<keySecret>'.
     ///
