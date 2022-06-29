@@ -2,7 +2,7 @@ use std::env;
 
 use futures::StreamExt;
 
-use ably::{Error, Result};
+use ably::{error::ErrorCode, Error, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
     println!("Decrypting the data");
     let mut data = match msg.data {
         ably::Data::Binary(data) => data.into_vec(),
-        _ => return Err(ably::error!(40000, "Expected binary data")),
+        _ => return Err(ably::error!(ErrorCode::BadRequest, "Expected binary data")),
     };
     let decrypted = cipher.decrypt(&mut data)?;
     println!("Decrypted = {:?}", decrypted);

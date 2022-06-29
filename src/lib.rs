@@ -36,6 +36,7 @@ mod tests {
 
     use super::*;
     use crate::auth::{AuthOptions, Credential, TokenParams};
+    use crate::error::ErrorCode;
     use crate::http::Method;
 
     #[test]
@@ -229,7 +230,7 @@ mod tests {
             .await
             .expect_err("Expected 404 error");
 
-        assert_eq!(err.code, 40400);
+        assert_eq!(err.code, ErrorCode::NotFound);
         assert_eq!(err.status_code, Some(404));
 
         Ok(())
@@ -247,7 +248,7 @@ mod tests {
             .await
             .expect_err("Expected network error");
 
-        assert_eq!(err.code, 40000);
+        assert_eq!(err.code, ErrorCode::BadRequest);
 
         Ok(())
     }
@@ -588,7 +589,7 @@ mod tests {
             .send()
             .await
             .expect_err("Expected realtime to reject the publish with _forceNack=true");
-        assert_eq!(err.code, 40099);
+        assert_eq!(err.code, ErrorCode::Testing);
 
         Ok(())
     }

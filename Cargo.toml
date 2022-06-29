@@ -38,6 +38,8 @@ serde_repr = "0.1.8"
 sha2 = "0.10.2"
 url = "2.2.2"
 cbc = "0.1.2"
+num-traits = "0.2.15"
+num-derive = "0.3.3"
 
 [dev-dependencies]
 tokio = { version = "1.18.2", features = ["full"] }

@@ -10,12 +10,12 @@ use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
-use crate::error::Error;
+use crate::error::{Error, ErrorCode};
 use crate::rest::RestInner;
 use crate::{http, rest, Result};
 
 /// The maximum length of a valid token. Tokens with a length longer than this
-/// are rejected with a 40170 error code.
+/// are rejected with a ErrorCode::ErrorFromClientTokenCallback error code.
 const MAX_TOKEN_LENGTH: usize = 128 * 1024;
 
 mod duration {
@@ -104,7 +104,7 @@ impl Key {
                 value: value.to_string(),
             })
         } else {
-            Err(error!(40000, "Invalid key"))
+            Err(error!(ErrorCode::BadRequest, "Invalid key"))
         }
     }
 }
@@ -181,7 +181,7 @@ impl<'a> Auth<'a> {
             Some(Credential::Key(k)) => k,
             _ => {
                 return Err(error!(
-                    40106,
+                    ErrorCode::UnableToObtainCredentialsFromGivenParameters,
                     "API key is required to create signed token requests"
                 ))
             }
@@ -228,7 +228,10 @@ impl<'a> Auth<'a> {
 
             // Parse the token response based on the Content-Type header.
             let content_type = res.content_type().ok_or_else(|| {
-                error!(40170, "authUrl response is missing a content-type header")
+                error!(
+                    ErrorCode::ErrorFromClientTokenCallback,
+                    "authUrl response is missing a content-type header"
+                )
             })?;
             match content_type.essence_str() {
             "application/json" => {
@@ -249,7 +252,7 @@ impl<'a> Auth<'a> {
             },
 
             // Anything else is an error.
-            _ => Err(error!(40170, format!("authUrl responded with unacceptable content-type {}, should be either text/plain, application/jwt or application/json", content_type))),
+            _ => Err(error!(ErrorCode::ErrorFromClientTokenCallback, format!("authUrl responded with unacceptable content-type {}, should be either text/plain, application/jwt or application/json", content_type))),
         }
         };
 
@@ -261,10 +264,12 @@ impl<'a> Auth<'a> {
         params: &TokenParams,
         options: &AuthOptions,
     ) -> Result<TokenDetails> {
-        let token = options
-            .token
-            .as_ref()
-            .ok_or_else(|| error!(40171, "no means provided to renew auth token"))?;
+        let token = options.token.as_ref().ok_or_else(|| {
+            error!(
+                ErrorCode::NoWayToRenewAuthToken,
+                "no means provided to renew auth token"
+            )
+        })?;
 
         let mut details = match token {
             Credential::TokenDetails(token) => Ok(token.clone()),
@@ -280,8 +285,8 @@ impl<'a> Auth<'a> {
         if matches!(token, Credential::Callback(_) | Credential::Url(_)) {
             if let Err(ref mut err) = details {
                 // Normalise auth error according to RSA4e.
-                if err.code == 40000 {
-                    err.code = 40170;
+                if err.code == ErrorCode::BadRequest {
+                    err.code = ErrorCode::ErrorFromClientTokenCallback;
                     err.status_code = Some(401);
                 }
             };
@@ -292,7 +297,7 @@ impl<'a> Auth<'a> {
         // Reject tokens with size greater than 128KiB (RSA4f).
         if details.token.len() > MAX_TOKEN_LENGTH {
             return Err(error!(
-                40170,
+                ErrorCode::ErrorFromClientTokenCallback,
                 format!(
                     "Token string exceeded max permitted length (was {} bytes)",
                     details.token.len()
@@ -450,7 +455,10 @@ impl TokenParams {
         // if client_id is set, it must be a non-empty string
         if let Some(ref client_id) = self.client_id {
             if client_id.is_empty() {
-                return Err(error!(40012, "client_id can’t be an empty string"));
+                return Err(error!(
+                    ErrorCode::InvalidClientID,
+                    "client_id can’t be an empty string"
+                ));
             }
         }
 

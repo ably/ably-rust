@@ -109,7 +109,7 @@ impl Rest {
 
         let time = res
             .pop()
-            .ok_or_else(|| error!(40000, "Invalid response from /time"))?;
+            .ok_or_else(|| error!(ErrorCode::BadRequest, "Invalid response from /time"))?;
 
         Ok(Utc.timestamp_millis(time))
     }
@@ -247,7 +247,10 @@ impl Rest {
             // Update the request host and prepare the next request.
             next_req = req.try_clone();
             req.url_mut().set_host(Some(host)).map_err(|err| {
-                error!(40000, format!("invalid fallback host '{}': {}", host, err))
+                error!(
+                    ErrorCode::BadRequest,
+                    format!("invalid fallback host '{}': {}", host, err)
+                )
             })?;
 
             // Execute the request, and return the response if it succeeds.
@@ -288,7 +291,13 @@ impl Rest {
             .json::<WrappedError>()
             .await
             .map(|e| e.error)
-            .unwrap_or_else(|err| error!(50000, format!("Unexpected error: {}", err), status_code)))
+            .unwrap_or_else(|err| {
+                error!(
+                    ErrorCode::InternalError,
+                    format!("Unexpected error: {}", err),
+                    status_code
+                )
+            }))
     }
 
     /// Return whether a request can be retried based on the error which
@@ -510,7 +519,12 @@ impl<'a> PublishBuilder<'a> {
             let data = data
                 .serialize(serde_json::value::Serializer)
                 .map(Into::into)
-                .map_err(|err| error!(40013, format!("invalid message data: {}", err)));
+                .map_err(|err| {
+                    error!(
+                        ErrorCode::InvalidMessageDataOrEncoding,
+                        format!("invalid message data: {}", err)
+                    )
+                });
 
             match data {
                 Ok(data) => {
@@ -812,10 +826,10 @@ lazy_static! {
 fn decode_once(data: &mut Data, encoding: &str, opts: Option<&ChannelOptions>) -> Result<Data> {
     let caps = ENCODING_RE
         .captures(encoding)
-        .ok_or_else(|| error!(40004, "Invalid encoding"))?;
+        .ok_or_else(|| error!(ErrorCode::InvalidHeader, "Invalid encoding"))?;
     let format = caps
         .name("format")
-        .ok_or_else(|| error!(40004, "Invalid encoding; missing format"))?
+        .ok_or_else(|| error!(ErrorCode::InvalidHeader, "Invalid encoding; missing format"))?
         .as_str();
 
     match format {
@@ -824,41 +838,61 @@ fn decode_once(data: &mut Data, encoding: &str, opts: Option<&ChannelOptions>) -
             Data::Binary(data) => std::str::from_utf8(data)
                 .map(Into::into)
                 .map_err(Into::into),
-            _ => Err(error!(40013, "invalid utf-8 message data")),
+            _ => Err(error!(
+                ErrorCode::InvalidMessageDataOrEncoding,
+                "invalid utf-8 message data"
+            )),
         },
         "json" => match data {
             Data::String(s) => serde_json::from_str::<serde_json::Value>(s)
                 .map(Into::into)
                 .map_err(Into::into),
-            _ => Err(error!(40013, "invalid JSON message data")),
+            _ => Err(error!(
+                ErrorCode::InvalidMessageDataOrEncoding,
+                "invalid JSON message data"
+            )),
         },
         "base64" => match data {
             Data::String(s) => base64::decode(s).map(Into::into).map_err(Into::into),
-            _ => Err(error!(40013, "invalid base64 message data")),
+            _ => Err(error!(
+                ErrorCode::InvalidMessageDataOrEncoding,
+                "invalid base64 message data"
+            )),
         },
         "cipher" => match data {
             Data::Binary(ref mut data) => {
                 let opts = opts.ok_or_else(|| {
-                    error!(40000, "unable to decrypt message, no channel options")
+                    error!(
+                        ErrorCode::BadRequest,
+                        "unable to decrypt message, no channel options"
+                    )
                 })?;
-                let cipher = opts
-                    .cipher
-                    .as_ref()
-                    .ok_or_else(|| error!(40000, "unable to decrypt message, no cipher params"))?;
-                let params = caps
-                    .name("params")
-                    .ok_or_else(|| error!(40004, "Invalid encoding; missing params"))?;
+                let cipher = opts.cipher.as_ref().ok_or_else(|| {
+                    error!(
+                        ErrorCode::BadRequest,
+                        "unable to decrypt message, no cipher params"
+                    )
+                })?;
+                let params = caps.name("params").ok_or_else(|| {
+                    error!(ErrorCode::InvalidHeader, "Invalid encoding; missing params")
+                })?;
                 if params.as_str() != cipher.algorithm() {
                     return Err(error!(
-                        40000,
+                        ErrorCode::BadRequest,
                         "unable to decrypt message, incompatible cipher params"
                     ));
                 }
                 cipher.decrypt(data).map(Into::into)
             }
-            _ => Err(error!(40013, "invalid cipher message data")),
+            _ => Err(error!(
+                ErrorCode::InvalidMessageDataOrEncoding,
+                "invalid cipher message data"
+            )),
         },
-        _ => Err(error!(40013, "invalid message encoding")),
+        _ => Err(error!(
+            ErrorCode::InvalidMessageDataOrEncoding,
+            "invalid message encoding"
+        )),
     }
 }
 

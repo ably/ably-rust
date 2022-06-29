@@ -171,7 +171,7 @@ impl ClientOptions {
 
         if client_id == "*" {
             self.error = Some(error!(
-                40012,
+                ErrorCode::InvalidClientID,
                 "Can’t use '*' as a clientId as that string is reserved"
             ));
         } else {
@@ -210,7 +210,10 @@ impl ClientOptions {
     pub fn environment(mut self, environment: impl Into<String>) -> Self {
         // Only allow the environment to be set if rest_host is the default.
         if self.rest_host != REST_HOST {
-            self.error = Some(error!(40000, "Cannot set both environment and rest_host"));
+            self.error = Some(error!(
+                ErrorCode::BadRequest,
+                "Cannot set both environment and rest_host"
+            ));
             return self;
         }
 
@@ -273,7 +276,10 @@ impl ClientOptions {
     pub fn rest_host(mut self, rest_host: impl Into<String>) -> Self {
         // Only allow the rest_host to be set if environment isn't set.
         if self.environment.is_some() {
-            self.error = Some(error!(40000, "Cannot set both environment and rest_host"));
+            self.error = Some(error!(
+                ErrorCode::BadRequest,
+                "Cannot set both environment and rest_host"
+            ));
             return self;
         }
 

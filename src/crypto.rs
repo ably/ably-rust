@@ -5,7 +5,7 @@ use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use cipher::generic_array::GenericArray;
 use rand::{thread_rng, Rng, RngCore};
 
-use crate::{Error, Result};
+use crate::error::{Error, ErrorCode, Result};
 
 type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
 type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
@@ -88,7 +88,7 @@ impl CipherParamsBuilder {
                 Some(KeyLen::Bits128) => {
                     let key = if let Some(key) = self.key {
                         key.try_into()
-                            .map_err(|_| error!(40000, "Invalid key size"))?
+                            .map_err(|_| error!(ErrorCode::BadRequest, "Invalid key size"))?
                     } else {
                         let mut data = [0; 16];
                         thread_rng().fill_bytes(&mut data);
@@ -100,7 +100,7 @@ impl CipherParamsBuilder {
                 Some(KeyLen::Bits256) | None => {
                     let key = if let Some(key) = self.key {
                         key.try_into()
-                            .map_err(|_| error!(40000, "Invalid key size"))?
+                            .map_err(|_| error!(ErrorCode::BadRequest, "Invalid key size"))?
                     } else {
                         let mut data = [0; 32];
                         thread_rng().fill_bytes(&mut data);
@@ -171,7 +171,7 @@ impl CipherParams {
     pub fn decrypt(&self, data: &mut [u8]) -> Result<Vec<u8>> {
         if data.len() % self.block_size() != 0 || data.len() < self.block_size() {
             return Err(error!(
-                40013,
+                ErrorCode::InvalidMessageDataOrEncoding,
                 format!(
                     "invalid cipher message data; unexpected length: {}",
                     data.len()
@@ -194,7 +194,12 @@ impl CipherParams {
                 Aes256CbcEnc::new(key.into(), iv).encrypt_padded_mut::<Pkcs7>(buf, len)
             }
         }
-        .map_err(|_| error!(4000, "failed to decrypt message, malformed padding"))
+        .map_err(|_| {
+            error!(
+                ErrorCode::InvalidMessageDataOrEncoding,
+                "failed to decrypt message, malformed padding"
+            )
+        })
     }
 
     /// Decrypts the given data using AES-CBC with Pkcs7 padding.
@@ -208,7 +213,12 @@ impl CipherParams {
                 Aes256CbcDec::new(key.into(), iv).decrypt_padded_mut::<Pkcs7>(buf)
             }
         }
-        .map_err(|_| error!(4000, "failed to decrypt message, malformed padding"))
+        .map_err(|_| {
+            error!(
+                ErrorCode::InvalidMessageDataOrEncoding,
+                "failed to decrypt message, malformed padding"
+            )
+        })
     }
 }
 
