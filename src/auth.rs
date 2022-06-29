@@ -104,7 +104,7 @@ impl Key {
                 value: value.to_string(),
             })
         } else {
-            Err(error!(ErrorCode::BadRequest, "Invalid key"))
+            Err(Error::new(ErrorCode::BadRequest, "Invalid key"))
         }
     }
 }
@@ -180,9 +180,9 @@ impl<'a> Auth<'a> {
         let key = match &options.token {
             Some(Credential::Key(k)) => k,
             _ => {
-                return Err(error!(
+                return Err(Error::new(
                     ErrorCode::UnableToObtainCredentialsFromGivenParameters,
-                    "API key is required to create signed token requests"
+                    "API key is required to create signed token requests",
                 ))
             }
         };
@@ -228,9 +228,9 @@ impl<'a> Auth<'a> {
 
             // Parse the token response based on the Content-Type header.
             let content_type = res.content_type().ok_or_else(|| {
-                error!(
+                Error::new(
                     ErrorCode::ErrorFromClientTokenCallback,
-                    "authUrl response is missing a content-type header"
+                    "authUrl response is missing a content-type header",
                 )
             })?;
             match content_type.essence_str() {
@@ -252,7 +252,7 @@ impl<'a> Auth<'a> {
             },
 
             // Anything else is an error.
-            _ => Err(error!(ErrorCode::ErrorFromClientTokenCallback, format!("authUrl responded with unacceptable content-type {}, should be either text/plain, application/jwt or application/json", content_type))),
+            _ => Err(Error::new(ErrorCode::ErrorFromClientTokenCallback, format!("authUrl responded with unacceptable content-type {}, should be either text/plain, application/jwt or application/json", content_type))),
         }
         };
 
@@ -265,9 +265,9 @@ impl<'a> Auth<'a> {
         options: &AuthOptions,
     ) -> Result<TokenDetails> {
         let token = options.token.as_ref().ok_or_else(|| {
-            error!(
+            Error::new(
                 ErrorCode::NoWayToRenewAuthToken,
-                "no means provided to renew auth token"
+                "no means provided to renew auth token",
             )
         })?;
 
@@ -296,13 +296,13 @@ impl<'a> Auth<'a> {
 
         // Reject tokens with size greater than 128KiB (RSA4f).
         if details.token.len() > MAX_TOKEN_LENGTH {
-            return Err(error!(
+            return Err(Error::with_status(
                 ErrorCode::ErrorFromClientTokenCallback,
+                401,
                 format!(
                     "Token string exceeded max permitted length (was {} bytes)",
                     details.token.len()
                 ),
-                401
             ));
         }
 
@@ -455,9 +455,9 @@ impl TokenParams {
         // if client_id is set, it must be a non-empty string
         if let Some(ref client_id) = self.client_id {
             if client_id.is_empty() {
-                return Err(error!(
+                return Err(Error::new(
                     ErrorCode::InvalidClientID,
-                    "client_id can’t be an empty string"
+                    "client_id can’t be an empty string",
                 ));
             }
         }

@@ -9,19 +9,6 @@ use serde_repr::Deserialize_repr;
 /// A `Result` alias where the `Err` variant contains an `Error`.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Creates an [`Error`] with the given code and message.
-///
-/// [`Error`]: ably::Error
-#[macro_export]
-macro_rules! error {
-    ($code:expr, $message:expr) => {
-        Error::new($code, $message, None)
-    };
-    ($code:expr, $message:expr, $status_code:expr) => {
-        Error::new($code, $message, Some($status_code))
-    };
-}
-
 #[derive(
     Clone, Copy, Debug, Deserialize_repr, FromPrimitive, PartialEq, PartialOrd, Eq, Ord, Hash,
 )]
@@ -166,7 +153,7 @@ impl Display for ErrorCode {
 /// An [Ably error].
 ///
 /// [Ably error]: https://ably.com/documentation/rest/types#error-info
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct Error {
     /// The [Ably error code].
     ///
@@ -182,16 +169,45 @@ pub struct Error {
 
     /// Link to Ably documenation with more information about the error.
     pub href: String,
+
+    /// Underlying error
+    #[serde(skip)]
+    pub cause: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 
 impl Error {
-    /// Returns an Error with the given code, message, and status_code.
-    pub fn new<S: Into<String>>(code: ErrorCode, message: S, status_code: Option<u32>) -> Self {
+    /// Returns an Error with the given code and message.
+    pub fn new<S: Into<String>>(code: ErrorCode, message: S) -> Self {
         Self {
             code,
             message: message.into(),
-            status_code,
+            status_code: None,
             href: format!("https://help.ably.io/error/{}", code.code()),
+            cause: None,
+        }
+    }
+
+    /// Returns an Error with the given code, message, and status_code.
+    pub fn with_status<S: Into<String>>(code: ErrorCode, status_code: u32, message: S) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            status_code: Some(status_code),
+            href: format!("https://help.ably.io/error/{}", code.code()),
+            cause: None,
+        }
+    }
+    /// Returns an Error with the given code, message, and cause.
+    pub fn with_cause<E, S: Into<String>>(code: ErrorCode, cause: E, message: S) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Self {
+            code,
+            message: message.into(),
+            status_code: None,
+            href: format!("https://help.ably.io/error/{}", code.code()),
+            cause: Some(Box::new(cause)),
         }
     }
 }
@@ -204,6 +220,9 @@ impl fmt::Display for Error {
         write!(f, "[ErrorInfo")?;
         if !self.message.is_empty() {
             write!(f, ": {}", self.message)?;
+        }
+        if let Some(err) = &self.cause {
+            write!(f, ": {}", err)?;
         }
         if let Some(code) = self.status_code {
             write!(f, "; statusCode={}", code)?;
@@ -219,79 +238,73 @@ impl fmt::Display for Error {
 impl From<reqwest::Error> for Error {
     fn from(err: reqwest::Error) -> Self {
         match err.status() {
-            Some(s) => error!(
+            Some(s) => Error::with_status(
                 ErrorCode::new(s.as_u16() as u32).unwrap_or(ErrorCode::NotSet),
+                s.as_u16() as u32,
                 format!("Unexpected HTTP status: {}", s),
-                s.as_u16() as u32
             ),
-            None => error!(
-                ErrorCode::BadRequest,
-                format!("Unexpected HTTP error: {}", err)
-            ),
+            None => Error::with_cause(ErrorCode::BadRequest, err, "Unexpected HTTP error"),
         }
     }
 }
 
 impl From<url::ParseError> for Error {
     fn from(err: url::ParseError) -> Self {
-        error!(ErrorCode::BadRequest, format!("invalid URL: {}", err))
+        Error::with_cause(ErrorCode::BadRequest, err, "invalid URL")
     }
 }
 
 impl From<reqwest::header::InvalidHeaderValue> for Error {
     fn from(_: reqwest::header::InvalidHeaderValue) -> Self {
-        error!(ErrorCode::BadRequest, "invalid HTTP header")
+        Error::new(ErrorCode::BadRequest, "invalid HTTP header")
     }
 }
 
 impl From<hmac::digest::InvalidLength> for Error {
     fn from(_: hmac::digest::InvalidLength) -> Self {
-        error!(ErrorCode::InvalidCredential, "invalid credentials")
+        Error::new(ErrorCode::InvalidCredential, "invalid credentials")
     }
 }
 
 impl From<base64::DecodeError> for Error {
     fn from(err: base64::DecodeError) -> Self {
-        error!(
+        Error::with_cause(
             ErrorCode::InvalidMessageDataOrEncoding,
-            format!("invalid base64 data: {}", err)
+            err,
+            "invalid base64 data",
         )
     }
 }
 
 impl From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Self {
-        error!(
-            ErrorCode::InvalidRequestBody,
-            format!("invalid JSON data: {}", err)
-        )
+        Error::with_cause(ErrorCode::InvalidRequestBody, err, "invalid JSON data")
     }
 }
 
 impl From<rmp_serde::encode::Error> for Error {
     fn from(err: rmp_serde::encode::Error) -> Self {
-        error!(
+        Error::with_cause(
             ErrorCode::InvalidRequestBody,
-            format!("invalid MessagePack data: {}", err)
+            err,
+            "invalid MessagePack data",
         )
     }
 }
 
 impl From<rmp_serde::decode::Error> for Error {
     fn from(err: rmp_serde::decode::Error) -> Self {
-        error!(
+        Error::with_cause(
             ErrorCode::InvalidRequestBody,
-            format!("invalid MessagePack data: {}", err)
+            err,
+            "invalid MessagePack data",
         )
     }
 }
 
 impl From<std::str::Utf8Error> for Error {
     fn from(err: std::str::Utf8Error) -> Self {
-        error!(
-            ErrorCode::InvalidRequestBody,
-            format!("invalid utf-8 data: {}", err)
-        )
+        Error::with_cause(ErrorCode::InvalidRequestBody, err, "invalid utf-8 data")
     }
 }
 
@@ -315,7 +328,7 @@ mod tests {
 
     #[test]
     fn error_no_status() {
-        let err = error!(ErrorCode::BadRequest, "error message");
+        let err = Error::new(ErrorCode::BadRequest, "error message");
         assert_eq!(err.code, ErrorCode::BadRequest);
         assert_eq!(err.message, "error message");
         assert_eq!(err.status_code, None);
@@ -323,7 +336,7 @@ mod tests {
 
     #[test]
     fn error_with_status() {
-        let err = error!(ErrorCode::BadRequest, "error message", 400);
+        let err = Error::with_status(ErrorCode::BadRequest, 400, "error message");
         assert_eq!(err.code, ErrorCode::BadRequest);
         assert_eq!(err.message, "error message");
         assert_eq!(err.status_code, Some(400));
@@ -331,13 +344,13 @@ mod tests {
 
     #[test]
     fn error_href() {
-        let err = error!(ErrorCode::InvalidCredentials, "error message");
+        let err = Error::new(ErrorCode::InvalidCredentials, "error message");
         assert_eq!(err.href, "https://help.ably.io/error/40101");
     }
 
     #[test]
     fn error_fmt() {
-        let err = error!(ErrorCode::InvalidCredentials, "error message", 401);
+        let err = Error::with_status(ErrorCode::InvalidCredentials, 401, "error message");
         assert_eq!(format!("{}", err), "[ErrorInfo: error message; statusCode=401; code=40101; see https://help.ably.io/error/40101 ]");
     }
 }

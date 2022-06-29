@@ -109,7 +109,7 @@ impl Rest {
 
         let time = res
             .pop()
-            .ok_or_else(|| error!(ErrorCode::BadRequest, "Invalid response from /time"))?;
+            .ok_or_else(|| Error::new(ErrorCode::BadRequest, "Invalid response from /time"))?;
 
         Ok(Utc.timestamp_millis(time))
     }
@@ -247,9 +247,9 @@ impl Rest {
             // Update the request host and prepare the next request.
             next_req = req.try_clone();
             req.url_mut().set_host(Some(host)).map_err(|err| {
-                error!(
+                Error::new(
                     ErrorCode::BadRequest,
-                    format!("invalid fallback host '{}': {}", host, err)
+                    format!("invalid fallback host '{}': {}", host, err),
                 )
             })?;
 
@@ -292,10 +292,10 @@ impl Rest {
             .await
             .map(|e| e.error)
             .unwrap_or_else(|err| {
-                error!(
+                Error::with_status(
                     ErrorCode::InternalError,
+                    status_code,
                     format!("Unexpected error: {}", err),
-                    status_code
                 )
             }))
     }
@@ -520,9 +520,10 @@ impl<'a> PublishBuilder<'a> {
                 .serialize(serde_json::value::Serializer)
                 .map(Into::into)
                 .map_err(|err| {
-                    error!(
+                    Error::with_cause(
                         ErrorCode::InvalidMessageDataOrEncoding,
-                        format!("invalid message data: {}", err)
+                        err,
+                        "invalid message data",
                     )
                 });
 
@@ -826,10 +827,10 @@ lazy_static! {
 fn decode_once(data: &mut Data, encoding: &str, opts: Option<&ChannelOptions>) -> Result<Data> {
     let caps = ENCODING_RE
         .captures(encoding)
-        .ok_or_else(|| error!(ErrorCode::InvalidHeader, "Invalid encoding"))?;
+        .ok_or_else(|| Error::new(ErrorCode::InvalidHeader, "Invalid encoding"))?;
     let format = caps
         .name("format")
-        .ok_or_else(|| error!(ErrorCode::InvalidHeader, "Invalid encoding; missing format"))?
+        .ok_or_else(|| Error::new(ErrorCode::InvalidHeader, "Invalid encoding; missing format"))?
         .as_str();
 
     match format {
@@ -838,60 +839,60 @@ fn decode_once(data: &mut Data, encoding: &str, opts: Option<&ChannelOptions>) -
             Data::Binary(data) => std::str::from_utf8(data)
                 .map(Into::into)
                 .map_err(Into::into),
-            _ => Err(error!(
+            _ => Err(Error::new(
                 ErrorCode::InvalidMessageDataOrEncoding,
-                "invalid utf-8 message data"
+                "invalid utf-8 message data",
             )),
         },
         "json" => match data {
             Data::String(s) => serde_json::from_str::<serde_json::Value>(s)
                 .map(Into::into)
                 .map_err(Into::into),
-            _ => Err(error!(
+            _ => Err(Error::new(
                 ErrorCode::InvalidMessageDataOrEncoding,
-                "invalid JSON message data"
+                "invalid JSON message data",
             )),
         },
         "base64" => match data {
             Data::String(s) => base64::decode(s).map(Into::into).map_err(Into::into),
-            _ => Err(error!(
+            _ => Err(Error::new(
                 ErrorCode::InvalidMessageDataOrEncoding,
-                "invalid base64 message data"
+                "invalid base64 message data",
             )),
         },
         "cipher" => match data {
             Data::Binary(ref mut data) => {
                 let opts = opts.ok_or_else(|| {
-                    error!(
+                    Error::new(
                         ErrorCode::BadRequest,
-                        "unable to decrypt message, no channel options"
+                        "unable to decrypt message, no channel options",
                     )
                 })?;
                 let cipher = opts.cipher.as_ref().ok_or_else(|| {
-                    error!(
+                    Error::new(
                         ErrorCode::BadRequest,
-                        "unable to decrypt message, no cipher params"
+                        "unable to decrypt message, no cipher params",
                     )
                 })?;
                 let params = caps.name("params").ok_or_else(|| {
-                    error!(ErrorCode::InvalidHeader, "Invalid encoding; missing params")
+                    Error::new(ErrorCode::InvalidHeader, "Invalid encoding; missing params")
                 })?;
                 if params.as_str() != cipher.algorithm() {
-                    return Err(error!(
+                    return Err(Error::new(
                         ErrorCode::BadRequest,
-                        "unable to decrypt message, incompatible cipher params"
+                        "unable to decrypt message, incompatible cipher params",
                     ));
                 }
                 cipher.decrypt(data).map(Into::into)
             }
-            _ => Err(error!(
+            _ => Err(Error::new(
                 ErrorCode::InvalidMessageDataOrEncoding,
-                "invalid cipher message data"
+                "invalid cipher message data",
             )),
         },
-        _ => Err(error!(
+        _ => Err(Error::new(
             ErrorCode::InvalidMessageDataOrEncoding,
-            "invalid message encoding"
+            "invalid message encoding",
         )),
     }
 }

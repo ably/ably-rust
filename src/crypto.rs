@@ -88,7 +88,7 @@ impl CipherParamsBuilder {
                 Some(KeyLen::Bits128) => {
                     let key = if let Some(key) = self.key {
                         key.try_into()
-                            .map_err(|_| error!(ErrorCode::BadRequest, "Invalid key size"))?
+                            .map_err(|_| Error::new(ErrorCode::BadRequest, "Invalid key size"))?
                     } else {
                         let mut data = [0; 16];
                         thread_rng().fill_bytes(&mut data);
@@ -100,7 +100,7 @@ impl CipherParamsBuilder {
                 Some(KeyLen::Bits256) | None => {
                     let key = if let Some(key) = self.key {
                         key.try_into()
-                            .map_err(|_| error!(ErrorCode::BadRequest, "Invalid key size"))?
+                            .map_err(|_| Error::new(ErrorCode::BadRequest, "Invalid key size"))?
                     } else {
                         let mut data = [0; 32];
                         thread_rng().fill_bytes(&mut data);
@@ -170,12 +170,12 @@ impl CipherParams {
     /// Decrypt the data using AES-CBC with PKCS7 padding.
     pub fn decrypt(&self, data: &mut [u8]) -> Result<Vec<u8>> {
         if data.len() % self.block_size() != 0 || data.len() < self.block_size() {
-            return Err(error!(
+            return Err(Error::new(
                 ErrorCode::InvalidMessageDataOrEncoding,
                 format!(
                     "invalid cipher message data; unexpected length: {}",
                     data.len()
-                )
+                ),
             ));
         }
         let (iv, buf) = data.split_at_mut(self.block_size());
@@ -195,9 +195,9 @@ impl CipherParams {
             }
         }
         .map_err(|_| {
-            error!(
+            Error::new(
                 ErrorCode::InvalidMessageDataOrEncoding,
-                "failed to decrypt message, malformed padding"
+                "failed to decrypt message, malformed padding",
             )
         })
     }
@@ -214,9 +214,9 @@ impl CipherParams {
             }
         }
         .map_err(|_| {
-            error!(
+            Error::new(
                 ErrorCode::InvalidMessageDataOrEncoding,
-                "failed to decrypt message, malformed padding"
+                "failed to decrypt message, malformed padding",
             )
         })
     }
