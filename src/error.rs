@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::fmt::{self, Debug, Display};
 
 use num_derive::FromPrimitive;
@@ -305,14 +304,6 @@ impl From<rmp_serde::decode::Error> for Error {
 impl From<std::str::Utf8Error> for Error {
     fn from(err: std::str::Utf8Error) -> Self {
         Error::with_cause(ErrorCode::InvalidRequestBody, err, "invalid utf-8 data")
-    }
-}
-
-/// Implement From<Infallible> to support Error being the associated
-/// type for the TryInto trait bound in ClientOptions#key.
-impl From<Infallible> for Error {
-    fn from(_: Infallible) -> Self {
-        unreachable!()
     }
 }
 
