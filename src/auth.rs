@@ -60,7 +60,7 @@ mod duration {
 }
 
 #[derive(Clone)]
-pub enum TokenSource {
+pub enum Credential {
     TokenDetails(TokenDetails),
     TokenRequest(TokenRequest),
     Callback(Arc<dyn AuthCallback>),
@@ -68,7 +68,7 @@ pub enum TokenSource {
     Url(reqwest::Url),
 }
 
-impl std::fmt::Debug for TokenSource {
+impl std::fmt::Debug for Credential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TokenDetails(arg0) => f.debug_tuple("TokenDetails").field(arg0).finish(),
@@ -82,7 +82,7 @@ impl std::fmt::Debug for TokenSource {
 
 #[derive(Debug, Clone, Default)]
 pub struct AuthOptions {
-    pub token: Option<TokenSource>,
+    pub token: Option<Credential>,
     pub headers: Option<http::HeaderMap>,
     pub method: http::Method,
     pub params: Option<http::UrlQuery>,
@@ -178,7 +178,7 @@ impl<'a> Auth<'a> {
         options: &AuthOptions,
     ) -> Result<TokenRequest> {
         let key = match &options.token {
-            Some(TokenSource::Key(k)) => k,
+            Some(Credential::Key(k)) => k,
             _ => {
                 return Err(error!(
                     40106,
@@ -267,17 +267,17 @@ impl<'a> Auth<'a> {
             .ok_or_else(|| error!(40171, "no means provided to renew auth token"))?;
 
         let mut details = match token {
-            TokenSource::TokenDetails(token) => Ok(token.clone()),
-            TokenSource::TokenRequest(r) => self.exchange(r).await,
-            TokenSource::Callback(f) => match f.token(params).await {
+            Credential::TokenDetails(token) => Ok(token.clone()),
+            Credential::TokenRequest(r) => self.exchange(r).await,
+            Credential::Callback(f) => match f.token(params).await {
                 Ok(token) => token.into_details(self).await,
                 Err(e) => Err(e),
             },
-            TokenSource::Key(k) => self.exchange(&params.sign(k)?).await,
-            TokenSource::Url(url) => self.request_url(url).await,
+            Credential::Key(k) => self.exchange(&params.sign(k)?).await,
+            Credential::Url(url) => self.request_url(url).await,
         };
 
-        if matches!(token, TokenSource::Callback(_) | TokenSource::Url(_)) {
+        if matches!(token, Credential::Callback(_) | Credential::Url(_)) {
             if let Err(ref mut err) = details {
                 // Normalise auth error according to RSA4e.
                 if err.code == 40000 {
@@ -306,12 +306,12 @@ impl<'a> Auth<'a> {
 
     /// Set the Authorization header in the given request.
     pub(crate) async fn with_auth_headers(&self, req: &mut reqwest::Request) -> Result<()> {
-        if let TokenSource::Key(k) = &self.inner().opts.token {
+        if let Credential::Key(k) = &self.inner().opts.credential {
             return Self::set_basic_auth(req, k);
         }
 
         let options = AuthOptions {
-            token: Some(self.inner().opts.token.clone()),
+            token: Some(self.inner().opts.credential.clone()),
             ..Default::default()
         };
 

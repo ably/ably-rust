@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::auth::{AuthCallback, TokenSource};
+use crate::auth::{AuthCallback, Credential};
 use crate::error::*;
 use crate::{auth, http, rest, Result};
 
@@ -13,7 +13,7 @@ static REST_HOST: &str = "rest.ably.io";
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct ClientOptions {
-    pub(crate) token: auth::TokenSource,
+    pub(crate) credential: auth::Credential,
 
     /// The HTTP method to use when requesting a token from auth_url. Defaults
     /// to GET.
@@ -138,11 +138,11 @@ impl ClientOptions {
     }
 
     pub fn with_auth_url(url: reqwest::Url) -> Self {
-        Self::token_source(TokenSource::Url(url))
+        Self::token_source(Credential::Url(url))
     }
 
     pub fn with_auth_callback(callback: Arc<dyn AuthCallback>) -> Self {
-        Self::token_source(TokenSource::Callback(callback))
+        Self::token_source(Credential::Callback(callback))
     }
 
     /// Sets the API key.
@@ -156,11 +156,11 @@ impl ClientOptions {
     /// # }
     /// ```
     pub fn with_key(key: auth::Key) -> Self {
-        Self::token_source(TokenSource::Key(key))
+        Self::token_source(Credential::Key(key))
     }
 
     pub fn with_token(token: String) -> Self {
-        Self::token_source(TokenSource::TokenDetails(auth::TokenDetails::token(token)))
+        Self::token_source(Credential::TokenDetails(auth::TokenDetails::token(token)))
     }
 
     /// Set the client ID, used for identifying this client when publishing
@@ -342,9 +342,9 @@ impl ClientOptions {
         Ok(rest::Rest::create(http_client, self, rest_url))
     }
 
-    pub fn token_source(token: TokenSource) -> Self {
+    pub fn token_source(token: Credential) -> Self {
         Self {
-            token,
+            credential: token,
             auth_method: http::Method::GET,
             auth_headers: None,
             auth_params: None,

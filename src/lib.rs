@@ -35,14 +35,14 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::auth::{AuthOptions, TokenParams, TokenSource};
+    use crate::auth::{AuthOptions, Credential, TokenParams};
     use crate::http::Method;
 
     #[test]
     fn rest_client_from_string_with_colon_sets_key() {
         let s = "appID.keyID:keySecret";
         let client = Rest::new(s).unwrap();
-        assert!(matches!(client.inner.opts.token, TokenSource::Key(_)));
+        assert!(matches!(client.inner.opts.credential, Credential::Key(_)));
     }
 
     #[test]
@@ -50,8 +50,8 @@ mod tests {
         let s = "appID.tokenID";
         let client = Rest::new(s).unwrap();
         assert!(matches!(
-            client.inner.opts.token,
-            TokenSource::TokenDetails(_)
+            client.inner.opts.credential,
+            Credential::TokenDetails(_)
         ));
     }
 
@@ -143,7 +143,7 @@ mod tests {
 
         fn auth_options(&self) -> AuthOptions {
             AuthOptions {
-                token: Some(self.options().token),
+                token: Some(self.options().credential),
                 headers: None,
                 method: Default::default(),
                 params: None,
@@ -326,7 +326,7 @@ mod tests {
         };
 
         let options = AuthOptions {
-            token: Some(client.options().token.clone()),
+            token: Some(client.options().credential.clone()),
             ..Default::default()
         };
 
@@ -400,7 +400,7 @@ mod tests {
         .unwrap();
 
         let options = AuthOptions {
-            token: Some(TokenSource::Url(auth_url)),
+            token: Some(Credential::Url(auth_url)),
             ..AuthOptions::default()
         };
 
