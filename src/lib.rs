@@ -26,42 +26,37 @@ pub use rest::{Data, Rest};
 mod tests {
     use std::collections::{HashMap, HashSet};
     use std::iter::FromIterator;
+    use std::sync::Arc;
 
-    use chrono::prelude::*;
-    use chrono::Duration;
+    use chrono::{Duration, Utc};
     use futures::TryStreamExt;
     use reqwest::Url;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
 
     use super::*;
+    use crate::auth::{AuthOptions, Credential, TokenParams};
     use crate::http::Method;
 
     #[test]
     fn rest_client_from_string_with_colon_sets_key() {
         let s = "appID.keyID:keySecret";
         let client = Rest::new(s).unwrap();
-        assert!(client.opts.key.is_some());
+        assert!(matches!(client.inner.opts.credential, Credential::Key(_)));
     }
 
     #[test]
     fn rest_client_from_string_without_colon_sets_token_literal() {
         let s = "appID.tokenID";
         let client = Rest::new(s).unwrap();
-        assert!(client.opts.token.is_some());
-    }
-
-    #[test]
-    fn client_options_errors_with_no_key_or_token() {
-        let err = ClientOptions::new()
-            .client()
-            .expect_err("Expected 40106 error");
-        assert_eq!(err.code, 40106);
+        assert!(matches!(
+            client.inner.opts.credential,
+            Credential::TokenDetails(_)
+        ));
     }
 
     fn test_client() -> Rest {
-        ClientOptions::new()
-            .key("aaaaaa.bbbbbb:cccccc")
+        ClientOptions::new("aaaaaa.bbbbbb:cccccc")
             .environment("sandbox")
             .client()
             .unwrap()
@@ -71,6 +66,18 @@ mod tests {
     #[derive(Clone, Debug, Deserialize)]
     struct TestApp {
         keys: Vec<auth::Key>,
+    }
+
+    impl auth::AuthCallback for TestApp {
+        fn token<'a>(
+            &'a self,
+            params: &'a TokenParams,
+        ) -> std::pin::Pin<
+            Box<dyn Send + futures::Future<Output = Result<auth::RequestOrDetails>> + 'a>,
+        > {
+            let fut = async { Ok(auth::RequestOrDetails::Request(self.token_request(params)?)) };
+            Box::pin(fut)
+        }
     }
 
     impl TestApp {
@@ -123,27 +130,24 @@ mod tests {
         }
 
         fn options(&self) -> ClientOptions {
-            ClientOptions::new().key(self.key()).environment("sandbox")
+            ClientOptions::with_key(self.key()).environment("sandbox")
         }
 
         fn key(&self) -> auth::Key {
             self.keys[0].clone()
         }
 
-        async fn token_request(&self, params: auth::TokenParams) -> Result<auth::Token> {
-            let req = params.sign(&self.key())?;
-
-            Ok(auth::Token::Request(req))
+        fn token_request(&self, params: &auth::TokenParams) -> Result<auth::TokenRequest> {
+            self.key().sign(params)
         }
-    }
 
-    impl auth::AuthCallback for TestApp {
-        fn token<'a>(
-            &'a self,
-            _rest: &rest::Rest,
-            params: auth::TokenParams,
-        ) -> auth::TokenFuture<'a> {
-            Box::pin(self.token_request(params))
+        fn auth_options(&self) -> AuthOptions {
+            AuthOptions {
+                token: Some(self.options().credential),
+                headers: None,
+                method: Default::default(),
+                params: None,
+            }
         }
     }
 
@@ -233,8 +237,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_request_with_bad_rest_host_returns_network_error() -> Result<()> {
-        let client = ClientOptions::new()
-            .key("aaaaaa.bbbbbb:cccccc")
+        let client = ClientOptions::new("aaaaaa.bbbbbb:cccccc")
             .rest_host("i-dont-exist.ably.com")
             .client()?;
 
@@ -255,21 +258,20 @@ mod tests {
         let app = TestApp::create().await?;
         let client = app.client();
 
-        // Create some stats for 3rd Feb last year.
-        let last_year = (Utc::today() - Duration::days(365)).year();
+        let year = 2010;
         let fixtures = json!([
             {
-                "intervalId": format!("{}-02-03:15:03", last_year),
+                "intervalId": format!("{}-02-03:15:03", year),
                 "inbound": { "realtime": { "messages": { "count": 50, "data": 5000 } } },
                 "outbound": { "realtime": { "messages": { "count": 20, "data": 2000 } } }
             },
             {
-                "intervalId": format!("{}-02-03:15:04", last_year),
+                "intervalId": format!("{}-02-03:15:04", year),
                 "inbound": { "realtime": { "messages": { "count": 60, "data": 6000 } } },
                 "outbound": { "realtime": { "messages": { "count": 10, "data": 1000 } } }
             },
             {
-                "intervalId": format!("{}-02-03:15:05", last_year),
+                "intervalId": format!("{}-02-03:15:05", year),
                 "inbound": { "realtime": { "messages": { "count": 70, "data": 7000 } } },
                 "outbound": { "realtime": { "messages": { "count": 40, "data": 4000 } } }
             }
@@ -284,8 +286,8 @@ mod tests {
         // Retrieve the stats.
         let res = client
             .stats()
-            .start(format!("{}-02-03:15:03", last_year).as_ref())
-            .end(format!("{}-02-03:15:05", last_year).as_ref())
+            .start(format!("{}-02-03:15:03", year).as_ref())
+            .end(format!("{}-02-03:15:05", year).as_ref())
             .forwards()
             .send()
             .await?;
@@ -312,76 +314,27 @@ mod tests {
     }
 
     #[test]
-    fn auth_create_token_request_no_options() -> Result<()> {
+    fn auth_create_token_request() -> Result<()> {
         let client = test_client();
 
-        let req = client.auth().create_token_request().sign()?;
+        let params = TokenParams {
+            capability: r#"{"*":["*"]}"#.to_string(),
+            client_id: Some("test@ably.com".to_string()),
+            nonce: None,
+            timestamp: None,
+            ttl: Duration::minutes(100),
+        };
 
-        assert!(
-            req.mac.unwrap().len() > 0,
-            "expected tokenRequest.mac to be set"
-        );
-        assert!(req.nonce.len() > 0, "expected tokenRequest.nonce to be set");
-        assert!(
-            req.ttl.is_none(),
-            "expected tokenRequest.ttl to not be set by default"
-        );
-        assert!(
-            req.capability.is_none(),
-            "expected tokenRequest.capability to not be set by default"
-        );
-        assert!(
-            req.client_id.is_none(),
-            "expected tokenRequest.client_id to not be set by default"
-        );
-        assert_eq!(req.key_name, client.opts.key.unwrap().name);
+        let options = AuthOptions {
+            token: Some(client.options().credential.clone()),
+            ..Default::default()
+        };
 
-        Ok(())
-    }
+        let req = client.auth().create_token_request(&params, &options)?;
 
-    #[test]
-    fn auth_create_token_request_with_capability() -> Result<()> {
-        let client = test_client();
-
-        let capability = r#"{"*":["*"]}"#;
-
-        let req = client
-            .auth()
-            .create_token_request()
-            .capability(capability)
-            .sign()?;
-
-        assert_eq!(req.capability, Some(capability.to_string()));
-
-        Ok(())
-    }
-
-    #[test]
-    fn auth_create_token_request_with_client_id() -> Result<()> {
-        let client = test_client();
-
-        let client_id = "test@ably.com";
-
-        let req = client
-            .auth()
-            .create_token_request()
-            .client_id(client_id)
-            .sign()?;
-
-        assert_eq!(req.client_id, Some(client_id.to_string()));
-
-        Ok(())
-    }
-
-    #[test]
-    fn auth_create_token_request_with_ttl() -> Result<()> {
-        let client = test_client();
-
-        let ttl = 60000;
-
-        let req = client.auth().create_token_request().ttl(ttl).sign()?;
-
-        assert_eq!(req.ttl, Some(ttl));
+        assert_eq!(req.capability, params.capability);
+        assert_eq!(req.client_id, params.client_id);
+        assert_eq!(req.ttl, params.ttl);
 
         Ok(())
     }
@@ -396,35 +349,37 @@ mod tests {
         let server_time = client.time().await?;
 
         // Request a token.
-        let token = client.auth().request_token().send().await?;
+        let token = client
+            .auth()
+            .request_token(&Default::default(), &app.auth_options())
+            .await?;
+        let meta = token.metadata.unwrap();
 
         // Check the token details.
         assert!(token.token.len() > 0, "Expected token to be set");
-        let issued = token.issued.expect("Expected issued to be set");
-        let expires = token.expires.expect("Expected expires to be set");
         assert!(
-            issued >= server_time,
+            meta.issued >= server_time,
             "Expected issued ({}) to be after server time ({})",
-            issued,
-            server_time
+            meta.issued,
+            server_time,
         );
         assert!(
-            expires > issued,
+            meta.expires > meta.issued,
             "Expected expires ({}) to be after issued ({})",
-            expires,
-            issued
+            meta.expires,
+            meta.issued
         );
-        let capability = token.capability.unwrap();
+        let capability = meta.capability;
         assert_eq!(
             capability, r#"{"*":["*"]}"#,
             r#"Expected default capability '{{"*":["*"]}}', got {}"#,
             capability
         );
         assert_eq!(
-            token.client_id,
+            meta.client_id,
             None,
             "Expected client_id to be null, got {}",
-            token.client_id.as_ref().unwrap()
+            meta.client_id.as_ref().unwrap()
         );
 
         Ok(())
@@ -444,12 +399,14 @@ mod tests {
         )
         .unwrap();
 
-        // Request a token from the authUrl.
+        let options = AuthOptions {
+            token: Some(Credential::Url(auth_url)),
+            ..AuthOptions::default()
+        };
+
         let token = client
             .auth()
-            .request_token()
-            .auth_url(auth_url)
-            .send()
+            .request_token(&Default::default(), &options)
             .await?;
 
         // Check the token details.
@@ -461,15 +418,12 @@ mod tests {
     #[tokio::test]
     async fn auth_request_token_with_provider() -> Result<()> {
         // Create a test app.
-        let app = TestApp::create().await?;
+        let app = Arc::new(TestApp::create().await?);
         let client = app.client();
 
-        // Request a token with a custom authCallback.
         let token = client
             .auth()
-            .request_token()
-            .auth_callback(app)
-            .send()
+            .request_token(&Default::default(), &app.auth_options())
             .await?;
 
         // Check the token details.
@@ -486,13 +440,23 @@ mod tests {
         // Create a client with client_id set in the options.
         let client_id = "test client id";
         let client = app.options().client_id(client_id).client()?;
+        let options = TokenParams {
+            client_id: Some(client_id.to_string()),
+            ..Default::default()
+        };
 
         // Request a token.
-        let token = client.auth().request_token().send().await?;
+        let token = client
+            .auth()
+            .request_token(&options, &app.auth_options())
+            .await?;
 
         // Check the token details include the client_id.
         assert!(token.token.len() > 0, "Expected token to be set");
-        assert_eq!(token.client_id, Some(client_id.to_string()));
+        assert_eq!(
+            token.metadata.unwrap().client_id,
+            Some(client_id.to_string())
+        );
 
         Ok(())
     }
@@ -807,8 +771,7 @@ mod tests {
     async fn client_fallback() -> Result<()> {
         // IANA reserved; requests to it will hang forever
         let unroutable_host = "10.255.255.1";
-        let client = ClientOptions::new()
-            .key("aaaaaa.bbbbbb:cccccc")
+        let client = ClientOptions::new("aaaaaa.bbbbbb:cccccc")
             .rest_host(unroutable_host)
             .fallback_hosts(vec!["sandbox-a-fallback.ably-realtime.com".to_string()])
             .http_request_timeout(std::time::Duration::from_secs(3))
@@ -833,8 +796,7 @@ mod tests {
         .unwrap();
 
         // Configure a client with an authUrl.
-        let client = ClientOptions::new()
-            .auth_url(auth_url)
+        let client = ClientOptions::with_auth_url(auth_url)
             .environment("sandbox")
             .client()
             .expect("Expected client to initialise");
@@ -852,11 +814,10 @@ mod tests {
     #[tokio::test]
     async fn rest_with_auth_callback() -> Result<()> {
         // Create a test app.
-        let app = TestApp::create().await?;
+        let app = Arc::new(TestApp::create().await?);
 
         // Configure a client with the test app as the authCallback.
-        let client = ClientOptions::new()
-            .auth_callback(app)
+        let client = ClientOptions::with_auth_callback(app)
             .environment("sandbox")
             .client()
             .expect("Expected client to initialise");
@@ -877,8 +838,7 @@ mod tests {
         let app = TestApp::create().await?;
 
         // Configure a client with a key and useTokenAuth=true.
-        let client = ClientOptions::new()
-            .key(app.key())
+        let client = ClientOptions::with_key(app.key())
             .use_token_auth(true)
             .environment("sandbox")
             .client()

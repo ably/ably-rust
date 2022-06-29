@@ -1,29 +1,19 @@
-use std::convert::{TryFrom, TryInto};
+use std::sync::Arc;
 use std::time::Duration;
 
+use crate::auth::{AuthCallback, Credential};
 use crate::error::*;
 use crate::{auth, http, rest, Result};
+
+static REST_HOST: &str = "rest.ably.io";
 
 /// [Ably client options] for initialising a REST or Realtime client.
 ///
 /// [Ably client options]: https://ably.com/documentation/rest/types#client-options
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct ClientOptions {
-    /// An Ably API key.
-    pub(crate) key: Option<auth::Key>,
-
-    /// An Ably authentication token, either as a string literal, a
-    /// TokenDetails object, or a TokenRequest object.
-    pub(crate) token: Option<auth::Token>,
-
-    /// A callback which is called to obtain an Ably authentication token,
-    /// either as a string literal, a TokenDetails object, or a TokenRequest
-    /// object.
-    pub(crate) auth_callback: Option<Box<dyn auth::AuthCallback>>,
-
-    /// A URL to request an Ably authentication token from, either as a string
-    /// literal, a TokenDetails object, or a TokenRequest object.
-    pub(crate) auth_url: Option<reqwest::Url>,
+    pub(crate) credential: auth::Credential,
 
     /// The HTTP method to use when requesting a token from auth_url. Defaults
     /// to GET.
@@ -53,7 +43,6 @@ pub struct ClientOptions {
     /// Enable idempotent REST publishing. Defaults to false.
     ///
     /// See https://faqs.ably.com/what-is-idempotent-publishing
-    #[allow(dead_code)]
     pub(crate) idempotent_rest_publishing: bool,
 
     /// The list of fallback hosts to use in the case of an error necessitating
@@ -67,7 +56,6 @@ pub struct ClientOptions {
 
     /// Query the Ably system for the current time when issuing tokens.
     /// Defaults to false.
-    #[allow(dead_code)]
     pub(crate) query_time: bool,
 
     /// Override the default parameters used to request Ably tokens.
@@ -75,7 +63,6 @@ pub struct ClientOptions {
 
     /// Automatically connect when the Realtime library is instantiated.
     /// Defaults to true.
-    #[allow(dead_code)]
     pub(crate) auto_connect: bool,
 
     // pub queue_messages: bool,
@@ -86,31 +73,25 @@ pub struct ClientOptions {
 
     /// The hostname used in the Realtime API URL. Defaults to
     /// realtime.ably.io.
-    #[allow(dead_code)]
     pub(crate) realtime_host: String,
 
     /// The TCP port for non-TLS requests. Defaults to 80.
-    #[allow(dead_code)]
     pub(crate) port: u32,
 
     /// The TCP port for TLS requests. Defaults to 443.
-    #[allow(dead_code)]
     pub(crate) tls_port: u32,
 
     /// How long to wait before attempting to re-establish a connection which
     /// is in the DISCONNECTED state. Defaults to 15s.
-    #[allow(dead_code)]
     pub(crate) disconnected_retry_timeout: Duration,
 
     /// How long to wait before attempting to re-establish a connection which
     /// is in the SUSPENDED state. Defaults to 30s.
-    #[allow(dead_code)]
     pub(crate) suspended_retry_timeout: Duration,
 
     /// How long to wait before attempting to re-attach a channel which is in
     /// the SUSPENDED state following a server initiated detach. Defaults to
     /// 15s.
-    #[allow(dead_code)]
     pub(crate) channel_retry_timeout: Duration,
 
     /// How long to wait for a TCP connection to be established. Defaults to
@@ -127,36 +108,41 @@ pub struct ClientOptions {
 
     /// How long to wait for fallback requests to succeed before considering
     /// the request as failed. Defaults to 15s.
-    #[allow(dead_code)]
     pub(crate) http_max_retry_duration: Duration,
 
     /// The maximum size of messages that can be published in a single request.
     /// Defaults to 64KiB.
-    #[allow(dead_code)]
     pub(crate) max_message_size: u64,
 
     /// The maximum size of a single POST body or WebSocket frame. Defaults to
     /// 512KiB.
-    #[allow(dead_code)]
     pub(crate) max_frame_size: u64,
 
     /// How long to wait before switching back to the primary host after a
     /// successful request to a fallback endpoint. Defaults to 10m.
-    #[allow(dead_code)]
     pub(crate) fallback_retry_timeout: Duration,
 
     /// Include a random request_id in the query string of all API requests.
     /// Defaults to false.
-    #[allow(dead_code)]
     pub(crate) add_request_ids: bool,
 
     error: Option<ErrorInfo>,
 }
 
 impl ClientOptions {
-    /// Returns ClientOptions with default values.
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(s: &str) -> Self {
+        match auth::Key::new(s) {
+            Ok(k) => Self::with_key(k),
+            Err(_) => Self::with_token(s.to_string()),
+        }
+    }
+
+    pub fn with_auth_url(url: reqwest::Url) -> Self {
+        Self::token_source(Credential::Url(url))
+    }
+
+    pub fn with_auth_callback(callback: Arc<dyn AuthCallback>) -> Self {
+        Self::token_source(Credential::Callback(callback))
     }
 
     /// Sets the API key.
@@ -165,26 +151,16 @@ impl ClientOptions {
     ///
     /// ```
     /// # fn main() -> ably::Result<()> {
-    /// let client = ably::ClientOptions::new()
-    ///     .key("aaaaaa.bbbbbb:cccccc")
-    ///     .client()?;
+    /// let client = ably::ClientOptions::new("aaaaaa.bbbbbb:cccccc").client()?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn key<T>(mut self, key: T) -> Self
-    where
-        T: TryInto<auth::Key>,
-        T::Error: Into<ErrorInfo>,
-    {
-        match key.try_into() {
-            Ok(key) => {
-                self.key = Some(key);
-            }
-            Err(err) => {
-                self.error = Some(err.into());
-            }
-        }
-        self
+    pub fn with_key(key: auth::Key) -> Self {
+        Self::token_source(Credential::Key(key))
+    }
+
+    pub fn with_token(token: String) -> Self {
+        Self::token_source(Credential::TokenDetails(auth::TokenDetails::token(token)))
     }
 
     /// Set the client ID, used for identifying this client when publishing
@@ -205,35 +181,6 @@ impl ClientOptions {
         self
     }
 
-    /// Sets the token.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # fn main() -> ably::Result<()> {
-    /// let client = ably::ClientOptions::new()
-    ///     .token("aaaaaa.dddddddddddd")
-    ///     .client()?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn token(mut self, token: impl Into<auth::Token>) -> Self {
-        self.token = Some(token.into());
-        self
-    }
-
-    /// Sets a custom auth callback.
-    pub fn auth_callback(mut self, callback: impl auth::AuthCallback + 'static) -> Self {
-        self.auth_callback = Some(Box::new(callback));
-        self
-    }
-
-    /// Sets a custom auth URL.
-    pub fn auth_url(mut self, url: reqwest::Url) -> Self {
-        self.auth_url = Some(url);
-        self
-    }
-
     /// Indicates whether token authentication should be used even if an API
     /// key is present.
     pub fn use_token_auth(mut self, v: bool) -> Self {
@@ -247,8 +194,7 @@ impl ClientOptions {
     ///
     /// ```
     /// # fn main() -> ably::Result<()> {
-    /// let client = ably::ClientOptions::new()
-    ///     .key("aaaaaa.bbbbbb:cccccc")
+    /// let client = ably::ClientOptions::new("aaaaaa.bbbbbb:cccccc")
     ///     .environment("sandbox")
     ///     .client()?;
     /// # Ok(())
@@ -263,7 +209,7 @@ impl ClientOptions {
     /// [T03k1]: https://docs.ably.io/client-lib-development-guide/features/#TO3k1
     pub fn environment(mut self, environment: impl Into<String>) -> Self {
         // Only allow the environment to be set if rest_host is the default.
-        if self.rest_host != ClientOptions::default().rest_host {
+        if self.rest_host != REST_HOST {
             self.error = Some(error!(40000, "Cannot set both environment and rest_host"));
             return self;
         }
@@ -311,8 +257,7 @@ impl ClientOptions {
     ///
     /// ```
     /// # fn main() -> ably::Result<()> {
-    /// let client = ably::ClientOptions::new()
-    ///     .key("aaaaaa.bbbbbb:cccccc")
+    /// let client = ably::ClientOptions::new("aaaaaa.bbbbbb:cccccc")
     ///     .rest_host("sandbox-rest.ably.io")
     ///     .client()?;
     /// # Ok(())
@@ -369,20 +314,9 @@ impl ClientOptions {
     /// - the REST API URL must be valid
     ///
     /// [RSC1b]: https://docs.ably.io/client-lib-development-guide/features/#RSC1b
-    pub fn client(&self) -> Result<rest::Rest> {
-        if let Some(err) = &self.error {
-            return Err(err.clone());
-        }
-
-        if self.key.is_none()
-            && self.token.is_none()
-            && self.auth_url.is_none()
-            && self.auth_callback.is_none()
-        {
-            return Err(error!(
-                40106,
-                "must provide either an API key, a token, authUrl, or authCallback"
-            ));
+    pub fn client(self) -> Result<rest::Rest> {
+        if let Some(err) = self.error {
+            return Err(err);
         }
 
         let rest_url = if self.tls {
@@ -405,17 +339,12 @@ impl ClientOptions {
             .connect_timeout(self.http_open_timeout)
             .build()?;
 
-        Ok(rest::Rest::create(http_client, self.clone(), rest_url))
+        Ok(rest::Rest::create(http_client, self, rest_url))
     }
-}
 
-impl Default for ClientOptions {
-    fn default() -> Self {
+    pub fn token_source(token: Credential) -> Self {
         Self {
-            key: None,
-            token: None,
-            auth_callback: None,
-            auth_url: None,
+            credential: token,
             auth_method: http::Method::GET,
             auth_headers: None,
             auth_params: None,
@@ -436,7 +365,7 @@ impl Default for ClientOptions {
             query_time: false,
             default_token_params: None,
             auto_connect: true,
-            rest_host: "rest.ably.io".to_string(),
+            rest_host: REST_HOST.to_string(),
             realtime_host: "realtime.ably.io".to_string(),
             port: 80,
             tls_port: 443,
@@ -453,38 +382,5 @@ impl Default for ClientOptions {
             add_request_ids: false,
             error: None,
         }
-    }
-}
-
-impl From<&str> for ClientOptions {
-    /// Returns ClientOptions initialised with an API key or token contained
-    /// in the given string.
-    ///
-    /// If the string contains a colon, then the string is assumed to contain
-    /// an API key, otherwise it's treated as a token (see [RSC1a]).
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// // Initialise ClientOptions with an API key.
-    /// let options = ably::ClientOptions::from("uTNfLQ.ms51fw:****************");
-    /// ```
-    ///
-    /// ```
-    /// // Initialise ClientOptions with a token.
-    /// let options = ably::ClientOptions::from("uTNfLQ.Gup2lu*********PYcwUb");
-    /// ```
-    ///
-    /// [RSC1a]: https://docs.ably.io/client-lib-development-guide/features/#RSC1a
-    fn from(s: &str) -> Self {
-        let mut options = Self::new();
-
-        if let Ok(key) = auth::Key::try_from(s) {
-            options.key = Some(key)
-        } else {
-            options.token = Some(s.into())
-        }
-
-        options
     }
 }
