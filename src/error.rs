@@ -9,21 +9,10 @@ use serde_repr::Deserialize_repr;
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    Deserialize_repr,
-    FromPrimitive,
-    PartialEq,
-    PartialOrd,
-    Eq,
-    Ord,
-    Hash,
-    Default,
+    Clone, Copy, Debug, Deserialize_repr, FromPrimitive, PartialEq, PartialOrd, Eq, Ord, Hash,
 )]
 #[repr(u32)]
 pub enum ErrorCode {
-    #[default]
     NotSet = 0,
     #[serde(other)]
     UnknownError = 1,
@@ -154,6 +143,10 @@ impl ErrorCode {
     pub fn code(self) -> u32 {
         self as u32
     }
+
+    fn not_set() -> Self {
+        Self::NotSet
+    }
 }
 
 impl Display for ErrorCode {
@@ -170,7 +163,7 @@ pub struct Error {
     /// The [Ably error code].
     ///
     /// [Ably error code]: https://knowledge.ably.com/ably-error-codes
-    #[serde(default)]
+    #[serde(default = "ErrorCode::not_set")]
     pub code: ErrorCode,
 
     /// Additional message information, where available.
