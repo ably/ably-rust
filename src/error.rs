@@ -181,6 +181,12 @@ pub struct Error {
     pub cause: Option<Box<dyn std::error::Error + Send + Sync>>,
 }
 
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cause.as_deref().map(|e| e as _)
+    }
+}
+
 impl Error {
     /// Returns an Error with the given code and message.
     pub fn new<S: Into<String>>(code: ErrorCode, message: S) -> Self {
