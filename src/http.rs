@@ -12,7 +12,7 @@ use regex::Regex;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::error::ErrorInfo;
+use crate::error::{Error, ErrorCode};
 use crate::{rest, Result};
 
 pub type UrlQuery = Box<[(String, String)]>;
@@ -223,7 +223,7 @@ impl<'a, T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<'
                 // the next iteration of the stream.
                 let mut next_req = req
                     .try_clone()
-                    .ok_or_else(|| error!(40000, "not a pageable request"));
+                    .ok_or_else(|| Error::new(ErrorCode::BadRequest, "not a pageable request"));
 
                 // Send the request and wrap the response in a PaginatedResult.
                 //
@@ -263,10 +263,12 @@ impl<'a, T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<'
         // be encountered by the caller.
         //
 
-        self.pages()
-            .next()
-            .await
-            .unwrap_or_else(|| Err(error!(40000, "Unexpected error retrieving first page")))
+        self.pages().next().await.unwrap_or_else(|| {
+            Err(Error::new(
+                ErrorCode::BadRequest,
+                "Unexpected error retrieving first page",
+            ))
+        })
     }
 }
 
@@ -285,26 +287,29 @@ lazy_static! {
 }
 
 impl TryFrom<&reqwest::header::HeaderValue> for Link {
-    type Error = ErrorInfo;
+    type Error = Error;
 
     /// Try and extract a Link object from a Link HTTP header.
     fn try_from(v: &reqwest::header::HeaderValue) -> Result<Link> {
         // Check we have a valid utf-8 string.
         let link = v
             .to_str()
-            .map_err(|_| error!(40004, "Invalid Link header"))?;
+            .map_err(|_| Error::new(ErrorCode::InvalidHeader, "Invalid Link header"))?;
 
         // Extract the rel and params from the header using the LINK_RE regular
         // expression.
         let caps = LINK_RE
             .captures(link)
-            .ok_or_else(|| error!(40004, "Invalid Link header"))?;
-        let rel = caps
-            .name("rel")
-            .ok_or_else(|| error!(40004, "Invalid Link header; missing rel"))?;
-        let params = caps
-            .name("params")
-            .ok_or_else(|| error!(40004, "Invalid Link header; missing params"))?;
+            .ok_or_else(|| Error::new(ErrorCode::InvalidHeader, "Invalid Link header"))?;
+        let rel = caps.name("rel").ok_or_else(|| {
+            Error::new(ErrorCode::InvalidHeader, "Invalid Link header; missing rel")
+        })?;
+        let params = caps.name("params").ok_or_else(|| {
+            Error::new(
+                ErrorCode::InvalidHeader,
+                "Invalid Link header; missing params",
+            )
+        })?;
 
         Ok(Self {
             rel: rel.as_str().to_string(),
@@ -344,14 +349,14 @@ impl Response {
     pub async fn body<T: DeserializeOwned>(self) -> Result<T> {
         let content_type = self
             .content_type()
-            .ok_or_else(|| error!(40001, "missing content-type"))?;
+            .ok_or_else(|| Error::new(ErrorCode::InvalidRequestBody, "missing content-type"))?;
 
         match content_type.essence_str() {
             "application/json" => self.json().await,
             "application/x-msgpack" => self.msgpack().await,
-            _ => Err(error!(
-                40001,
-                format!("invalid response content-type: {}", content_type)
+            _ => Err(Error::new(
+                ErrorCode::InvalidRequestBody,
+                format!("invalid response content-type: {}", content_type),
             )),
         }
     }
