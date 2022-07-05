@@ -49,9 +49,8 @@ pub struct ClientOptions {
     /// the use of an alternative host. Defaults to [a-e].ably-realtime.com.
     pub(crate) fallback_hosts: Option<Vec<String>>,
 
-    /// Encode requests using the binary msgpack encoding (true), or the JSON
-    /// encoding (false). Defaults to true.
-    pub(crate) use_binary_protocol: bool,
+    /// Encode requests using the binary msgpack encoding, or the JSON
+    /// encoding. Defaults to msgpack.
     pub(crate) format: rest::Format,
 
     /// Query the Ably system for the current time when issuing tokens.
@@ -239,7 +238,6 @@ impl ClientOptions {
     /// Sets the message format to MessagePack if the argument is true, or JSON
     /// if the argument is false.
     pub fn use_binary_protocol(mut self, v: bool) -> Self {
-        self.use_binary_protocol = v;
         self.format = if v {
             rest::Format::MessagePack
         } else {
@@ -366,7 +364,6 @@ impl ClientOptions {
                 "d.ably-realtime.com".to_string(),
                 "e.ably-realtime.com".to_string(),
             ]),
-            use_binary_protocol: true,
             format: rest::Format::MessagePack,
             query_time: false,
             default_token_params: None,
