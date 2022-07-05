@@ -228,11 +228,12 @@ impl Rest {
             return Err(err);
         }
 
+        if self.inner.opts.fallback_hosts.is_empty() {
+            return Err(err);
+        }
+
         // Create a randomised list of fallback hosts if they're set.
-        let mut hosts = match &self.inner.opts.fallback_hosts {
-            None => return Err(err),
-            Some(hosts) => hosts.clone(),
-        };
+        let mut hosts = self.inner.opts.fallback_hosts.clone();
         hosts.shuffle(&mut thread_rng());
 
         // Try sending the request to the fallback hosts, capped at

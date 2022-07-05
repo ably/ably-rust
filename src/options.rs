@@ -47,7 +47,7 @@ pub struct ClientOptions {
 
     /// The list of fallback hosts to use in the case of an error necessitating
     /// the use of an alternative host. Defaults to [a-e].ably-realtime.com.
-    pub(crate) fallback_hosts: Option<Vec<String>>,
+    pub(crate) fallback_hosts: Vec<String>,
 
     /// Encode requests using the binary msgpack encoding, or the JSON
     /// encoding. Defaults to msgpack.
@@ -221,13 +221,13 @@ impl ClientOptions {
         self.rest_host = format!("{}-rest.ably.io", environment);
 
         // Generate the fallback hosts.
-        self.fallback_hosts = Some(vec![
+        self.fallback_hosts = vec![
             format!("{}-a-fallback.ably-realtime.com", environment),
             format!("{}-b-fallback.ably-realtime.com", environment),
             format!("{}-c-fallback.ably-realtime.com", environment),
             format!("{}-d-fallback.ably-realtime.com", environment),
             format!("{}-e-fallback.ably-realtime.com", environment),
-        ]);
+        ];
 
         // Track that the environment was set.
         self.environment = Some(environment);
@@ -282,7 +282,7 @@ impl ClientOptions {
         }
 
         // TODO: only unset these if they're the defaults
-        self.fallback_hosts = None;
+        self.fallback_hosts = Vec::new();
 
         // Track that the rest_host was set.
         self.rest_host = rest_host.into();
@@ -292,7 +292,7 @@ impl ClientOptions {
 
     /// Sets the fallback hosts.
     pub fn fallback_hosts(mut self, hosts: Vec<String>) -> Self {
-        self.fallback_hosts = Some(hosts);
+        self.fallback_hosts = hosts;
         self
     }
 
@@ -357,13 +357,13 @@ impl ClientOptions {
             use_token_auth: false,
             environment: None,
             idempotent_rest_publishing: false,
-            fallback_hosts: Some(vec![
+            fallback_hosts: vec![
                 "a.ably-realtime.com".to_string(),
                 "b.ably-realtime.com".to_string(),
                 "c.ably-realtime.com".to_string(),
                 "d.ably-realtime.com".to_string(),
                 "e.ably-realtime.com".to_string(),
-            ]),
+            ],
             format: rest::Format::MessagePack,
             query_time: false,
             default_token_params: None,
