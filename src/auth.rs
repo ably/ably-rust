@@ -89,7 +89,7 @@ pub struct AuthOptions {
 }
 
 /// An API Key used to authenticate with the REST API using HTTP Basic Auth.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct Key {
     #[serde(rename(deserialize = "keyName"))]
     pub name: String,
