@@ -163,11 +163,11 @@ impl ClientOptions {
     /// Set the client ID, used for identifying this client when publishing
     /// messages or for presence purposes. Can be any utf-8 string except the
     /// reserved wildcard string '*'.
-    pub fn client_id(mut self, client_id: impl Into<String>) -> Self {
+    pub fn client_id(mut self, client_id: impl Into<String>) -> Result<Self> {
         let client_id = client_id.into();
 
         if client_id == "*" {
-            self.error = Some(Error::new(
+            return Err(Error::new(
                 ErrorCode::InvalidClientID,
                 "Can’t use '*' as a clientId as that string is reserved",
             ));
@@ -175,7 +175,7 @@ impl ClientOptions {
             self.client_id = Some(client_id);
         }
 
-        self
+        Ok(self)
     }
 
     /// Indicates whether token authentication should be used even if an API

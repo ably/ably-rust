@@ -443,7 +443,7 @@ mod tests {
 
         // Create a client with client_id set in the options.
         let client_id = "test client id";
-        let client = app.options().client_id(client_id).rest()?;
+        let client = app.options().client_id(client_id)?.rest()?;
         let options = TokenParams {
             client_id: Some(client_id.to_string()),
             ..Default::default()
