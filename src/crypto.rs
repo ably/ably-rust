@@ -293,7 +293,8 @@ mod tests {
         fn load(name: &str) -> Self {
             let path = format!("submodules/ably-common/test-resources/{}", name);
             let file = fs::File::open(path).unwrap_or_else(|_| panic!("Expected {} to open", name));
-            serde_json::from_reader(file).unwrap_or_else(|_| panic!("Expected JSON data in {}", name))
+            serde_json::from_reader(file)
+                .unwrap_or_else(|_| panic!("Expected JSON data in {}", name))
         }
 
         fn opts(&self) -> rest::ChannelOptions {
