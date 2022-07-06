@@ -304,6 +304,16 @@ impl ClientOptions {
         self
     }
 
+    fn rest_url(&self) -> Result<reqwest::Url> {
+        let rest_url = if self.tls {
+            format!("https://{}", self.rest_host)
+        } else {
+            format!("http://{}", self.rest_host)
+        };
+        let rest_url = reqwest::Url::parse(&rest_url)?;
+        Ok(rest_url)
+    }
+
     /// Returns a Rest client using the ClientOptions.
     ///
     /// # Errors
@@ -315,13 +325,7 @@ impl ClientOptions {
     ///
     /// [RSC1b]: https://docs.ably.io/client-lib-development-guide/features/#RSC1b
     pub fn client(self) -> Result<rest::Rest> {
-        let rest_url = if self.tls {
-            format!("https://{}", self.rest_host)
-        } else {
-            format!("http://{}", self.rest_host)
-        };
-        let rest_url = reqwest::Url::parse(&rest_url)?;
-
+        let rest_url = self.rest_url()?;
         let mut default_headers = http::HeaderMap::new();
         default_headers.insert("X-Ably-Version", http::HeaderValue::from_static("1.2"));
 
