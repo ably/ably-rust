@@ -124,8 +124,6 @@ pub struct ClientOptions {
     /// Include a random request_id in the query string of all API requests.
     /// Defaults to false.
     pub(crate) add_request_ids: bool,
-
-    error: Option<Error>,
 }
 
 impl ClientOptions {
@@ -206,14 +204,13 @@ impl ClientOptions {
     /// in the REST API URL.
     ///
     /// [T03k1]: https://docs.ably.io/client-lib-development-guide/features/#TO3k1
-    pub fn environment(mut self, environment: impl Into<String>) -> Self {
+    pub fn environment(mut self, environment: impl Into<String>) -> Result<Self> {
         // Only allow the environment to be set if rest_host is the default.
         if self.rest_host != REST_HOST {
-            self.error = Some(Error::new(
+            return Err(Error::new(
                 ErrorCode::BadRequest,
                 "Cannot set both environment and rest_host",
             ));
-            return self;
         }
 
         let environment = environment.into();
@@ -232,7 +229,7 @@ impl ClientOptions {
         // Track that the environment was set.
         self.environment = Some(environment);
 
-        self
+        Ok(self)
     }
 
     /// Sets the message format to MessagePack if the argument is true, or JSON
@@ -271,14 +268,13 @@ impl ClientOptions {
     /// in the REST API URL.
     ///
     /// [T03k2]: https://docs.ably.io/client-lib-development-guide/features/#TO3k2
-    pub fn rest_host(mut self, rest_host: impl Into<String>) -> Self {
+    pub fn rest_host(mut self, rest_host: impl Into<String>) -> Result<Self> {
         // Only allow the rest_host to be set if environment isn't set.
         if self.environment.is_some() {
-            self.error = Some(Error::new(
+            return Err(Error::new(
                 ErrorCode::BadRequest,
                 "Cannot set both environment and rest_host",
             ));
-            return self;
         }
 
         // TODO: only unset these if they're the defaults
@@ -287,7 +283,7 @@ impl ClientOptions {
         // Track that the rest_host was set.
         self.rest_host = rest_host.into();
 
-        self
+        Ok(self)
     }
 
     /// Sets the fallback hosts.
@@ -319,10 +315,6 @@ impl ClientOptions {
     ///
     /// [RSC1b]: https://docs.ably.io/client-lib-development-guide/features/#RSC1b
     pub fn client(self) -> Result<rest::Rest> {
-        if let Some(err) = self.error {
-            return Err(err);
-        }
-
         let rest_url = if self.tls {
             format!("https://{}", self.rest_host)
         } else {
@@ -383,7 +375,6 @@ impl ClientOptions {
             max_frame_size: 512 * 1024,
             fallback_retry_timeout: Duration::from_secs(10 * 60),
             add_request_ids: false,
-            error: None,
         }
     }
 }
