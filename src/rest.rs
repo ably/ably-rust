@@ -578,7 +578,7 @@ impl<'a> PublishBuilder<'a> {
 
 /// Data is the payload of a message which can either be a utf-8 encoded
 /// string, a JSON serializable object, or a binary array.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum Data {
     String(String),
@@ -646,7 +646,7 @@ impl From<serde_json::Value> for Data {
 
 /// The encoding of a message, which is either unset or is a list of data
 /// encodings separated by the '/' character.
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum Encoding {
     None,
@@ -898,7 +898,7 @@ fn decode_once(data: &mut Data, encoding: &str, opts: Option<&ChannelOptions>) -
     }
 }
 
-#[derive(Clone, Debug, Deserialize_repr, PartialEq, Serialize_repr)]
+#[derive(Clone, Debug, Deserialize_repr, PartialEq, Eq, Serialize_repr)]
 #[serde(untagged)]
 #[repr(u8)]
 pub enum PresenceAction {

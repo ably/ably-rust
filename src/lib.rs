@@ -360,7 +360,7 @@ mod tests {
         let meta = token.metadata.unwrap();
 
         // Check the token details.
-        assert!(token.token.len() > 0, "Expected token to be set");
+        assert!(!token.token.is_empty(), "Expected token to be set");
         assert!(
             meta.issued >= server_time,
             "Expected issued ({}) to be after server time ({})",
@@ -414,7 +414,7 @@ mod tests {
             .await?;
 
         // Check the token details.
-        assert!(token.token.len() > 0, "Expected token to be set");
+        assert!(!token.token.is_empty(), "Expected token to be set");
 
         Ok(())
     }
@@ -431,7 +431,7 @@ mod tests {
             .await?;
 
         // Check the token details.
-        assert!(token.token.len() > 0, "Expected token to be set");
+        assert!(!token.token.is_empty(), "Expected token to be set");
 
         Ok(())
     }
@@ -456,7 +456,7 @@ mod tests {
             .await?;
 
         // Check the token details include the client_id.
-        assert!(token.token.len() > 0, "Expected token to be set");
+        assert!(!token.token.is_empty(), "Expected token to be set");
         assert_eq!(
             token.metadata.unwrap().client_id,
             Some(client_id.to_string())

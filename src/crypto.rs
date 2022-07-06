@@ -292,8 +292,8 @@ mod tests {
     impl CryptoData {
         fn load(name: &str) -> Self {
             let path = format!("submodules/ably-common/test-resources/{}", name);
-            let file = fs::File::open(path).expect(format!("Expected {} to open", name).as_str());
-            serde_json::from_reader(file).expect(format!("Expected JSON data in {}", name).as_str())
+            let file = fs::File::open(path).unwrap_or_else(|_| panic!("Expected {} to open", name));
+            serde_json::from_reader(file).unwrap_or_else(|_| panic!("Expected JSON data in {}", name))
         }
 
         fn opts(&self) -> rest::ChannelOptions {
