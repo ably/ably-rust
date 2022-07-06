@@ -148,7 +148,7 @@ impl ClientOptions {
     ///
     /// ```
     /// # fn main() -> ably::Result<()> {
-    /// let client = ably::ClientOptions::new("aaaaaa.bbbbbb:cccccc").client()?;
+    /// let client = ably::ClientOptions::new("aaaaaa.bbbbbb:cccccc").rest()?;
     /// # Ok(())
     /// # }
     /// ```
@@ -192,8 +192,8 @@ impl ClientOptions {
     /// ```
     /// # fn main() -> ably::Result<()> {
     /// let client = ably::ClientOptions::new("aaaaaa.bbbbbb:cccccc")
-    ///     .environment("sandbox")
-    ///     .client()?;
+    ///     .environment("sandbox")?
+    ///     .rest()?;
     /// # Ok(())
     /// # }
     /// ```
@@ -256,8 +256,8 @@ impl ClientOptions {
     /// ```
     /// # fn main() -> ably::Result<()> {
     /// let client = ably::ClientOptions::new("aaaaaa.bbbbbb:cccccc")
-    ///     .rest_host("sandbox-rest.ably.io")
-    ///     .client()?;
+    ///     .rest_host("sandbox-rest.ably.io")?
+    ///     .rest()?;
     /// # Ok(())
     /// # }
     /// ```
@@ -320,11 +320,10 @@ impl ClientOptions {
     ///
     /// This method fails if the ClientOptions are not valid:
     ///
-    /// - a valid credential must be provided ([RSC1b])
     /// - the REST API URL must be valid
     ///
     /// [RSC1b]: https://docs.ably.io/client-lib-development-guide/features/#RSC1b
-    pub fn client(self) -> Result<rest::Rest> {
+    pub fn rest(self) -> Result<rest::Rest> {
         let rest_url = self.rest_url()?;
         let mut default_headers = http::HeaderMap::new();
         default_headers.insert("X-Ably-Version", http::HeaderValue::from_static("1.2"));

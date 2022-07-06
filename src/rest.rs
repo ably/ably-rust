@@ -45,7 +45,7 @@ impl Rest {
     }
 
     pub fn new(key: &str) -> Result<Self> {
-        ClientOptions::new(key).client()
+        ClientOptions::new(key).rest()
     }
 
     pub(crate) fn create(reqwest: reqwest::Client, opts: ClientOptions, url: reqwest::Url) -> Self {
@@ -329,7 +329,7 @@ impl From<&str> for Rest {
     fn from(s: &str) -> Self {
         // unwrap the result since we're guaranteed to have a valid client when
         // it's initialised with an API key or token.
-        ClientOptions::new(s).client().unwrap()
+        ClientOptions::new(s).rest().unwrap()
     }
 }
 

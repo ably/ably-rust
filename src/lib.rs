@@ -59,7 +59,8 @@ mod tests {
     fn test_client() -> Rest {
         ClientOptions::new("aaaaaa.bbbbbb:cccccc")
             .environment("sandbox")
-            .client()
+            .unwrap()
+            .rest()
             .unwrap()
     }
 
@@ -127,11 +128,13 @@ mod tests {
 
         /// Returns a Rest client with the test app's key.
         fn client(&self) -> Rest {
-            self.options().client().unwrap()
+            self.options().rest().unwrap()
         }
 
         fn options(&self) -> ClientOptions {
-            ClientOptions::with_key(self.key()).environment("sandbox")
+            ClientOptions::with_key(self.key())
+                .environment("sandbox")
+                .unwrap()
         }
 
         fn key(&self) -> auth::Key {
@@ -239,8 +242,8 @@ mod tests {
     #[tokio::test]
     async fn custom_request_with_bad_rest_host_returns_network_error() -> Result<()> {
         let client = ClientOptions::new("aaaaaa.bbbbbb:cccccc")
-            .rest_host("i-dont-exist.ably.com")
-            .client()?;
+            .rest_host("i-dont-exist.ably.com")?
+            .rest()?;
 
         let err = client
             .request(Method::GET, "/time")
@@ -440,7 +443,7 @@ mod tests {
 
         // Create a client with client_id set in the options.
         let client_id = "test client id";
-        let client = app.options().client_id(client_id).client()?;
+        let client = app.options().client_id(client_id).rest()?;
         let options = TokenParams {
             client_id: Some(client_id.to_string()),
             ..Default::default()
@@ -773,10 +776,10 @@ mod tests {
         // IANA reserved; requests to it will hang forever
         let unroutable_host = "10.255.255.1";
         let client = ClientOptions::new("aaaaaa.bbbbbb:cccccc")
-            .rest_host(unroutable_host)
+            .rest_host(unroutable_host)?
             .fallback_hosts(vec!["sandbox-a-fallback.ably-realtime.com".to_string()])
             .http_request_timeout(std::time::Duration::from_secs(3))
-            .client()?;
+            .rest()?;
 
         client.time().await.expect("Expected fallback response");
 
@@ -798,8 +801,8 @@ mod tests {
 
         // Configure a client with an authUrl.
         let client = ClientOptions::with_auth_url(auth_url)
-            .environment("sandbox")
-            .client()
+            .environment("sandbox")?
+            .rest()
             .expect("Expected client to initialise");
 
         // Check a REST request succeeds.
@@ -819,8 +822,8 @@ mod tests {
 
         // Configure a client with the test app as the authCallback.
         let client = ClientOptions::with_auth_callback(app)
-            .environment("sandbox")
-            .client()
+            .environment("sandbox")?
+            .rest()
             .expect("Expected client to initialise");
 
         // Check a REST request succeeds.
@@ -841,8 +844,8 @@ mod tests {
         // Configure a client with a key and useTokenAuth=true.
         let client = ClientOptions::with_key(app.key())
             .use_token_auth(true)
-            .environment("sandbox")
-            .client()
+            .environment("sandbox")?
+            .rest()
             .expect("Expected client to initialise");
 
         // Check a REST request succeeds.
