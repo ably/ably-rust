@@ -10,7 +10,6 @@
 pub mod error;
 pub mod auth;
 pub mod crypto;
-pub mod history;
 pub mod http;
 mod json;
 pub mod options;
@@ -191,7 +190,7 @@ mod tests {
         let client = test_client();
 
         let res = client
-            .paginated_request::<json::Value, ()>(Method::GET, "/time", None)
+            .paginated_request::<json::Value>(Method::GET, "/time")
             .send()
             .await?;
 
@@ -207,7 +206,7 @@ mod tests {
         let client = test_client();
 
         let mut pages = client
-            .paginated_request::<json::Value, ()>(Method::GET, "/time", None)
+            .paginated_request::<json::Value>(Method::GET, "/time")
             .pages()
             .try_collect::<Vec<_>>()
             .await?;

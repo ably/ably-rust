@@ -3,7 +3,6 @@ pub use reqwest::Method;
 
 use std::convert::TryFrom;
 use std::fmt::Display;
-use std::marker::PhantomData;
 
 use futures::future::FutureExt;
 use futures::stream::{self, Stream, StreamExt};
@@ -13,6 +12,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::error::{Error, ErrorCode};
+use crate::rest::Decode;
 use crate::{rest, Result};
 
 pub type UrlQuery = Box<[(String, String)]>;
@@ -123,33 +123,21 @@ impl<'a> RequestBuilder<'a> {
     }
 }
 
-/// Internal state used with [stream::unfold] to construct a pagination stream.
-///
-/// The state holds the request for the next page in the stream, and an
-/// optional item handler which is passed to each PaginatedResult.
-///
-/// [stream::unfold]: https://docs.rs/futures/latest/futures/stream/fn.unfold.html
-struct PaginatedState<'a, T, U: PaginatedItemHandler<T>> {
+struct PaginatedState<'a, T: 'a> {
     next_req: Option<Result<reqwest::Request>>,
     rest: &'a rest::Rest,
-    handler: Option<U>,
-    phantom: PhantomData<T>,
+    data: T,
 }
 
 /// A builder to construct a paginated REST request.
-pub struct PaginatedRequestBuilder<'a, T: PaginatedItem, U: PaginatedItemHandler<T> = ()> {
+pub struct PaginatedRequestBuilder<'a, T: Decode> {
     inner: RequestBuilder<'a>,
-    handler: Option<U>,
-    phantom: PhantomData<T>,
+    data: T::Data,
 }
 
-impl<'a, T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<'a, T, U> {
-    pub fn new(inner: RequestBuilder<'a>, handler: Option<U>) -> Self {
-        Self {
-            inner,
-            handler,
-            phantom: PhantomData,
-        }
+impl<'a, T: Decode + 'a> PaginatedRequestBuilder<'a, T> {
+    pub fn new(inner: RequestBuilder<'a>, data: T::Data) -> Self {
+        Self { inner, data }
     }
 
     /// Set the start interval of the request.
@@ -184,7 +172,7 @@ impl<'a, T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<'
     }
 
     /// Request a stream of pages from the Ably REST API.
-    pub fn pages(self) -> impl Stream<Item = Result<PaginatedResult<T, U>>> + 'a {
+    pub fn pages(self) -> impl Stream<Item = Result<PaginatedResult<T>>> + 'a {
         // Use stream::unfold to create a stream of pages where the internal
         // state holds the request for the next page, and the closure sends the
         // request and returns both a PaginatedResult and the request for the
@@ -193,8 +181,7 @@ impl<'a, T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<'
         let seed_state = PaginatedState {
             next_req: Some(self.inner.build()),
             rest,
-            handler: self.handler,
-            phantom: PhantomData,
+            data: self.data,
         };
 
         stream::unfold(seed_state, move |mut state| {
@@ -234,7 +221,7 @@ impl<'a, T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<'
                         state.next_req = None;
                         return Some((Err(err), state));
                     }
-                    Ok(res) => PaginatedResult::new(res, state.handler.clone()),
+                    Ok(res) => PaginatedResult::new(res, state.data.clone()),
                 };
 
                 // If there's a next link in the response, merge its params
@@ -256,7 +243,7 @@ impl<'a, T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedRequestBuilder<'
     }
 
     /// Retrieve the first page of the paginated response.
-    pub async fn send(self) -> Result<PaginatedResult<T, U>> {
+    pub async fn send(self) -> Result<PaginatedResult<T>> {
         // The pages stream always returns at least one non-None value, even if
         // the first request returns an error which would be Some(Err(err)), so
         // we unwrap the Option with a generic error which we don't expect to
@@ -379,53 +366,22 @@ impl Response {
     }
 }
 
-/// A handler for items in a paginated response, typically used to decode
-/// history messages before returning them to the caller.
-pub trait PaginatedItemHandler<T>: Send + Clone + 'static {
-    fn handle(&self, item: &mut T);
-}
-
-/// Provide a no-op implementation of PaginatedItemHandler for the unit type
-/// which is used as the default type for paginated responses which don't
-/// require a handler (e.g. paginated stats responses).
-impl<T> PaginatedItemHandler<T> for () {
-    fn handle(&self, _: &mut T) {}
-}
-
-/// An item in a paginated response.
-///
-/// An item can be any type which can be deserialized and sent between threads,
-/// and this trait just provides a convenient alias for those traits.
-pub trait PaginatedItem: DeserializeOwned + Send + 'static {}
-
-/// Indicate to the compiler that any type which implements DeserializeOwned
-/// and Send can be used as a PaginatedItem.
-impl<T> PaginatedItem for T where T: DeserializeOwned + Send + 'static {}
-
-/// A page of items from a paginated response.
-pub struct PaginatedResult<T: PaginatedItem, U: PaginatedItemHandler<T> = ()> {
+pub struct PaginatedResult<T: Decode> {
     res: Response,
-    handler: Option<U>,
-    phantom: PhantomData<T>,
+    data: T::Data,
 }
 
-impl<T: PaginatedItem, U: PaginatedItemHandler<T>> PaginatedResult<T, U> {
-    pub fn new(res: Response, handler: Option<U>) -> Self {
-        Self {
-            res,
-            handler,
-            phantom: PhantomData,
-        }
+impl<T: Decode> PaginatedResult<T> {
+    pub fn new(res: Response, data: T::Data) -> Self {
+        Self { res, data }
     }
 
-    /// Returns the page's list of items, running them through the item handler
-    /// if set.
-    pub async fn items(self) -> Result<Vec<T>> {
-        let mut items: Vec<T> = self.res.body().await?;
-
-        if let Some(handler) = self.handler {
-            items.iter_mut().for_each(|item| handler.handle(item));
-        }
+    /// Returns the page's list of items, running them through the item hadler.
+    pub async fn items(self) -> Result<Vec<T::Item>> {
+        let mut items: Vec<T::Item> = self.res.body().await?;
+        items
+            .iter_mut()
+            .for_each(|item| T::decode(item, &self.data));
 
         Ok(items)
     }
