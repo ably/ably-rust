@@ -47,11 +47,10 @@ pub struct ClientOptions {
 
     /// The list of fallback hosts to use in the case of an error necessitating
     /// the use of an alternative host. Defaults to [a-e].ably-realtime.com.
-    pub(crate) fallback_hosts: Option<Vec<String>>,
+    pub(crate) fallback_hosts: Vec<String>,
 
-    /// Encode requests using the binary msgpack encoding (true), or the JSON
-    /// encoding (false). Defaults to true.
-    pub(crate) use_binary_protocol: bool,
+    /// Encode requests using the binary msgpack encoding, or the JSON
+    /// encoding. Defaults to msgpack.
     pub(crate) format: rest::Format,
 
     /// Query the Ably system for the current time when issuing tokens.
@@ -125,8 +124,6 @@ pub struct ClientOptions {
     /// Include a random request_id in the query string of all API requests.
     /// Defaults to false.
     pub(crate) add_request_ids: bool,
-
-    error: Option<Error>,
 }
 
 impl ClientOptions {
@@ -151,7 +148,7 @@ impl ClientOptions {
     ///
     /// ```
     /// # fn main() -> ably::Result<()> {
-    /// let client = ably::ClientOptions::new("aaaaaa.bbbbbb:cccccc").client()?;
+    /// let client = ably::ClientOptions::new("aaaaaa.bbbbbb:cccccc").rest()?;
     /// # Ok(())
     /// # }
     /// ```
@@ -166,11 +163,11 @@ impl ClientOptions {
     /// Set the client ID, used for identifying this client when publishing
     /// messages or for presence purposes. Can be any utf-8 string except the
     /// reserved wildcard string '*'.
-    pub fn client_id(mut self, client_id: impl Into<String>) -> Self {
+    pub fn client_id(mut self, client_id: impl Into<String>) -> Result<Self> {
         let client_id = client_id.into();
 
         if client_id == "*" {
-            self.error = Some(Error::new(
+            return Err(Error::new(
                 ErrorCode::InvalidClientID,
                 "Can’t use '*' as a clientId as that string is reserved",
             ));
@@ -178,7 +175,7 @@ impl ClientOptions {
             self.client_id = Some(client_id);
         }
 
-        self
+        Ok(self)
     }
 
     /// Indicates whether token authentication should be used even if an API
@@ -195,8 +192,8 @@ impl ClientOptions {
     /// ```
     /// # fn main() -> ably::Result<()> {
     /// let client = ably::ClientOptions::new("aaaaaa.bbbbbb:cccccc")
-    ///     .environment("sandbox")
-    ///     .client()?;
+    ///     .environment("sandbox")?
+    ///     .rest()?;
     /// # Ok(())
     /// # }
     /// ```
@@ -207,14 +204,13 @@ impl ClientOptions {
     /// in the REST API URL.
     ///
     /// [T03k1]: https://docs.ably.io/client-lib-development-guide/features/#TO3k1
-    pub fn environment(mut self, environment: impl Into<String>) -> Self {
+    pub fn environment(mut self, environment: impl Into<String>) -> Result<Self> {
         // Only allow the environment to be set if rest_host is the default.
         if self.rest_host != REST_HOST {
-            self.error = Some(Error::new(
+            return Err(Error::new(
                 ErrorCode::BadRequest,
                 "Cannot set both environment and rest_host",
             ));
-            return self;
         }
 
         let environment = environment.into();
@@ -222,24 +218,23 @@ impl ClientOptions {
         self.rest_host = format!("{}-rest.ably.io", environment);
 
         // Generate the fallback hosts.
-        self.fallback_hosts = Some(vec![
+        self.fallback_hosts = vec![
             format!("{}-a-fallback.ably-realtime.com", environment),
             format!("{}-b-fallback.ably-realtime.com", environment),
             format!("{}-c-fallback.ably-realtime.com", environment),
             format!("{}-d-fallback.ably-realtime.com", environment),
             format!("{}-e-fallback.ably-realtime.com", environment),
-        ]);
+        ];
 
         // Track that the environment was set.
         self.environment = Some(environment);
 
-        self
+        Ok(self)
     }
 
     /// Sets the message format to MessagePack if the argument is true, or JSON
     /// if the argument is false.
     pub fn use_binary_protocol(mut self, v: bool) -> Self {
-        self.use_binary_protocol = v;
         self.format = if v {
             rest::Format::MessagePack
         } else {
@@ -261,8 +256,8 @@ impl ClientOptions {
     /// ```
     /// # fn main() -> ably::Result<()> {
     /// let client = ably::ClientOptions::new("aaaaaa.bbbbbb:cccccc")
-    ///     .rest_host("sandbox-rest.ably.io")
-    ///     .client()?;
+    ///     .rest_host("sandbox-rest.ably.io")?
+    ///     .rest()?;
     /// # Ok(())
     /// # }
     /// ```
@@ -273,28 +268,27 @@ impl ClientOptions {
     /// in the REST API URL.
     ///
     /// [T03k2]: https://docs.ably.io/client-lib-development-guide/features/#TO3k2
-    pub fn rest_host(mut self, rest_host: impl Into<String>) -> Self {
+    pub fn rest_host(mut self, rest_host: impl Into<String>) -> Result<Self> {
         // Only allow the rest_host to be set if environment isn't set.
         if self.environment.is_some() {
-            self.error = Some(Error::new(
+            return Err(Error::new(
                 ErrorCode::BadRequest,
                 "Cannot set both environment and rest_host",
             ));
-            return self;
         }
 
         // TODO: only unset these if they're the defaults
-        self.fallback_hosts = None;
+        self.fallback_hosts = Vec::new();
 
         // Track that the rest_host was set.
         self.rest_host = rest_host.into();
 
-        self
+        Ok(self)
     }
 
     /// Sets the fallback hosts.
     pub fn fallback_hosts(mut self, hosts: Vec<String>) -> Self {
-        self.fallback_hosts = Some(hosts);
+        self.fallback_hosts = hosts;
         self
     }
 
@@ -310,28 +304,27 @@ impl ClientOptions {
         self
     }
 
-    /// Returns a Rest client using the ClientOptions.
-    ///
-    /// # Errors
-    ///
-    /// This method fails if the ClientOptions are not valid:
-    ///
-    /// - a valid credential must be provided ([RSC1b])
-    /// - the REST API URL must be valid
-    ///
-    /// [RSC1b]: https://docs.ably.io/client-lib-development-guide/features/#RSC1b
-    pub fn client(self) -> Result<rest::Rest> {
-        if let Some(err) = self.error {
-            return Err(err);
-        }
-
+    fn rest_url(&self) -> Result<reqwest::Url> {
         let rest_url = if self.tls {
             format!("https://{}", self.rest_host)
         } else {
             format!("http://{}", self.rest_host)
         };
         let rest_url = reqwest::Url::parse(&rest_url)?;
+        Ok(rest_url)
+    }
 
+    /// Returns a Rest client using the ClientOptions.
+    ///
+    /// # Errors
+    ///
+    /// This method fails if the ClientOptions are not valid:
+    ///
+    /// - the REST API URL must be valid
+    ///
+    /// [RSC1b]: https://docs.ably.io/client-lib-development-guide/features/#RSC1b
+    pub fn rest(self) -> Result<rest::Rest> {
+        let rest_url = self.rest_url()?;
         let mut default_headers = http::HeaderMap::new();
         default_headers.insert("X-Ably-Version", http::HeaderValue::from_static("1.2"));
 
@@ -359,14 +352,13 @@ impl ClientOptions {
             use_token_auth: false,
             environment: None,
             idempotent_rest_publishing: false,
-            fallback_hosts: Some(vec![
+            fallback_hosts: vec![
                 "a.ably-realtime.com".to_string(),
                 "b.ably-realtime.com".to_string(),
                 "c.ably-realtime.com".to_string(),
                 "d.ably-realtime.com".to_string(),
                 "e.ably-realtime.com".to_string(),
-            ]),
-            use_binary_protocol: true,
+            ],
             format: rest::Format::MessagePack,
             query_time: false,
             default_token_params: None,
@@ -386,7 +378,6 @@ impl ClientOptions {
             max_frame_size: 512 * 1024,
             fallback_retry_timeout: Duration::from_secs(10 * 60),
             add_request_ids: false,
-            error: None,
         }
     }
 }

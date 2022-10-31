@@ -45,7 +45,7 @@ impl Rest {
     }
 
     pub fn new(key: &str) -> Result<Self> {
-        ClientOptions::new(key).client()
+        ClientOptions::new(key).rest()
     }
 
     pub(crate) fn create(reqwest: reqwest::Client, opts: ClientOptions, url: reqwest::Url) -> Self {
@@ -228,11 +228,12 @@ impl Rest {
             return Err(err);
         }
 
+        if self.inner.opts.fallback_hosts.is_empty() {
+            return Err(err);
+        }
+
         // Create a randomised list of fallback hosts if they're set.
-        let mut hosts = match &self.inner.opts.fallback_hosts {
-            None => return Err(err),
-            Some(hosts) => hosts.clone(),
-        };
+        let mut hosts = self.inner.opts.fallback_hosts.clone();
         hosts.shuffle(&mut thread_rng());
 
         // Try sending the request to the fallback hosts, capped at
@@ -328,7 +329,7 @@ impl From<&str> for Rest {
     fn from(s: &str) -> Self {
         // unwrap the result since we're guaranteed to have a valid client when
         // it's initialised with an API key or token.
-        ClientOptions::new(s).client().unwrap()
+        ClientOptions::new(s).rest().unwrap()
     }
 }
 
@@ -369,7 +370,7 @@ impl<'a> ChannelBuilder<'a> {
         Channel {
             name: self.name.clone(),
             rest: self.rest,
-            presence: Presence::new(self.rest, self.name.clone(), opts.clone()),
+            presence: Presence::new(self.rest, self.name, opts.clone()),
             opts,
         }
     }
@@ -577,7 +578,7 @@ impl<'a> PublishBuilder<'a> {
 
 /// Data is the payload of a message which can either be a utf-8 encoded
 /// string, a JSON serializable object, or a binary array.
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum Data {
     String(String),
@@ -645,7 +646,7 @@ impl From<serde_json::Value> for Data {
 
 /// The encoding of a message, which is either unset or is a list of data
 /// encodings separated by the '/' character.
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum Encoding {
     None,
@@ -897,7 +898,7 @@ fn decode_once(data: &mut Data, encoding: &str, opts: Option<&ChannelOptions>) -
     }
 }
 
-#[derive(Clone, Debug, Deserialize_repr, PartialEq, Serialize_repr)]
+#[derive(Clone, Debug, Deserialize_repr, PartialEq, Eq, Serialize_repr)]
 #[serde(untagged)]
 #[repr(u8)]
 pub enum PresenceAction {
