@@ -370,7 +370,7 @@ impl<'a> ChannelBuilder<'a> {
         Channel {
             name: self.name.clone(),
             rest: self.rest,
-            presence: Presence::new(self.rest, self.name.clone(), opts.clone()),
+            presence: Presence::new(self.rest, self.name, opts.clone()),
             opts,
         }
     }
