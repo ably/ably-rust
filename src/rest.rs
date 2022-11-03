@@ -90,7 +90,7 @@ impl Rest {
     /// # }
     /// ```
     pub fn stats(&self) -> http::PaginatedRequestBuilder<stats::Stats> {
-        self.paginated_request_with_data(http::Method::GET, "/stats", ())
+        self.paginated_request_with_options(http::Method::GET, "/stats", ())
     }
 
     /// Sends a GET request to /time and returns the server time in UTC.
@@ -204,13 +204,13 @@ impl Rest {
     /// Returns an error if sending the request fails or if the resulting
     /// response is unsuccessful (i.e. the status code is not in the 200-299
     /// range).
-    pub fn paginated_request_with_data<'a, T: Decode + 'a>(
+    pub fn paginated_request_with_options<'a, T: Decode + 'a>(
         &'a self,
         method: http::Method,
         path: &str,
-        data: T::Data,
+        options: T::Options,
     ) -> http::PaginatedRequestBuilder<T> {
-        http::PaginatedRequestBuilder::new(self.request(method, path), data)
+        http::PaginatedRequestBuilder::new(self.request(method, path), options)
     }
 
     pub fn paginated_request<'a, T: DeserializeOwned + Send + 'static>(
@@ -218,7 +218,7 @@ impl Rest {
         method: http::Method,
         path: &str,
     ) -> http::PaginatedRequestBuilder<DecodeRaw<T>> {
-        self.paginated_request_with_data(method, path, ())
+        self.paginated_request_with_options(method, path, ())
     }
 
     /// Send the given request, retrying against fallback hosts if it fails.
@@ -439,7 +439,7 @@ impl<'a> Channel<'a> {
     /// Returns a history::RequestBuilder which is used to set parameters
     /// before sending the history request.
     pub fn history(&self) -> PaginatedRequestBuilder<Message> {
-        self.rest.paginated_request_with_data(
+        self.rest.paginated_request_with_options(
             http::Method::GET,
             &format!("/channels/{}/history", self.name),
             self.opts.clone(),
@@ -460,7 +460,7 @@ impl<'a> Presence<'a> {
 
     /// Start building a presence request for the channel.
     pub fn get(&self) -> presence::RequestBuilder {
-        let req = self.rest.paginated_request_with_data(
+        let req = self.rest.paginated_request_with_options(
             http::Method::GET,
             &format!("/channels/{}/presence", self.name),
             self.opts.clone(),
@@ -473,7 +473,7 @@ impl<'a> Presence<'a> {
     /// Returns a history::RequestBuilder which is used to set parameters
     /// before sending the history request.
     pub fn history(&self) -> PaginatedRequestBuilder<PresenceMessage> {
-        self.rest.paginated_request_with_data(
+        self.rest.paginated_request_with_options(
             http::Method::GET,
             &format!("/channels/{}/presence/history", self.name),
             self.opts.clone(),
@@ -926,37 +926,37 @@ impl Format {
 pub struct DecodeRaw<T>(PhantomData<T>);
 
 pub trait Decode {
-    type Data: Clone + Send;
+    type Options: Clone + Send;
     type Item: DeserializeOwned + Send + 'static;
-    fn decode(item: &mut Self::Item, data: &Self::Data);
+    fn decode(item: &mut Self::Item, options: &Self::Options);
 }
 
 impl Decode for Message {
-    type Data = Option<ChannelOptions>;
+    type Options = Option<ChannelOptions>;
     type Item = Self;
 
-    fn decode(item: &mut Self::Item, data: &Self::Data) {
-        crate::rest::decode(&mut item.data, &mut item.encoding, data.as_ref());
+    fn decode(item: &mut Self::Item, options: &Self::Options) {
+        crate::rest::decode(&mut item.data, &mut item.encoding, options.as_ref());
     }
 }
 
 impl Decode for Stats {
-    type Data = ();
+    type Options = ();
     type Item = Self;
-    fn decode(_item: &mut Self::Item, _data: &Self::Data) {}
+    fn decode(_item: &mut Self::Item, _options: &Self::Options) {}
 }
 
 impl Decode for PresenceMessage {
-    type Data = Option<ChannelOptions>;
+    type Options = Option<ChannelOptions>;
     type Item = Self;
 
-    fn decode(item: &mut Self::Item, data: &Self::Data) {
-        crate::rest::decode(&mut item.data, &mut item.encoding, data.as_ref());
+    fn decode(item: &mut Self::Item, options: &Self::Options) {
+        crate::rest::decode(&mut item.data, &mut item.encoding, options.as_ref());
     }
 }
 
 impl<T: DeserializeOwned + 'static + Send> Decode for DecodeRaw<T> {
-    type Data = ();
+    type Options = ();
     type Item = T;
-    fn decode(_item: &mut Self::Item, _data: &Self::Data) {}
+    fn decode(_item: &mut Self::Item, _options: &Self::Options) {}
 }

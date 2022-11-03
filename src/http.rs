@@ -126,18 +126,18 @@ impl<'a> RequestBuilder<'a> {
 struct PaginatedState<'a, T: 'a> {
     next_req: Option<Result<reqwest::Request>>,
     rest: &'a rest::Rest,
-    data: T,
+    options: T,
 }
 
 /// A builder to construct a paginated REST request.
 pub struct PaginatedRequestBuilder<'a, T: Decode> {
     inner: RequestBuilder<'a>,
-    data: T::Data,
+    options: T::Options,
 }
 
 impl<'a, T: Decode + 'a> PaginatedRequestBuilder<'a, T> {
-    pub fn new(inner: RequestBuilder<'a>, data: T::Data) -> Self {
-        Self { inner, data }
+    pub fn new(inner: RequestBuilder<'a>, options: T::Options) -> Self {
+        Self { inner, options }
     }
 
     /// Set the start interval of the request.
@@ -181,7 +181,7 @@ impl<'a, T: Decode + 'a> PaginatedRequestBuilder<'a, T> {
         let seed_state = PaginatedState {
             next_req: Some(self.inner.build()),
             rest,
-            data: self.data,
+            options: self.options,
         };
 
         stream::unfold(seed_state, move |mut state| {
@@ -221,7 +221,7 @@ impl<'a, T: Decode + 'a> PaginatedRequestBuilder<'a, T> {
                         state.next_req = None;
                         return Some((Err(err), state));
                     }
-                    Ok(res) => PaginatedResult::new(res, state.data.clone()),
+                    Ok(res) => PaginatedResult::new(res, state.options.clone()),
                 };
 
                 // If there's a next link in the response, merge its params
@@ -368,12 +368,12 @@ impl Response {
 
 pub struct PaginatedResult<T: Decode> {
     res: Response,
-    data: T::Data,
+    options: T::Options,
 }
 
 impl<T: Decode> PaginatedResult<T> {
-    pub fn new(res: Response, data: T::Data) -> Self {
-        Self { res, data }
+    pub fn new(res: Response, options: T::Options) -> Self {
+        Self { res, options }
     }
 
     /// Returns the page's list of items, running them through the item hadler.
@@ -381,7 +381,7 @@ impl<T: Decode> PaginatedResult<T> {
         let mut items: Vec<T::Item> = self.res.body().await?;
         items
             .iter_mut()
-            .for_each(|item| T::decode(item, &self.data));
+            .for_each(|item| T::decode(item, &self.options));
 
         Ok(items)
     }
