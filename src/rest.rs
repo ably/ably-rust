@@ -1,3 +1,4 @@
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use chrono::prelude::*;
@@ -5,14 +6,19 @@ use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use regex::Regex;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::auth::Auth;
 use crate::crypto::CipherParams;
 use crate::error::*;
+use crate::http::PaginatedRequestBuilder;
 use crate::options::ClientOptions;
-use crate::{history, http, json, presence, stats, Result};
+use crate::stats::Stats;
+use crate::{http, json, presence, stats, Result};
+
+pub const DEFAULT_FORMAT: Format = Format::MessagePack;
 
 /// A client for the [Ably REST API].
 ///
@@ -84,7 +90,7 @@ impl Rest {
     /// # }
     /// ```
     pub fn stats(&self) -> http::PaginatedRequestBuilder<stats::Stats> {
-        self.paginated_request(http::Method::GET, "/stats", None)
+        self.paginated_request_with_options(http::Method::GET, "/stats", ())
     }
 
     /// Sends a GET request to /time and returns the server time in UTC.
@@ -179,7 +185,7 @@ impl Rest {
     /// let client = ably::Rest::from("<api_key>");
     ///
     /// let mut pages = client
-    ///     .paginated_request::<String, ()>(Method::GET, "/time", None)
+    ///     .paginated_request::<String>(Method::GET, "/time")
     ///     .forwards()
     ///     .limit(1)
     ///     .pages();
@@ -198,13 +204,21 @@ impl Rest {
     /// Returns an error if sending the request fails or if the resulting
     /// response is unsuccessful (i.e. the status code is not in the 200-299
     /// range).
-    pub fn paginated_request<T: http::PaginatedItem, U: http::PaginatedItemHandler<T>>(
-        &self,
+    pub fn paginated_request_with_options<'a, T: Decode + 'a>(
+        &'a self,
         method: http::Method,
         path: &str,
-        handler: Option<U>,
-    ) -> http::PaginatedRequestBuilder<T, U> {
-        http::PaginatedRequestBuilder::new(self.request(method, path), handler)
+        options: T::Options,
+    ) -> http::PaginatedRequestBuilder<T> {
+        http::PaginatedRequestBuilder::new(self.request(method, path), options)
+    }
+
+    pub fn paginated_request<'a, T: DeserializeOwned + Send + 'static>(
+        &'a self,
+        method: http::Method,
+        path: &str,
+    ) -> http::PaginatedRequestBuilder<DecodeRaw<T>> {
+        self.paginated_request_with_options(method, path, ())
     }
 
     /// Send the given request, retrying against fallback hosts if it fails.
@@ -424,11 +438,11 @@ impl<'a> Channel<'a> {
     ///
     /// Returns a history::RequestBuilder which is used to set parameters
     /// before sending the history request.
-    pub fn history(&self) -> history::PaginatedRequestBuilder<Message> {
-        self.rest.paginated_request(
+    pub fn history(&self) -> PaginatedRequestBuilder<Message> {
+        self.rest.paginated_request_with_options(
             http::Method::GET,
             &format!("/channels/{}/history", self.name),
-            Some(MessageItemHandler::new(self.opts.clone())),
+            self.opts.clone(),
         )
     }
 }
@@ -446,10 +460,10 @@ impl<'a> Presence<'a> {
 
     /// Start building a presence request for the channel.
     pub fn get(&self) -> presence::RequestBuilder {
-        let req = self.rest.paginated_request(
+        let req = self.rest.paginated_request_with_options(
             http::Method::GET,
             &format!("/channels/{}/presence", self.name),
-            Some(MessageItemHandler::new(self.opts.clone())),
+            self.opts.clone(),
         );
         presence::RequestBuilder::new(req)
     }
@@ -458,11 +472,11 @@ impl<'a> Presence<'a> {
     ///
     /// Returns a history::RequestBuilder which is used to set parameters
     /// before sending the history request.
-    pub fn history(&self) -> history::PaginatedRequestBuilder<PresenceMessage> {
-        self.rest.paginated_request(
+    pub fn history(&self) -> PaginatedRequestBuilder<PresenceMessage> {
+        self.rest.paginated_request_with_options(
             http::Method::GET,
             &format!("/channels/{}/presence/history", self.name),
-            Some(MessageItemHandler::new(self.opts.clone())),
+            self.opts.clone(),
         )
     }
 }
@@ -716,7 +730,8 @@ impl Message {
     pub fn from_encoded(v: json::Value, opts: Option<&ChannelOptions>) -> Result<Message> {
         let mut msg: Message = serde_json::from_value(v)?;
 
-        msg.decode(opts);
+        // TODO fix unneeded conversion
+        Message::decode(&mut msg, &opts.cloned());
 
         Ok(msg)
     }
@@ -778,12 +793,6 @@ impl Message {
     }
 }
 
-impl Decode for Message {
-    fn decode(&mut self, opts: Option<&ChannelOptions>) {
-        decode(&mut self.data, &mut self.encoding, opts);
-    }
-}
-
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PresenceMessage {
@@ -794,16 +803,6 @@ pub struct PresenceMessage {
     pub data: Data,
     #[serde(default, skip_serializing_if = "Encoding::is_none")]
     pub encoding: Encoding,
-}
-
-impl Decode for PresenceMessage {
-    fn decode(&mut self, opts: Option<&ChannelOptions>) {
-        decode(&mut self.data, &mut self.encoding, opts);
-    }
-}
-
-pub trait Decode {
-    fn decode(&mut self, opts: Option<&ChannelOptions>);
 }
 
 /// Iteratively decode the given data based on the given list of encodings.
@@ -924,22 +923,40 @@ impl Format {
     }
 }
 
-pub const DEFAULT_FORMAT: Format = Format::MessagePack;
+pub struct DecodeRaw<T>(PhantomData<T>);
 
-/// A pagination item handler which decodes each message.
-#[derive(Clone)]
-pub struct MessageItemHandler {
-    opts: Option<ChannelOptions>,
+pub trait Decode {
+    type Options: Clone + Send;
+    type Item: DeserializeOwned + Send + 'static;
+    fn decode(item: &mut Self::Item, options: &Self::Options);
 }
 
-impl MessageItemHandler {
-    pub fn new(opts: Option<ChannelOptions>) -> Self {
-        Self { opts }
+impl Decode for Message {
+    type Options = Option<ChannelOptions>;
+    type Item = Self;
+
+    fn decode(item: &mut Self::Item, options: &Self::Options) {
+        crate::rest::decode(&mut item.data, &mut item.encoding, options.as_ref());
     }
 }
 
-impl<T: Decode> http::PaginatedItemHandler<T> for MessageItemHandler {
-    fn handle(&self, msg: &mut T) {
-        msg.decode(self.opts.as_ref());
+impl Decode for Stats {
+    type Options = ();
+    type Item = Self;
+    fn decode(_item: &mut Self::Item, _options: &Self::Options) {}
+}
+
+impl Decode for PresenceMessage {
+    type Options = Option<ChannelOptions>;
+    type Item = Self;
+
+    fn decode(item: &mut Self::Item, options: &Self::Options) {
+        crate::rest::decode(&mut item.data, &mut item.encoding, options.as_ref());
     }
+}
+
+impl<T: DeserializeOwned + 'static + Send> Decode for DecodeRaw<T> {
+    type Options = ();
+    type Item = T;
+    fn decode(_item: &mut Self::Item, _options: &Self::Options) {}
 }
