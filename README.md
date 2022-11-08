@@ -12,7 +12,7 @@ Add the `ably` and `tokio` crates to your `Cargo.toml`:
 
 ```
 [dependencies]
-ably = "0.1.0"
+ably = "0.2.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
