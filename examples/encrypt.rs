@@ -2,7 +2,7 @@ use std::env;
 
 use futures::StreamExt;
 
-use ably::{error::ErrorCode, Error, Result};
+use ably::{channel::ChannelOptions, error::ErrorCode, Error, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -15,14 +15,17 @@ async fn main() -> Result<()> {
     let cipher = ably::crypto::CipherParams::default();
     let channel = client
         .channels()
-        .name("rust-example")
-        .cipher(cipher.clone())
-        .get();
+        .get_with_options(
+            "rust-example",
+            Some(ChannelOptions::from_cipher(cipher.clone())),
+        )
+        .await;
 
     // Publish a message as normal.
     println!("Publishing a string");
     match channel
         .publish()
+        .await
         .name("test")
         .string("a string")
         .send()
@@ -35,8 +38,8 @@ async fn main() -> Result<()> {
     // Retrieve the message from history using another client which doesn't
     // have the cipher params.
     let client = ably::Rest::new(&key)?;
-    let channel = client.channels().name("rust-example").get();
-    let page = channel.history().pages().next().await.unwrap()?;
+    let channel = client.channels().get("rust-example").await;
+    let page = channel.history().await.pages().next().await.unwrap()?;
     let msg = page.items().await?.pop().expect("Expected a message");
     println!("Retrieved message from history: data = {:?}", msg.data);
 

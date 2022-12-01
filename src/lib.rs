@@ -9,6 +9,7 @@
 #[macro_use]
 pub mod error;
 pub mod auth;
+pub mod channel;
 pub mod crypto;
 pub mod http;
 mod json;
@@ -471,12 +472,18 @@ mod tests {
         let client = app.client();
 
         // Publish a message with string data.
-        let channel = client.channels().get("test_channel_publish_string");
+        let channel = client.channels().get("test_channel_publish_string").await;
         let data = "a string";
-        channel.publish().name("name").string(data).send().await?;
+        channel
+            .publish()
+            .await
+            .name("name")
+            .string(data)
+            .send()
+            .await?;
 
         // Retrieve the message from history.
-        let res = channel.history().send().await?;
+        let res = channel.history().await.send().await?;
         let mut history = res.items().await?;
         let message = history.pop().expect("Expected a history message");
         assert_eq!(message.data, Data::String(data.to_string()));
@@ -491,7 +498,10 @@ mod tests {
         let client = app.client();
 
         // Publish a message with JSON serializable data.
-        let channel = client.channels().get("test_channel_publish_json_object");
+        let channel = client
+            .channels()
+            .get("test_channel_publish_json_object")
+            .await;
         #[derive(Serialize)]
         struct TestData<'a> {
             b: bool,
@@ -507,10 +517,16 @@ mod tests {
             o: [("x", "1"), ("y", "2")].iter().cloned().collect(),
             v: vec![1, 2, 3],
         };
-        channel.publish().name("name").json(data).send().await?;
+        channel
+            .publish()
+            .await
+            .name("name")
+            .json(data)
+            .send()
+            .await?;
 
         // Retrieve the message from history.
-        let res = channel.history().send().await?;
+        let res = channel.history().await.send().await?;
         let mut history = res.items().await?;
         let message = history.pop().expect("Expected a history message");
         let json = serde_json::json!({
@@ -532,12 +548,18 @@ mod tests {
         let client = app.client();
 
         // Publish a message with binary data.
-        let channel = client.channels().get("test_channel_publish_binary");
+        let channel = client.channels().get("test_channel_publish_binary").await;
         let data = vec![0x1, 0x2, 0x3, 0x4];
-        channel.publish().name("name").binary(data).send().await?;
+        channel
+            .publish()
+            .await
+            .name("name")
+            .binary(data)
+            .send()
+            .await?;
 
         // Retrieve the message from history.
-        let res = channel.history().send().await?;
+        let res = channel.history().await.send().await?;
         let mut history = res.items().await?;
         let message = history.pop().expect("Expected a history message");
         assert_eq!(message.data, vec![0x1, 0x2, 0x3, 0x4].into());
@@ -552,12 +574,13 @@ mod tests {
         let client = app.client();
 
         // Publish a message with extras.
-        let channel = client.channels().get("test_channel_publish_extras");
+        let channel = client.channels().get("test_channel_publish_extras").await;
         let data = "a string";
         let mut extras = json::Map::new();
         extras.insert("headers".to_string(), json!({"some":"metadata"}));
         channel
             .publish()
+            .await
             .name("name")
             .string(data)
             .extras(extras.clone())
@@ -565,7 +588,7 @@ mod tests {
             .await?;
 
         // Retrieve the message from history.
-        let res = channel.history().send().await?;
+        let res = channel.history().await.send().await?;
         let mut history = res.items().await?;
         let message = history.pop().expect("Expected a history message");
         assert_eq!(message.extras, Some(extras));
@@ -581,10 +604,11 @@ mod tests {
 
         // Publish a message with params '_forceNack=true' which should
         // result in the publish being rejected with a 40099 error code
-        let channel = client.channels().get("test_channel_publish_params");
+        let channel = client.channels().get("test_channel_publish_params").await;
         let data = "a string";
         let err = channel
             .publish()
+            .await
             .name("name")
             .string(data)
             .params(&[("_forceNack", "true")])
@@ -603,8 +627,8 @@ mod tests {
         let client = app.client();
 
         // Retrieve the presence set
-        let channel = client.channels().get("persisted:presence_fixtures");
-        let res = channel.presence.get().send().await?;
+        let channel = client.channels().get("persisted:presence_fixtures").await;
+        let res = channel.presence().get().await.send().await?;
         let presence = res.items().await?;
         assert_eq!(presence.len(), 3);
         assert_eq!(presence[0].data, "some presence data".as_bytes().into());
@@ -627,8 +651,8 @@ mod tests {
         let client = app.client();
 
         // Retrieve the presence history
-        let channel = client.channels().get("persisted:presence_fixtures");
-        let res = channel.presence.history().send().await?;
+        let channel = client.channels().get("persisted:presence_fixtures").await;
+        let res = channel.presence().history().await.send().await?;
         let presence = res.items().await?;
         assert_eq!(presence.len(), 3);
         assert_eq!(presence[0].data, "some presence data".as_bytes().into());
@@ -651,24 +675,47 @@ mod tests {
         let client = app.client();
 
         // Publish some messages.
-        let channel = client.channels().get("persisted:history_count");
+        let channel = client.channels().get("persisted:history_count").await;
         futures::try_join!(
-            channel.publish().name("event0").string("some data").send(),
             channel
                 .publish()
+                .await
+                .name("event0")
+                .string("some data")
+                .send(),
+            channel
+                .publish()
+                .await
                 .name("event1")
                 .string("some more data")
                 .send(),
-            channel.publish().name("event2").string("and more").send(),
-            channel.publish().name("event3").string("and more").send(),
-            channel.publish().name("event4").json(vec![1, 2, 3]).send(),
             channel
                 .publish()
+                .await
+                .name("event2")
+                .string("and more")
+                .send(),
+            channel
+                .publish()
+                .await
+                .name("event3")
+                .string("and more")
+                .send(),
+            channel
+                .publish()
+                .await
+                .name("event4")
+                .json(vec![1, 2, 3])
+                .send(),
+            channel
+                .publish()
+                .await
                 .name("event5")
                 .json(json!({"one": 1, "two": 2, "three": 3}))
                 .send(),
             channel
                 .publish()
+                .await
                 .name("event6")
                 .json(json!({"foo": "bar"}))
                 .send(),
@@ -678,7 +725,12 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
         // Retrieve the channel history.
-        let mut pages = channel.history().pages().try_collect::<Vec<_>>().await?;
+        let mut pages = channel
+            .history()
+            .await
+            .pages()
+            .try_collect::<Vec<_>>()
+            .await?;
         assert_eq!(pages.len(), 1);
         let history = pages.pop().unwrap().items().await?;
         assert_eq!(history.len(), 7, "Expected 7 history messages");
@@ -699,45 +751,53 @@ mod tests {
         // Publish some messages.
         let channel = client
             .channels()
-            .get("persisted:history_paginate_backwards");
+            .get("persisted:history_paginate_backwards")
+            .await;
         channel
             .publish()
+            .await
             .name("event0")
             .string("some data")
             .send()
             .await?;
         channel
             .publish()
+            .await
             .name("event1")
             .string("some more data")
             .send()
             .await?;
         channel
             .publish()
+            .await
             .name("event2")
             .string("and more")
             .send()
             .await?;
         channel
             .publish()
+            .await
             .name("event3")
             .string("and more")
             .send()
             .await?;
         channel
             .publish()
+            .await
             .name("event4")
             .json(vec![1, 2, 3])
             .send()
             .await?;
         channel
             .publish()
+            .await
             .name("event5")
             .json(json!({"one": 1, "two": 2, "three": 3}))
             .send()
             .await?;
         channel
             .publish()
+            .await
             .name("event6")
             .json(json!({"foo": "bar"}))
             .send()
@@ -747,7 +807,7 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
         // Retrieve the channel history backwards one message at a time.
-        let mut pages = channel.history().backwards().limit(1).pages();
+        let mut pages = channel.history().await.backwards().limit(1).pages();
 
         // Check each page has the expected items.
         for (expected_name, expected_data) in [
