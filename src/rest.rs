@@ -117,7 +117,12 @@ impl Rest {
             .pop()
             .ok_or_else(|| Error::new(ErrorCode::BadRequest, "Invalid response from /time"))?;
 
-        Ok(Utc.timestamp_millis(time))
+        Utc.timestamp_millis_opt(time).single().ok_or_else(|| {
+            Error::new(
+                ErrorCode::TimestampNotCurrent,
+                "Timestamp could not be converted to DateTime",
+            )
+        })
     }
 
     /// Start building a HTTP request to the Ably REST API.
