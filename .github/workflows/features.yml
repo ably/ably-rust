@@ -11,3 +11,4 @@ jobs:
     uses: ably/features/.github/workflows/sdk-features.yml@main
     with:
       repository-name: ably-rust
+    secrets: inherit
