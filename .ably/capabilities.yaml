@@ -1,6 +1,6 @@
 %YAML 1.2
 ---
-common-version: 1.2.0-alpha.1
+common-version: 1.2.0
 compliance:
   .caveats: |
     The Rust Ably SDK is in early development and is missing a lot of features.
