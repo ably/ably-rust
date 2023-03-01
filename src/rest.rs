@@ -1,19 +1,20 @@
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
 use chrono::prelude::*;
+use futures::lock::Mutex;
 use lazy_static::lazy_static;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use regex::Regex;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_repr::{Deserialize_repr, Serialize_repr};
 
 use crate::auth::Auth;
+use crate::channel::{ChannelOptions, Channels, InnerChannel};
 use crate::crypto::CipherParams;
 use crate::error::*;
-use crate::http::PaginatedRequestBuilder;
 use crate::options::ClientOptions;
 use crate::stats::Stats;
 use crate::{http, json, presence, stats, Result};
@@ -25,11 +26,10 @@ pub const DEFAULT_FORMAT: Format = Format::MessagePack;
 /// [Ably REST API]: https://ably.com/documentation/rest-api
 #[derive(Debug)]
 pub(crate) struct RestInner {
-    #[allow(dead_code)]
-    pub channels: (),
-    pub reqwest: reqwest::Client,
-    pub opts: ClientOptions,
-    pub url: reqwest::Url,
+    pub(crate) channels: Mutex<HashMap<String, InnerChannel>>,
+    pub(crate) reqwest: reqwest::Client,
+    pub(crate) opts: ClientOptions,
+    pub(crate) url: reqwest::Url,
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +43,7 @@ impl Rest {
     }
 
     pub fn channels(&self) -> Channels {
-        Channels { rest: self }
+        Channels::new(self.clone())
     }
 
     pub fn options(&self) -> &ClientOptions {
@@ -60,7 +60,7 @@ impl Rest {
                 reqwest,
                 opts,
                 url,
-                channels: (),
+                channels: Mutex::default(),
             }),
         }
     }
@@ -352,140 +352,6 @@ impl From<&str> for Rest {
     }
 }
 
-/// Options for publishing messages on a channel.
-#[derive(Clone)]
-pub struct ChannelOptions {
-    pub(crate) cipher: Option<CipherParams>,
-}
-
-/// Start building a Channel to publish a message.
-pub struct ChannelBuilder<'a> {
-    rest: &'a Rest,
-    name: String,
-    cipher: Option<CipherParams>,
-}
-
-impl<'a> ChannelBuilder<'a> {
-    fn new(rest: &'a Rest, name: String) -> Self {
-        Self {
-            rest,
-            name,
-            cipher: None,
-        }
-    }
-
-    /// Set the channel cipher parameters.
-    pub fn cipher(mut self, cipher: CipherParams) -> Self {
-        self.cipher = Some(cipher);
-        self
-    }
-
-    /// Build the Channel.
-    pub fn get(self) -> Channel<'a> {
-        let opts = Some(ChannelOptions {
-            cipher: self.cipher,
-        });
-
-        Channel {
-            name: self.name.clone(),
-            rest: self.rest,
-            presence: Presence::new(self.rest, self.name, opts.clone()),
-            opts,
-        }
-    }
-}
-
-/// A collection of Channels.
-#[derive(Clone, Debug)]
-pub struct Channels<'a> {
-    rest: &'a Rest,
-}
-
-impl<'a> Channels<'a> {
-    pub fn new(rest: &'a Rest) -> Self {
-        Self { rest }
-    }
-
-    /// Start building a Channel with the given name.
-    pub fn name(&self, name: impl Into<String>) -> ChannelBuilder<'a> {
-        ChannelBuilder::new(self.rest, name.into())
-    }
-
-    /// Build and return a Channel with the given name.
-    pub fn get(&self, name: impl Into<String>) -> Channel<'a> {
-        self.name(name).get()
-    }
-}
-
-/// An Ably Channel to publish messages to or retrieve history or presence for.
-pub struct Channel<'a> {
-    pub name: String,
-    pub presence: Presence<'a>,
-    rest: &'a Rest,
-    opts: Option<ChannelOptions>,
-}
-
-impl<'a> Channel<'a> {
-    /// Start building a request to publish a message on the channel.
-    pub fn publish(&self) -> PublishBuilder {
-        let mut builder = PublishBuilder::new(self.rest, self.name.clone());
-
-        if let Some(opts) = &self.opts {
-            if let Some(cipher) = &opts.cipher {
-                builder = builder.cipher(cipher.clone());
-            }
-        }
-
-        builder
-    }
-
-    /// Start building a history request for the channel.
-    ///
-    /// Returns a history::RequestBuilder which is used to set parameters
-    /// before sending the history request.
-    pub fn history(&self) -> PaginatedRequestBuilder<Message> {
-        self.rest.paginated_request_with_options(
-            http::Method::GET,
-            &format!("/channels/{}/history", self.name),
-            self.opts.clone(),
-        )
-    }
-}
-
-pub struct Presence<'a> {
-    rest: &'a Rest,
-    name: String,
-    opts: Option<ChannelOptions>,
-}
-
-impl<'a> Presence<'a> {
-    fn new(rest: &'a Rest, name: String, opts: Option<ChannelOptions>) -> Self {
-        Self { rest, name, opts }
-    }
-
-    /// Start building a presence request for the channel.
-    pub fn get(&self) -> presence::RequestBuilder {
-        let req = self.rest.paginated_request_with_options(
-            http::Method::GET,
-            &format!("/channels/{}/presence", self.name),
-            self.opts.clone(),
-        );
-        presence::RequestBuilder::new(req)
-    }
-
-    /// Start building a presence history request for the channel.
-    ///
-    /// Returns a history::RequestBuilder which is used to set parameters
-    /// before sending the history request.
-    pub fn history(&self) -> PaginatedRequestBuilder<PresenceMessage> {
-        self.rest.paginated_request_with_options(
-            http::Method::GET,
-            &format!("/channels/{}/presence/history", self.name),
-            self.opts.clone(),
-        )
-    }
-}
-
 /// A request to publish a message to a channel.
 pub struct PublishBuilder<'a> {
     req: http::RequestBuilder<'a>,
@@ -495,7 +361,7 @@ pub struct PublishBuilder<'a> {
 }
 
 impl<'a> PublishBuilder<'a> {
-    fn new(rest: &'a Rest, channel: String) -> Self {
+    pub(crate) fn new(rest: &'a Rest, channel: String) -> Self {
         let req = rest.request(
             http::Method::POST,
             &format!("/channels/{}/messages", channel),
@@ -607,7 +473,7 @@ pub enum Data {
 }
 
 impl Data {
-    fn is_none(&self) -> bool {
+    pub fn is_none(&self) -> bool {
         matches!(self, Self::None)
     }
 }
@@ -673,7 +539,7 @@ pub enum Encoding {
 }
 
 impl Encoding {
-    fn is_none(&self) -> bool {
+    pub fn is_none(&self) -> bool {
         match self {
             Self::None => true,
             Self::Some(_) => false,
@@ -798,18 +664,6 @@ impl Message {
     }
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PresenceMessage {
-    pub action: PresenceAction,
-    pub client_id: String,
-    pub connection_id: String,
-    #[serde(skip_serializing_if = "Data::is_none")]
-    pub data: Data,
-    #[serde(default, skip_serializing_if = "Encoding::is_none")]
-    pub encoding: Encoding,
-}
-
 /// Iteratively decode the given data based on the given list of encodings.
 fn decode(data: &mut Data, encoding: &mut Encoding, opts: Option<&ChannelOptions>) {
     while let Some(enc) = encoding.pop() {
@@ -902,17 +756,6 @@ fn decode_once(data: &mut Data, encoding: &str, opts: Option<&ChannelOptions>) -
     }
 }
 
-#[derive(Clone, Debug, Deserialize_repr, PartialEq, Eq, Serialize_repr)]
-#[serde(untagged)]
-#[repr(u8)]
-pub enum PresenceAction {
-    Absent,
-    Present,
-    Enter,
-    Leave,
-    Update,
-}
-
 #[derive(Copy, Clone, Debug)]
 pub enum Format {
     MessagePack,
@@ -951,7 +794,7 @@ impl Decode for Stats {
     fn decode(_item: &mut Self::Item, _options: &Self::Options) {}
 }
 
-impl Decode for PresenceMessage {
+impl Decode for presence::PresenceMessage {
     type Options = Option<ChannelOptions>;
     type Item = Self;
 

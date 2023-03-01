@@ -10,20 +10,21 @@ async fn main() -> Result<()> {
 
     let client = ably::Rest::new(&key)?;
 
-    let channel = client.channels().get("rust-example");
+    let channel = client.channels().get("rust-example").await;
 
     // Publish 10 messages
     for n in 1..11 {
         println!("Publishing message {}", n);
         channel
             .publish()
+            .await
             .string(format!("message {}", n))
             .send()
             .await?;
     }
 
     // Retrieve the history
-    let mut pages = channel.history().pages();
+    let mut pages = channel.history().await.pages();
     while let Some(Ok(page)) = pages.next().await {
         let msgs = page.items().await?;
         println!("Received page of {} messages", msgs.len());
