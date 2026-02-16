@@ -239,26 +239,29 @@ Tasks:
 
 ---
 
-### Phase 7c: Realtime — Heartbeats, Fallback & Re-auth
+### Phase 7c: Realtime — Heartbeats, Fallback & Timeouts
 
-**Goal:** Heartbeat idle detection, fallback host handling, and server-initiated
-re-authentication.
+**Goal:** Heartbeat idle detection, fallback host handling, and timeout
+configuration.
 
 Tasks:
 - [ ] Heartbeats / idle detection — `RTN23` (HEARTBEAT protocol or ping frames,
       maxIdleInterval, idle timeout → reconnect)
-- [ ] Fallback hosts for Realtime — `RTN17` (primary domain preference,
-      connectivity check, random ordering)
-- [ ] Server-initiated reauth — `RTN22` (AUTH message, token renewal without
-      disconnect, forced disconnect on failure)
-- [ ] ACK/NACK — `RTN7`
-- [ ] Timeout configuration — `RTC7`
+- [ ] Fallback hosts for Realtime — `RTN17` core (primary domain preference,
+      random fallback ordering, error conditions for fallback, empty fallback set)
+- [ ] Timeout configuration — `RTC7` (default values, disconnectedRetryTimeout)
+
+**Deferred to later phases (require channels or auth):**
+- RTN17e (HTTP requests use same fallback host) → **Phase 8** (needs channels)
+- RTN17j (connectivity check before fallback) → **Phase 8** (needs HTTP in RT)
+- RTN22 (server-initiated reauth) → **Phase 9** (needs authCallback in RT)
+- RTN7 (ACK/NACK) → **Phase 8** (needs channel publish to be meaningful)
+- RTC7 attach/detach timeout tests → **Phase 8** (needs channel attach/detach)
 
 **UTS test specs:**
-- `realtime/unit/connection/heartbeat_test.md` — RTN23 (16 tests)
-- `realtime/unit/connection/fallback_hosts_test.md` — RTN17 (8 tests)
-- `realtime/unit/connection/server_initiated_reauth_test.md` — RTN22 (3 tests)
-- `realtime/unit/client/realtime_timeouts.md` — RTC7 (4 tests)
+- `realtime/unit/connection/heartbeat_test.md` — RTN23 (16 tests, RTN23a subset)
+- `realtime/unit/connection/fallback_hosts_test.md` — RTN17 (core subset)
+- `realtime/unit/client/realtime_timeouts.md` — RTC7 (default + retry subset)
 
 **Depends on:** Phase 7b
 
@@ -285,10 +288,16 @@ Tasks:
 - [ ] Channels collection — `RTS1–RTS5`
 - [ ] Channel attributes — `RTL23–RTL24`
 - [ ] `whenState` — `RTL25`
+- [ ] ACK/NACK — `RTN7` (deferred from Phase 7c)
+- [ ] RTC7 attach/detach timeouts (deferred from Phase 7c)
+- [ ] RTN17e HTTP requests use same fallback host (deferred from Phase 7c)
+- [ ] RTN17j connectivity check before fallback (deferred from Phase 7c)
 
 **UTS test specs:**
 - `realtime/unit/channels/` (14 files)
 - `realtime/integration/channel_history_test.md`
+- `realtime/unit/connection/fallback_hosts_test.md` — RTN17e, RTN17j remainder
+- `realtime/unit/client/realtime_timeouts.md` — RTC7 attach/detach tests
 
 **Existing state:** Not implemented.
 
@@ -296,16 +305,20 @@ Tasks:
 
 ### Phase 9: Realtime — Auth
 
-**Goal:** Auth integration with Realtime connections.
+**Goal:** Auth integration with Realtime connections, including server-initiated
+re-authentication.
 
 Tasks:
 - [ ] Connection auth — `RSA4` Realtime parts
 - [ ] Realtime authorize — `RTC8`
 - [ ] Token renewal over connection — `RSA8d` Realtime parts
+- [ ] Server-initiated reauth — `RTN22` (AUTH message, token renewal without
+      disconnect, forced disconnect on failure) — deferred from Phase 7c
 
 **UTS test specs:**
 - `realtime/unit/auth/` (2 files)
 - `realtime/integration/auth.md`
+- `realtime/unit/connection/server_initiated_reauth_test.md` — RTN22 (3 tests)
 
 ---
 
@@ -419,23 +432,29 @@ Phase 0: Test Infrastructure
     │       │       │
     │       │       └── Phase 6: Additional REST
     │       │
-    │       └── Phase 7a: Realtime Types & Basic Connection ───┐
-    │               │                                          │
-    │               └── Phase 7b: Failures, Resume & Ping      │
-    │                       │                                  │
-    │                       └── Phase 7c: Heartbeats, Fallback │
-    │                               │                          │
-    │                               ├── Phase 8: RT Channels   │
-    │                               │       │                  │
-    │                               │       ├── Phase 10: Pres │
-    │                               │       ├── Phase 11: VCD  │
-    │                               │       ├── Phase 12: LObj │
-    │                               │       └── Phase 13: Mut  │
-    │                               │                          │
-    │                               └── Phase 9: RT Auth ──────┘
+    │       └── Phase 7a: Realtime Types & Basic Connection
+    │               │
+    │               └── Phase 7b: Failures, Resume & Ping
+    │                       │
+    │                       └── Phase 7c: Heartbeats, Fallback, Timeouts
+    │                               │
+    │                               ├── Phase 8: RT Channels (+RTN7, RTN17e/j, RTC7)
+    │                               │       │
+    │                               │       ├── Phase 10: Presence
+    │                               │       ├── Phase 11: VCDiff
+    │                               │       ├── Phase 12: LiveObjects
+    │                               │       └── Phase 13: Mutable Messages
+    │                               │
+    │                               └── Phase 9: RT Auth (+RTN22)
     │
     └── Phase 14: Hardening
 ```
+
+**Sequencing rationale:** Features that cross-cut connection, channels, and auth
+are placed in the phase where their primary dependency is satisfied:
+- RTN22 (server reauth) requires authCallback → Phase 9 (RT Auth)
+- RTN7 (ACK/NACK), RTN17e (HTTP fallback), RTC7 timeouts → Phase 8 (Channels)
+- This avoids partial implementations and deferred items within each phase.
 
 ## Notes on UTS Validation
 
