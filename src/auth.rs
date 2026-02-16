@@ -310,9 +310,17 @@ impl<'a> Auth<'a> {
     }
 
     /// Set the Authorization header in the given request.
+    ///
+    /// RSA1: Uses basic auth when an API key is provided and useTokenAuth
+    /// is false. RSA4/RSA4a: Uses token auth when a token, authCallback,
+    /// or authUrl is provided, or when useTokenAuth is true.
     pub(crate) async fn with_auth_headers(&self, req: &mut reqwest::Request) -> Result<()> {
+        // Use basic auth only when we have a key, useTokenAuth is false,
+        // and no clientId is set (RSA4b: clientId with key forces token auth).
         if let Credential::Key(k) = &self.inner().opts.credential {
-            return Self::set_basic_auth(req, k);
+            if !self.inner().opts.use_token_auth && self.inner().opts.client_id.is_none() {
+                return Self::set_basic_auth(req, k);
+            }
         }
 
         let options = AuthOptions {
@@ -320,7 +328,6 @@ impl<'a> Auth<'a> {
             ..Default::default()
         };
 
-        // TODO defaults
         let res = self.request_token(&Default::default(), &options).await?;
         Self::set_bearer_auth(req, &res.token)
     }

@@ -51,6 +51,14 @@ impl Rest {
         &self.inner.opts
     }
 
+    /// Return AuthOptions using the client's credential.
+    pub fn auth_options(&self) -> crate::auth::AuthOptions {
+        crate::auth::AuthOptions {
+            token: Some(self.inner.opts.credential.clone()),
+            ..Default::default()
+        }
+    }
+
     pub fn new(key: &str) -> Result<Self> {
         ClientOptions::new(key).rest()
     }
@@ -313,6 +321,9 @@ impl Rest {
         mut req: reqwest::Request,
         authenticate: bool,
     ) -> Result<http::Response> {
+        // Clone the request before authentication for potential retry on 401.
+        let retry_req = if authenticate { req.try_clone() } else { None };
+
         if authenticate {
             self.auth().with_auth_headers(&mut req).await?;
         }
@@ -336,7 +347,7 @@ impl Rest {
         }
 
         let status_code: u32 = res.status().as_u16().into();
-        Err(res
+        let err = res
             .json::<WrappedError>()
             .await
             .map(|e| e.error)
@@ -346,7 +357,64 @@ impl Rest {
                     status_code,
                     format!("Unexpected error: {}", err),
                 )
-            }))
+            });
+
+        // RSA4c/RSA4b4: If the server returns a 401 with a token error code
+        // (40140-40149), attempt to renew the token and retry once — but only
+        // if there is a renewal mechanism (key, authCallback, or authUrl).
+        // Static tokens (TokenDetails/TokenRequest) cannot be renewed.
+        if Self::is_token_error(&err) && self.has_token_renewal_mechanism() {
+            if let Some(mut retry) = retry_req {
+                self.auth().with_auth_headers(&mut retry).await?;
+
+                let res = tokio::time::timeout(timeout, self.inner.http_client.execute(retry))
+                    .await
+                    .map_err(|_| {
+                        Error::new(
+                            ErrorCode::TimeoutError,
+                            format!("Request timed out after {}ms", timeout.as_millis()),
+                        )
+                    })??;
+
+                if res.status().is_success() {
+                    return Ok(http::Response::new(res));
+                }
+
+                let status_code: u32 = res.status().as_u16().into();
+                return Err(res
+                    .json::<WrappedError>()
+                    .await
+                    .map(|e| e.error)
+                    .unwrap_or_else(|err| {
+                        Error::with_status(
+                            ErrorCode::InternalError,
+                            status_code,
+                            format!("Unexpected error: {}", err),
+                        )
+                    }));
+            }
+        }
+
+        Err(err)
+    }
+
+    /// Return whether an error is a token error that should trigger renewal.
+    /// Token errors have codes in the range 40140-40149.
+    fn is_token_error(err: &Error) -> bool {
+        let code = err.code.code();
+        (40140..=40149).contains(&code)
+    }
+
+    /// Return whether the client has a mechanism to renew tokens.
+    /// Only Key, Callback, and Url credentials can produce fresh tokens;
+    /// static TokenDetails and TokenRequest cannot.
+    fn has_token_renewal_mechanism(&self) -> bool {
+        matches!(
+            &self.inner.opts.credential,
+            crate::auth::Credential::Key(_)
+                | crate::auth::Credential::Callback(_)
+                | crate::auth::Credential::Url(_)
+        )
     }
 
     /// Return whether a request can be retried based on the error which
