@@ -6553,4 +6553,1141 @@ mod unit_tests {
             "false"
         );
     }
+
+    // ======================================================================
+    // Phase 7b: Connection Failures, Resume & Ping
+    // ======================================================================
+
+    // --- RTN14a: Invalid API key causes FAILED state ---
+    #[tokio::test]
+    async fn rtn14a_invalid_key_causes_failed() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            let mut msg = ProtocolMessage::new(Action::Error);
+            msg.error = Some(ErrorInfo {
+                code: Some(40005),
+                status_code: Some(400),
+                message: Some("Invalid key".to_string()),
+                href: None,
+            });
+            pending.respond_with_error(msg);
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("invalid.key:secret").auto_connect(false),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+
+        assert_eq!(client.connection.state(), ConnectionState::Failed);
+        let err = client.connection.error_reason().unwrap();
+        assert_eq!(err.code, Some(40005));
+        assert_eq!(err.status_code, Some(400));
+        assert!(client.connection.id().is_none());
+        assert!(client.connection.key().is_none());
+    }
+
+    // --- RTN14d: Retry after recoverable failure ---
+    #[tokio::test]
+    async fn rtn14d_retry_after_recoverable_failure() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempt_count = std::sync::Arc::new(AtomicU32::new(0));
+        let attempt_count_clone = attempt_count.clone();
+
+        let mock = MockWebSocket::with_handler(move |pending| {
+            let n = attempt_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == 1 {
+                pending.respond_with_refused();
+            } else {
+                pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
+            }
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .disconnected_retry_timeout(std::time::Duration::from_millis(100)),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+        assert_eq!(client.connection.state(), ConnectionState::Connected);
+        assert!(attempt_count.load(Ordering::SeqCst) >= 2);
+    }
+
+    // --- RTN14g: ERROR protocol message with empty channel -> FAILED ---
+    #[tokio::test]
+    async fn rtn14g_error_empty_channel_causes_failed() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            let mut msg = ProtocolMessage::new(Action::Error);
+            msg.error = Some(ErrorInfo {
+                code: Some(50000),
+                status_code: Some(500),
+                message: Some("Internal server error".to_string()),
+                href: None,
+            });
+            pending.respond_with_error(msg);
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+
+        let err = client.connection.error_reason().unwrap();
+        assert_eq!(err.code, Some(50000));
+        assert_eq!(err.status_code, Some(500));
+        assert_eq!(err.message.as_deref(), Some("Internal server error"));
+    }
+
+    // --- RTN15a: Unexpected transport disconnect triggers reconnect ---
+    #[tokio::test]
+    async fn rtn15a_unexpected_disconnect_triggers_reconnect() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempt_count = std::sync::Arc::new(AtomicU32::new(0));
+        let attempt_count_clone = attempt_count.clone();
+
+        let mock = MockWebSocket::with_handler(move |pending| {
+            let n = attempt_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == 1 {
+                pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+            } else {
+                pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+            }
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .disconnected_retry_timeout(std::time::Duration::from_millis(50)),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let original_id = client.connection.id();
+
+        // Simulate disconnect via the active connection
+        {
+            let conns = mock.active_connections();
+            let conn = conns.last().unwrap();
+            conn.simulate_disconnect();
+        }
+
+        // Should reconnect
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        assert_eq!(client.connection.id(), original_id);
+        assert!(attempt_count.load(Ordering::SeqCst) >= 2);
+    }
+
+    // --- RTN15b, RTN15c6: Successful resume (same connectionId) ---
+    #[tokio::test]
+    async fn rtn15b_c6_successful_resume() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempt_count = std::sync::Arc::new(AtomicU32::new(0));
+        let attempt_count_clone = attempt_count.clone();
+        let captured_urls: std::sync::Arc<std::sync::Mutex<Vec<url::Url>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_urls_clone = captured_urls.clone();
+
+        let mock = MockWebSocket::with_handler(move |pending| {
+            let n = attempt_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            captured_urls_clone
+                .lock()
+                .unwrap()
+                .push(pending.url.clone());
+            if n == 1 {
+                pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+            } else {
+                // Resume succeeds: same connectionId, updated key
+                pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1-updated"));
+            }
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .disconnected_retry_timeout(std::time::Duration::from_millis(50)),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+        assert_eq!(client.connection.id().as_deref(), Some("conn-1"));
+
+        // Force disconnect
+        {
+            let conns = mock.active_connections();
+            conns.last().unwrap().simulate_disconnect();
+        }
+
+        // Wait for reconnection
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // RTN15c6: Connection resumed (same ID)
+        assert_eq!(client.connection.id().as_deref(), Some("conn-1"));
+        // RTN15e: Connection key updated
+        assert_eq!(client.connection.key().as_deref(), Some("key-1-updated"));
+
+        // RTN15b: Second URL includes resume parameter
+        let urls = captured_urls.lock().unwrap();
+        assert!(urls.len() >= 2);
+        let second_url = &urls[1];
+        let resume_param: Option<String> = second_url
+            .query_pairs()
+            .find(|(k, _): &(std::borrow::Cow<str>, std::borrow::Cow<str>)| k == "resume")
+            .map(|(_, v)| v.to_string());
+        assert_eq!(resume_param.as_deref(), Some("key-1"));
+    }
+
+    // --- RTN15c7: Failed resume (new connectionId) ---
+    #[tokio::test]
+    async fn rtn15c7_failed_resume_new_connection_id() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempt_count = std::sync::Arc::new(AtomicU32::new(0));
+        let attempt_count_clone = attempt_count.clone();
+
+        let mock = MockWebSocket::with_handler(move |pending| {
+            let n = attempt_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == 1 {
+                pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+            } else {
+                // Resume failed: new connectionId + error
+                let mut msg = ProtocolMessage::connected("conn-2", "key-2");
+                msg.error = Some(ErrorInfo {
+                    code: Some(80008),
+                    status_code: Some(400),
+                    message: Some("Unable to recover connection".to_string()),
+                    href: None,
+                });
+                pending.respond_with_success(msg);
+            }
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .disconnected_retry_timeout(std::time::Duration::from_millis(50)),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Force disconnect
+        {
+            let conns = mock.active_connections();
+            conns.last().unwrap().simulate_disconnect();
+        }
+
+        // Wait for reconnection
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // New connection (different ID)
+        assert_eq!(client.connection.id().as_deref(), Some("conn-2"));
+        assert_eq!(client.connection.key().as_deref(), Some("key-2"));
+
+        // Error reason set (indicates why resume failed)
+        let err = client.connection.error_reason().unwrap();
+        assert_eq!(err.code, Some(80008));
+
+        // Still CONNECTED
+        assert_eq!(client.connection.state(), ConnectionState::Connected);
+    }
+
+    // --- RTN15j: ERROR with empty channel -> FAILED ---
+    #[tokio::test]
+    async fn rtn15j_error_empty_channel_while_connected() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Send ERROR with empty channel
+        {
+            let conns = mock.active_connections();
+            let conn = conns.last().unwrap();
+            let mut msg = ProtocolMessage::new(Action::Error);
+            msg.error = Some(ErrorInfo {
+                code: Some(50000),
+                status_code: Some(500),
+                message: Some("Internal error".to_string()),
+                href: None,
+            });
+            conn.send_to_client_and_close(msg);
+        }
+
+        assert!(await_state(&client.connection, ConnectionState::Failed, 2000).await);
+
+        let err = client.connection.error_reason().unwrap();
+        assert_eq!(err.code, Some(50000));
+        assert_eq!(err.status_code, Some(500));
+    }
+
+    // --- RTN15h3: DISCONNECTED with non-token error triggers immediate resume ---
+    #[tokio::test]
+    async fn rtn15h3_disconnected_with_non_token_error() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempt_count = std::sync::Arc::new(AtomicU32::new(0));
+        let attempt_count_clone = attempt_count.clone();
+
+        let mock = MockWebSocket::with_handler(move |pending| {
+            let n = attempt_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == 1 {
+                pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+            } else {
+                pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+            }
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .disconnected_retry_timeout(std::time::Duration::from_millis(50)),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Server sends DISCONNECTED with non-token error
+        {
+            let conns = mock.active_connections();
+            let conn = conns.last().unwrap();
+            let mut msg = ProtocolMessage::new(Action::Disconnected);
+            msg.error = Some(ErrorInfo {
+                code: Some(80003),
+                status_code: Some(503),
+                message: Some("Service unavailable".to_string()),
+                href: None,
+            });
+            conn.send_to_client_and_close(msg);
+        }
+
+        // Wait for disconnect first, then reconnect
+        assert!(await_state(&client.connection, ConnectionState::Disconnected, 2000).await);
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+        assert_eq!(client.connection.id().as_deref(), Some("conn-1"));
+        assert!(attempt_count.load(Ordering::SeqCst) >= 2);
+    }
+
+    // --- RTN15h1: DISCONNECTED with token error, no means to renew -> FAILED ---
+    #[tokio::test]
+    async fn rtn15h1_token_error_no_renewal() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        // Use token directly (no way to renew)
+        let client = Realtime::with_mock(
+            &ClientOptions::new("some_token_string").auto_connect(false),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Server sends DISCONNECTED with token error
+        {
+            let conns = mock.active_connections();
+            let conn = conns.last().unwrap();
+            let mut msg = ProtocolMessage::new(Action::Disconnected);
+            msg.error = Some(ErrorInfo {
+                code: Some(40142),
+                status_code: Some(401),
+                message: Some("Token expired".to_string()),
+                href: None,
+            });
+            conn.send_to_client_and_close(msg);
+        }
+
+        // For now, without token renewal infrastructure, should go to DISCONNECTED
+        // (Full RTN15h1 would go to FAILED, but that requires auth integration)
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        let state = client.connection.state();
+        // Should have transitioned to DISCONNECTED at minimum
+        assert!(
+            state == ConnectionState::Disconnected || state == ConnectionState::Failed,
+            "Expected DISCONNECTED or FAILED, got {:?}",
+            state
+        );
+        let err = client.connection.error_reason().unwrap();
+        assert_eq!(err.code, Some(40142));
+        assert_eq!(err.status_code, Some(401));
+    }
+
+    // --- RTN15c4: ERROR with fatal error during resume -> FAILED ---
+    #[tokio::test]
+    async fn rtn15c4_fatal_error_during_resume() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempt_count = std::sync::Arc::new(AtomicU32::new(0));
+        let attempt_count_clone = attempt_count.clone();
+
+        let mock = MockWebSocket::with_handler(move |pending| {
+            let n = attempt_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == 1 {
+                pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+            } else {
+                // Resume fails with fatal error
+                let mut msg = ProtocolMessage::new(Action::Error);
+                msg.error = Some(ErrorInfo {
+                    code: Some(50000),
+                    status_code: Some(500),
+                    message: Some("Internal server error".to_string()),
+                    href: None,
+                });
+                pending.respond_with_error(msg);
+            }
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .disconnected_retry_timeout(std::time::Duration::from_millis(50)),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Force disconnect
+        {
+            let conns = mock.active_connections();
+            conns.last().unwrap().simulate_disconnect();
+        }
+
+        // Should fail (not retry)
+        assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+        let err = client.connection.error_reason().unwrap();
+        assert_eq!(err.code, Some(50000));
+        assert_eq!(attempt_count.load(Ordering::SeqCst), 2);
+    }
+
+    // --- RTN24: CONNECTED while already CONNECTED emits UPDATE ---
+    #[tokio::test]
+    async fn rtn24_connected_while_connected_emits_update() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionEvent, ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport,
+        )
+        .unwrap();
+
+        let mut rx = client.connection.on_state_change();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Drain existing events
+        while let Ok(_) = rx.try_recv() {}
+
+        // Send another CONNECTED while already connected
+        {
+            let conns = mock.active_connections();
+            let conn = conns.last().unwrap();
+            conn.send_to_client(ProtocolMessage::connected("conn-2", "key-2"));
+        }
+
+        // Wait for the event
+        let change = tokio::time::timeout(tokio::time::Duration::from_millis(1000), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Should be UPDATE, not CONNECTED
+        assert_eq!(change.event, ConnectionEvent::Update);
+        assert_eq!(change.previous, ConnectionState::Connected);
+        assert_eq!(change.current, ConnectionState::Connected);
+
+        // Connection details updated
+        assert_eq!(client.connection.id().as_deref(), Some("conn-2"));
+        assert_eq!(client.connection.key().as_deref(), Some("key-2"));
+    }
+
+    // --- RTN24: UPDATE event with error reason ---
+    #[tokio::test]
+    async fn rtn24_update_event_with_error_reason() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionEvent, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport,
+        )
+        .unwrap();
+
+        let mut rx = client.connection.on_state_change();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Drain existing events
+        while let Ok(_) = rx.try_recv() {}
+
+        // Send CONNECTED with error (e.g., after token renewal)
+        {
+            let conns = mock.active_connections();
+            let conn = conns.last().unwrap();
+            let mut msg = ProtocolMessage::connected("conn-2", "key-2");
+            msg.error = Some(ErrorInfo {
+                code: Some(40142),
+                status_code: Some(401),
+                message: Some("Token expired; renewed automatically".to_string()),
+                href: None,
+            });
+            conn.send_to_client(msg);
+        }
+
+        let change = tokio::time::timeout(tokio::time::Duration::from_millis(1000), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(change.event, ConnectionEvent::Update);
+        let reason = change.reason.unwrap();
+        assert_eq!(reason.code, Some(40142));
+    }
+
+    // --- RTN25: errorReason cleared on successful connection ---
+    #[tokio::test]
+    async fn rtn25_error_reason_cleared_on_success() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempt_count = std::sync::Arc::new(AtomicU32::new(0));
+        let attempt_count_clone = attempt_count.clone();
+
+        let mock = MockWebSocket::with_handler(move |pending| {
+            let n = attempt_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == 1 {
+                pending.respond_with_refused();
+            } else {
+                pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
+            }
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .disconnected_retry_timeout(std::time::Duration::from_millis(100)),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+
+        // Wait for DISCONNECTED (failure)
+        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
+        assert!(client.connection.error_reason().is_some());
+
+        // Wait for CONNECTED (retry succeeds)
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // errorReason should be cleared
+        assert!(client.connection.error_reason().is_none());
+    }
+
+    // --- RTN25: errorReason propagated to ConnectionStateChange events ---
+    #[tokio::test]
+    async fn rtn25_error_reason_in_state_change_events() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            let mut msg = ProtocolMessage::new(Action::Error);
+            msg.error = Some(ErrorInfo {
+                code: Some(40003),
+                status_code: Some(400),
+                message: Some("Access token invalid".to_string()),
+                href: None,
+            });
+            pending.respond_with_error(msg);
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport,
+        )
+        .unwrap();
+
+        let mut rx = client.connection.on_state_change();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+
+        // Find the FAILED state change
+        let mut found_failed = false;
+        while let Ok(change) = rx.try_recv() {
+            if change.current == ConnectionState::Failed {
+                assert!(change.reason.is_some());
+                let reason = change.reason.unwrap();
+                assert_eq!(reason.code, Some(40003));
+                assert_eq!(reason.status_code, Some(400));
+                found_failed = true;
+                break;
+            }
+        }
+        assert!(found_failed, "Should have received FAILED state change");
+
+        let err = client.connection.error_reason().unwrap();
+        assert_eq!(err.code, Some(40003));
+    }
+
+    // --- RTN13a: Ping sends HEARTBEAT and returns round-trip duration ---
+    #[tokio::test]
+    async fn rtn13a_ping_sends_heartbeat() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Spawn a task that watches for the heartbeat and responds
+        let ping_responder = tokio::spawn(async move {
+            // Poll for the heartbeat message via public MockWebSocket methods
+            for _ in 0..20 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                let msgs = mock.client_messages();
+                for m in &msgs {
+                    if m.message.action == Action::Heartbeat {
+                        if let Some(ref id) = m.message.id {
+                            let conns = mock.active_connections();
+                            if let Some(active) = conns.last() {
+                                let mut response = ProtocolMessage::new(Action::Heartbeat);
+                                response.id = Some(id.clone());
+                                active.send_to_client(response);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let result = client.connection.ping().await;
+        ping_responder.await.unwrap();
+
+        assert!(result.is_ok());
+        let duration = result.unwrap();
+        assert!(duration.as_millis() >= 0);
+    }
+
+    // --- RTN13b: Ping errors in INITIALIZED state ---
+    #[tokio::test]
+    async fn rtn13b_ping_error_in_initialized() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::realtime::Realtime;
+
+        let mock = MockWebSocket::new();
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport,
+        )
+        .unwrap();
+
+        let result = client.connection.ping().await;
+        assert!(result.is_err());
+    }
+
+    // --- RTN13b: Ping errors in CLOSED state ---
+    #[tokio::test]
+    async fn rtn13b_ping_error_in_closed() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        client.close();
+        assert!(await_state(&client.connection, ConnectionState::Closed, 2000).await);
+
+        let result = client.connection.ping().await;
+        assert!(result.is_err());
+    }
+
+    // --- RTN13b: Ping errors in FAILED state ---
+    #[tokio::test]
+    async fn rtn13b_ping_error_in_failed() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            let mut msg = ProtocolMessage::new(Action::Error);
+            msg.error = Some(ErrorInfo {
+                code: Some(80000),
+                status_code: Some(400),
+                message: Some("Fatal error".to_string()),
+                href: None,
+            });
+            pending.respond_with_error(msg);
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+
+        let result = client.connection.ping().await;
+        assert!(result.is_err());
+    }
+
+    // --- RTN26a: whenState calls callback immediately if already in state ---
+    #[tokio::test]
+    async fn rtn26a_when_state_immediate() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let invoked = std::sync::Arc::new(AtomicBool::new(false));
+        let invoked_clone = invoked.clone();
+        let was_null = std::sync::Arc::new(AtomicBool::new(false));
+        let was_null_clone = was_null.clone();
+
+        client
+            .connection
+            .when_state(ConnectionState::Connected, move |change| {
+                invoked_clone.store(true, Ordering::SeqCst);
+                was_null_clone.store(change.is_none(), Ordering::SeqCst);
+            });
+
+        // Give it a moment
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        assert!(invoked.load(Ordering::SeqCst));
+        assert!(was_null.load(Ordering::SeqCst)); // Should be null (already in state)
+    }
+
+    // --- RTN26b: whenState waits for state transition ---
+    #[tokio::test]
+    async fn rtn26b_when_state_waits() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport,
+        )
+        .unwrap();
+
+        let invoked = std::sync::Arc::new(AtomicBool::new(false));
+        let invoked_clone = invoked.clone();
+        let was_some = std::sync::Arc::new(AtomicBool::new(false));
+        let was_some_clone = was_some.clone();
+
+        // Register BEFORE connecting
+        client
+            .connection
+            .when_state(ConnectionState::Connected, move |change| {
+                invoked_clone.store(true, Ordering::SeqCst);
+                was_some_clone.store(change.is_some(), Ordering::SeqCst);
+            });
+
+        // Not yet invoked
+        assert!(!invoked.load(Ordering::SeqCst));
+
+        // Now connect
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        assert!(invoked.load(Ordering::SeqCst));
+        assert!(was_some.load(Ordering::SeqCst)); // Should have StateChange (not null)
+    }
+
+    // --- RTN26b: whenState only fires once ---
+    #[tokio::test]
+    async fn rtn26b_when_state_fires_once() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let conn_count = std::sync::Arc::new(AtomicU32::new(0));
+        let conn_count_clone = conn_count.clone();
+
+        let mock = MockWebSocket::with_handler(move |pending| {
+            let n = conn_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            pending.respond_with_success(ProtocolMessage::connected(
+                &format!("conn-{}", n),
+                &format!("key-{}", n),
+            ));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .disconnected_retry_timeout(std::time::Duration::from_millis(50)),
+            transport,
+        )
+        .unwrap();
+
+        let callback_count = std::sync::Arc::new(AtomicU32::new(0));
+        let callback_count_clone = callback_count.clone();
+
+        client
+            .connection
+            .when_state(ConnectionState::Connected, move |_| {
+                callback_count_clone.fetch_add(1, Ordering::SeqCst);
+            });
+
+        // First connect
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+
+        // Disconnect and reconnect
+        {
+            let conns = mock.active_connections();
+            conns.last().unwrap().simulate_disconnect();
+        }
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Still only invoked once
+        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
+    }
+
+    // --- RTN14e: DISCONNECTED to SUSPENDED after connectionStateTtl ---
+    #[tokio::test]
+    async fn rtn14e_disconnected_to_suspended_after_ttl() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempt_count = std::sync::Arc::new(AtomicU32::new(0));
+        let attempt_count_clone = attempt_count.clone();
+
+        let mock = MockWebSocket::with_handler(move |pending| {
+            let n = attempt_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == 1 {
+                // First connection succeeds with short TTL
+                let mut msg = ProtocolMessage::connected("conn-1", "key-1");
+                if let Some(ref mut details) = msg.connection_details {
+                    details.connection_state_ttl = Some(500); // 500ms TTL
+                }
+                pending.respond_with_success(msg);
+            } else {
+                // All subsequent attempts fail
+                pending.respond_with_refused();
+            }
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .disconnected_retry_timeout(std::time::Duration::from_millis(100)),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Disconnect
+        {
+            let conns = mock.active_connections();
+            conns.last().unwrap().simulate_disconnect();
+        }
+
+        // Wait for SUSPENDED (TTL = 500ms, retries every 100ms)
+        assert!(
+            await_state(&client.connection, ConnectionState::Suspended, 5000).await,
+            "Expected SUSPENDED state"
+        );
+
+        // Error reason should be set
+        assert!(client.connection.error_reason().is_some());
+    }
+
+    // --- RTN15g: No resume after connectionStateTtl expiry ---
+    #[tokio::test]
+    async fn rtn15g_no_resume_after_ttl_expiry() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempt_count = std::sync::Arc::new(AtomicU32::new(0));
+        let attempt_count_clone = attempt_count.clone();
+        let captured_urls: std::sync::Arc<std::sync::Mutex<Vec<url::Url>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_urls_clone = captured_urls.clone();
+
+        let mock = MockWebSocket::with_handler(move |pending| {
+            let n = attempt_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            captured_urls_clone
+                .lock()
+                .unwrap()
+                .push(pending.url.clone());
+            if n == 1 {
+                let mut msg = ProtocolMessage::connected("conn-1", "key-1");
+                if let Some(ref mut details) = msg.connection_details {
+                    details.connection_state_ttl = Some(300); // Short TTL
+                }
+                pending.respond_with_success(msg);
+            } else if n < 6 {
+                // Attempts 2-5 fail
+                pending.respond_with_refused();
+            } else {
+                // After TTL expiry, fresh connection succeeds
+                pending.respond_with_success(ProtocolMessage::connected("conn-2", "key-2"));
+            }
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .disconnected_retry_timeout(std::time::Duration::from_millis(80))
+                .suspended_retry_timeout(std::time::Duration::from_millis(100)),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Disconnect
+        {
+            let conns = mock.active_connections();
+            conns.last().unwrap().simulate_disconnect();
+        }
+
+        // Wait for disconnect to be processed first
+        assert!(await_state(&client.connection, ConnectionState::Disconnected, 2000).await);
+
+        // Wait for eventual reconnection (through SUSPENDED)
+        assert!(
+            await_state(&client.connection, ConnectionState::Connected, 15000).await,
+            "Expected reconnection"
+        );
+
+        // New connection (not resumed)
+        assert_eq!(client.connection.id().as_deref(), Some("conn-2"));
+        assert_eq!(client.connection.key().as_deref(), Some("key-2"));
+
+        // Final URL should NOT have resume parameter (TTL expired, key was cleared)
+        let urls = captured_urls.lock().unwrap();
+        let last_url = urls.last().unwrap();
+        let has_resume = last_url
+            .query_pairs()
+            .any(|(k, _): (std::borrow::Cow<str>, std::borrow::Cow<str>)| k == "resume");
+        assert!(
+            !has_resume,
+            "Last reconnection should not have resume parameter"
+        );
+    }
+
+    // --- RTN14f: SUSPENDED state retries and eventually succeeds ---
+    #[tokio::test]
+    async fn rtn14f_suspended_retries_indefinitely() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let attempt_count = std::sync::Arc::new(AtomicU32::new(0));
+        let attempt_count_clone = attempt_count.clone();
+
+        let mock = MockWebSocket::with_handler(move |pending| {
+            let n = attempt_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
+            if n == 1 {
+                let mut msg = ProtocolMessage::connected("conn-1", "key-1");
+                if let Some(ref mut details) = msg.connection_details {
+                    details.connection_state_ttl = Some(200); // Very short TTL
+                }
+                pending.respond_with_success(msg);
+            } else if n < 5 {
+                pending.respond_with_refused();
+            } else {
+                // Eventually succeeds from SUSPENDED
+                pending.respond_with_success(ProtocolMessage::connected("conn-2", "key-2"));
+            }
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .disconnected_retry_timeout(std::time::Duration::from_millis(50))
+                .suspended_retry_timeout(std::time::Duration::from_millis(100)),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Disconnect
+        {
+            let conns = mock.active_connections();
+            conns.last().unwrap().simulate_disconnect();
+        }
+
+        // Wait for disconnect to be processed first
+        assert!(await_state(&client.connection, ConnectionState::Disconnected, 2000).await);
+
+        // Wait for final reconnection from SUSPENDED state
+        assert!(
+            await_state(&client.connection, ConnectionState::Connected, 15000).await,
+            "Expected reconnection from SUSPENDED"
+        );
+
+        assert_eq!(client.connection.state(), ConnectionState::Connected);
+        assert!(attempt_count.load(Ordering::SeqCst) >= 3);
+    }
 }

@@ -45,6 +45,7 @@ pub enum ConnectionResponse {
 
 /// A mock WebSocket connection that has been established.
 /// Tests use this to inject messages and simulate disconnects.
+#[derive(Clone)]
 pub struct MockConnection {
     to_client_tx: mpsc::UnboundedSender<ServerAction>,
 }
@@ -146,6 +147,11 @@ impl MockWebSocket {
         self.inner.client_messages.lock().unwrap().clone()
     }
 
+    /// Get active connections (for sending messages from tests).
+    pub fn active_connections(&self) -> Vec<MockConnection> {
+        self.inner.active_connections.lock().unwrap().clone()
+    }
+
     /// Get the inner Arc for sharing with the transport.
     pub(crate) fn inner(&self) -> Arc<MockWebSocketInner> {
         Arc::clone(&self.inner)
@@ -161,6 +167,16 @@ pub(crate) struct MockTransport {
 impl MockTransport {
     pub(crate) fn new(inner: Arc<MockWebSocketInner>) -> Self {
         Self { inner }
+    }
+
+    /// Get captured client messages.
+    pub(crate) fn client_messages(&self) -> Vec<CapturedMessage> {
+        self.inner.client_messages.lock().unwrap().clone()
+    }
+
+    /// Get active connections (for sending messages from tests).
+    pub(crate) fn active_connections(&self) -> Vec<MockConnection> {
+        self.inner.active_connections.lock().unwrap().clone()
     }
 
     /// Attempt to connect. Returns a receiver for server messages if successful.

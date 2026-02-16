@@ -72,6 +72,10 @@ pub struct ClientOptions {
     /// Custom query parameters to add to the WebSocket connection URL. RTC1f.
     pub(crate) transport_params: Option<Vec<(String, String)>>,
 
+    /// How long to wait for a realtime operation (e.g. ping, attach) to
+    /// complete. Defaults to 10s.
+    pub(crate) realtime_request_timeout: Duration,
+
     /// The hostname used in the REST API URL. Defaults to rest.ably.io.
     pub(crate) rest_host: String,
 
@@ -342,6 +346,24 @@ impl ClientOptions {
         self
     }
 
+    /// Sets the disconnected retry timeout.
+    pub fn disconnected_retry_timeout(mut self, timeout: Duration) -> Self {
+        self.disconnected_retry_timeout = timeout;
+        self
+    }
+
+    /// Sets the suspended retry timeout.
+    pub fn suspended_retry_timeout(mut self, timeout: Duration) -> Self {
+        self.suspended_retry_timeout = timeout;
+        self
+    }
+
+    /// Sets the realtime request timeout.
+    pub fn realtime_request_timeout(mut self, timeout: Duration) -> Self {
+        self.realtime_request_timeout = timeout;
+        self
+    }
+
     fn rest_url(&self) -> Result<reqwest::Url> {
         let rest_url = if self.tls {
             format!("https://{}", self.rest_host)
@@ -472,6 +494,7 @@ impl ClientOptions {
             auto_connect: true,
             echo_messages: true,
             transport_params: None,
+            realtime_request_timeout: Duration::from_secs(10),
             rest_host: REST_HOST.to_string(),
             realtime_host: "realtime.ably.io".to_string(),
             port: 80,
