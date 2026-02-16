@@ -65,9 +65,13 @@ pub struct ClientOptions {
     /// Defaults to true.
     pub(crate) auto_connect: bool,
 
-    // pub queue_messages: bool,
-    // pub echo_messages: bool,
-    // pub recover: Option<String>,
+    /// Whether messages published by this client are echoed back on
+    /// subscriptions. Defaults to true. RTC1a.
+    pub(crate) echo_messages: bool,
+
+    /// Custom query parameters to add to the WebSocket connection URL. RTC1f.
+    pub(crate) transport_params: Option<Vec<(String, String)>>,
+
     /// The hostname used in the REST API URL. Defaults to rest.ably.io.
     pub(crate) rest_host: String,
 
@@ -318,6 +322,26 @@ impl ClientOptions {
         self
     }
 
+    /// Sets whether to automatically connect when the Realtime client is
+    /// instantiated. Defaults to true.
+    pub fn auto_connect(mut self, v: bool) -> Self {
+        self.auto_connect = v;
+        self
+    }
+
+    /// Sets whether messages published by this client are echoed back on
+    /// subscriptions. Defaults to true. RTC1a.
+    pub fn echo_messages(mut self, v: bool) -> Self {
+        self.echo_messages = v;
+        self
+    }
+
+    /// Sets custom query parameters to add to the WebSocket connection URL. RTC1f.
+    pub fn transport_params(mut self, params: Vec<(String, String)>) -> Self {
+        self.transport_params = Some(params);
+        self
+    }
+
     fn rest_url(&self) -> Result<reqwest::Url> {
         let rest_url = if self.tls {
             format!("https://{}", self.rest_host)
@@ -446,6 +470,8 @@ impl ClientOptions {
             query_time: false,
             default_token_params: None,
             auto_connect: true,
+            echo_messages: true,
+            transport_params: None,
             rest_host: REST_HOST.to_string(),
             realtime_host: "realtime.ably.io".to_string(),
             port: 80,

@@ -179,37 +179,88 @@ messages, annotations are new.
 
 ---
 
-### Phase 7: Realtime — Connection
+### Phase 7a: Realtime — Types, Transport & Basic Connection
 
-**Goal:** WebSocket connection with state machine, the foundation for all Realtime.
+**Goal:** Build the foundation: types, mock WebSocket, state machine, basic
+connect/close lifecycle.
 
 Tasks:
-- [ ] WebSocket transport layer
-- [ ] Connection state machine — `RTN4`, `RTN27`
+- [ ] Add `tokio-tungstenite` WebSocket dependency
+- [ ] `ConnectionState` enum — INITIALIZED, CONNECTING, CONNECTED, DISCONNECTED,
+      SUSPENDED, CLOSING, CLOSED, FAILED
+- [ ] `ConnectionStateChange` type — previous, current, event, reason
+- [ ] `ProtocolMessage` type — action enum, fields (connectionId, connectionKey,
+      connectionSerial, connectionDetails, error, etc.)
+- [ ] `ConnectionDetails` type — connectionKey, maxIdleInterval, connectionStateTtl
+- [ ] Mock WebSocket infrastructure (matching UTS `MockWebSocket`)
 - [ ] `RealtimeClient` constructor — `RTC1`, `RTC12`
-- [ ] Connect/close — `RTC15`, `RTC16`, `RTN11`, `RTN12`
+- [ ] `Connection` type with state machine — `RTN4`
+- [ ] Connect — `RTC15`, `RTN11`
+- [ ] Close — `RTC16`, `RTN12`
 - [ ] Auto-connect — `RTN3`
+- [ ] Connection events (on/once) — `RTN4`
 - [ ] Connection ID and key — `RTN8`, `RTN9`
-- [ ] Ping — `RTN13`
-- [ ] Heartbeats — `RTN23`
-- [ ] Connection open failures — `RTN14`
-- [ ] Connection failures while connected — `RTN15`
-- [ ] Fallback hosts for Realtime — `RTN17`
 - [ ] Error reason — `RTN25`
-- [ ] `whenState` — `RTN26`
-- [ ] ACK/NACK — `RTN7`
-- [ ] Connection events — `RTN4`, `RTN24`
-- [ ] Update events — `RTN21`
-- [ ] Server-initiated reauth — `RTN22`
-- [ ] Mock WebSocket infrastructure
 
 **UTS test specs:**
 - `realtime/unit/helpers/mock_websocket.md`
-- `realtime/unit/connection/` (11 files)
-- `realtime/unit/client/` (5 files)
-- `realtime/integration/connection_lifecycle_test.md`
+- `realtime/unit/connection/auto_connect_test.md` — RTN3 (3 tests)
+- `realtime/unit/connection/connection_id_key_test.md` — RTN8, RTN9 (9 tests)
+- `realtime/unit/connection/error_reason_test.md` — RTN25 (8 tests)
+- `realtime/unit/client/realtime_client.md` — RTC1–RTC17 (subset)
+- `realtime/unit/client/client_options.md` — RSC1 (subset)
 
-**Existing state:** Not implemented. This is the largest new piece of work.
+**Existing state:** Not implemented. This sub-phase establishes all foundational
+types and the basic happy-path connection lifecycle.
+
+---
+
+### Phase 7b: Realtime — Connection Failures, Resume & Ping
+
+**Goal:** Robust connection failure handling, resume/recovery, and ping.
+
+Tasks:
+- [ ] Connection open failures — `RTN14` (invalid key, timeout, retry,
+      DISCONNECTED→SUSPENDED transition)
+- [ ] Connection failures while connected — `RTN15` (resume with connectionKey,
+      failed resume, token errors, connectionStateTtl expiry)
+- [ ] Ping — `RTN13` (HEARTBEAT send/receive, timeout, state-dependent behavior)
+- [ ] `whenState` — `RTN26`
+- [ ] Update events — `RTN24`
+
+**UTS test specs:**
+- `realtime/unit/connection/connection_open_failures_test.md` — RTN14 (8 tests)
+- `realtime/unit/connection/connection_failures_test.md` — RTN15 (15 tests)
+- `realtime/unit/connection/connection_ping_test.md` — RTN13 (16 tests)
+- `realtime/unit/connection/when_state_test.md` — RTN26 (5 tests)
+- `realtime/unit/connection/update_events_test.md` — RTN24 (4 tests)
+
+**Depends on:** Phase 7a
+
+---
+
+### Phase 7c: Realtime — Heartbeats, Fallback & Re-auth
+
+**Goal:** Heartbeat idle detection, fallback host handling, and server-initiated
+re-authentication.
+
+Tasks:
+- [ ] Heartbeats / idle detection — `RTN23` (HEARTBEAT protocol or ping frames,
+      maxIdleInterval, idle timeout → reconnect)
+- [ ] Fallback hosts for Realtime — `RTN17` (primary domain preference,
+      connectivity check, random ordering)
+- [ ] Server-initiated reauth — `RTN22` (AUTH message, token renewal without
+      disconnect, forced disconnect on failure)
+- [ ] ACK/NACK — `RTN7`
+- [ ] Timeout configuration — `RTC7`
+
+**UTS test specs:**
+- `realtime/unit/connection/heartbeat_test.md` — RTN23 (16 tests)
+- `realtime/unit/connection/fallback_hosts_test.md` — RTN17 (8 tests)
+- `realtime/unit/connection/server_initiated_reauth_test.md` — RTN22 (3 tests)
+- `realtime/unit/client/realtime_timeouts.md` — RTC7 (4 tests)
+
+**Depends on:** Phase 7b
 
 ---
 
@@ -368,19 +419,20 @@ Phase 0: Test Infrastructure
     │       │       │
     │       │       └── Phase 6: Additional REST
     │       │
-    │       └── Phase 7: Realtime Connection ──────────────────┐
+    │       └── Phase 7a: Realtime Types & Basic Connection ───┐
     │               │                                          │
-    │               ├── Phase 8: Realtime Channels             │
-    │               │       │                                  │
-    │               │       ├── Phase 10: Realtime Presence    │
-    │               │       │                                  │
-    │               │       ├── Phase 11: Delta/VCDiff         │
-    │               │       │                                  │
-    │               │       ├── Phase 12: LiveObjects          │
-    │               │       │                                  │
-    │               │       └── Phase 13: Mutable Msgs         │
-    │               │                                          │
-    │               └── Phase 9: Realtime Auth ────────────────┘
+    │               └── Phase 7b: Failures, Resume & Ping      │
+    │                       │                                  │
+    │                       └── Phase 7c: Heartbeats, Fallback │
+    │                               │                          │
+    │                               ├── Phase 8: RT Channels   │
+    │                               │       │                  │
+    │                               │       ├── Phase 10: Pres │
+    │                               │       ├── Phase 11: VCD  │
+    │                               │       ├── Phase 12: LObj │
+    │                               │       └── Phase 13: Mut  │
+    │                               │                          │
+    │                               └── Phase 9: RT Auth ──────┘
     │
     └── Phase 14: Hardening
 ```
