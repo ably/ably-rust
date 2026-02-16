@@ -4914,4 +4914,761 @@ mod unit_tests {
 
         Ok(())
     }
+
+    // ===============================================================
+    // Phase 6 — Additional REST Features
+    // ===============================================================
+
+    // ---------------------------------------------------------------
+    // RSC16 — time() returns server time
+    // UTS: rest/unit/time.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc16_time_returns_server_time() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            assert_eq!(req.url.path(), "/time");
+            assert_eq!(req.method, reqwest::Method::GET);
+            MockResponse::json(200, &json!([1704067200000_i64]))
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let time = client.time().await?;
+        assert_eq!(time.timestamp_millis(), 1704067200000);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC16 — time() request format (GET /time with Ably headers)
+    // UTS: rest/unit/time.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc16_time_request_format() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([1704067200000_i64])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client.time().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].method, reqwest::Method::GET);
+        assert_eq!(reqs[0].url.path(), "/time");
+        assert!(reqs[0].headers.contains_key("x-ably-version"));
+        assert!(reqs[0].headers.contains_key("ably-agent"));
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC16 — time() error handling
+    // UTS: rest/unit/time.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc16_time_error_handling() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(
+            500,
+            &json!({"error": {"message": "Internal server error", "code": 50000, "statusCode": 500}}),
+        ));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .fallback_hosts(vec![])
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let err = client.time().await.unwrap_err();
+        assert_eq!(err.status_code, Some(500));
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC6a — stats() returns PaginatedResult with Stats objects
+    // UTS: rest/unit/stats.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc6a_stats_returns_paginated_result() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(
+            200,
+            &json!([
+                {
+                    "intervalId": "2024-01-01:00:00",
+                    "unit": "hour",
+                    "all": {
+                        "messages": {"count": 100.0, "data": 5000.0},
+                        "all": {"count": 100.0, "data": 5000.0}
+                    }
+                },
+                {
+                    "intervalId": "2024-01-01:01:00",
+                    "unit": "hour",
+                    "all": {
+                        "messages": {"count": 150.0, "data": 7500.0},
+                        "all": {"count": 150.0, "data": 7500.0}
+                    }
+                }
+            ]),
+        ));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let page = client.stats().send().await?;
+        let items = page.items().await?;
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].interval_id, "2024-01-01:00:00");
+        assert_eq!(items[1].interval_id, "2024-01-01:01:00");
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs[0].method, reqwest::Method::GET);
+        assert_eq!(reqs[0].url.path(), "/stats");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC6a — stats() sends authenticated request
+    // UTS: rest/unit/stats.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc6a_stats_authenticated() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client.stats().send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert!(reqs[0].headers.contains_key("authorization"));
+        assert!(reqs[0].headers.contains_key("x-ably-version"));
+        assert!(reqs[0].headers.contains_key("ably-agent"));
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC6b2 — stats() with direction parameter
+    // UTS: rest/unit/stats.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc6b2_stats_direction_forwards() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client.stats().forwards().send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let query: Vec<(String, String)> = reqs[0]
+            .url
+            .query_pairs()
+            .map(|(k, v): (std::borrow::Cow<str>, std::borrow::Cow<str>)| {
+                (k.to_string(), v.to_string())
+            })
+            .collect();
+        assert_eq!(
+            query.iter().find(|(k, _)| k == "direction").unwrap().1,
+            "forwards"
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC6b2 — stats() direction defaults to backwards (omitted)
+    // UTS: rest/unit/stats.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc6b2_stats_default_direction() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client.stats().send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let query: Vec<(String, String)> = reqs[0]
+            .url
+            .query_pairs()
+            .map(|(k, v): (std::borrow::Cow<str>, std::borrow::Cow<str>)| {
+                (k.to_string(), v.to_string())
+            })
+            .collect();
+        // Direction should be absent (server default) or "backwards"
+        let direction = query.iter().find(|(k, _)| k == "direction");
+        assert!(
+            direction.is_none() || direction.unwrap().1 == "backwards",
+            "default direction should be absent or 'backwards'"
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC6b3 — stats() with limit parameter
+    // UTS: rest/unit/stats.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc6b3_stats_limit() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client.stats().limit(10).send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let query: Vec<(String, String)> = reqs[0]
+            .url
+            .query_pairs()
+            .map(|(k, v): (std::borrow::Cow<str>, std::borrow::Cow<str>)| {
+                (k.to_string(), v.to_string())
+            })
+            .collect();
+        assert_eq!(query.iter().find(|(k, _)| k == "limit").unwrap().1, "10");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC6b1 — stats() with start and end parameters
+    // UTS: rest/unit/stats.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc6b1_stats_start_and_end() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .stats()
+            .start("1704067200000")
+            .end("1706745599000")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let query: Vec<(String, String)> = reqs[0]
+            .url
+            .query_pairs()
+            .map(|(k, v): (std::borrow::Cow<str>, std::borrow::Cow<str>)| {
+                (k.to_string(), v.to_string())
+            })
+            .collect();
+        assert_eq!(
+            query.iter().find(|(k, _)| k == "start").unwrap().1,
+            "1704067200000"
+        );
+        assert_eq!(
+            query.iter().find(|(k, _)| k == "end").unwrap().1,
+            "1706745599000"
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC6a — stats() with no parameters sends no query params
+    // UTS: rest/unit/stats.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc6a_stats_no_params() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client.stats().send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs[0].url.path(), "/stats");
+        let query: Vec<(String, String)> = reqs[0]
+            .url
+            .query_pairs()
+            .map(|(k, v): (std::borrow::Cow<str>, std::borrow::Cow<str>)| {
+                (k.to_string(), v.to_string())
+            })
+            .collect();
+        // Stats-specific params should be absent
+        assert!(query.iter().find(|(k, _)| k == "start").is_none());
+        assert!(query.iter().find(|(k, _)| k == "end").is_none());
+        assert!(query.iter().find(|(k, _)| k == "limit").is_none());
+        assert!(query.iter().find(|(k, _)| k == "direction").is_none());
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC6a — stats() empty results
+    // UTS: rest/unit/stats.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc6a_stats_empty_results() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let page = client.stats().send().await?;
+        let items = page.items().await?;
+        assert_eq!(items.len(), 0);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC6a — stats() error handling
+    // UTS: rest/unit/stats.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc6a_stats_error_handling() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(
+            401,
+            &json!({"error": {"message": "Unauthorized", "code": 40100, "statusCode": 401}}),
+        ));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let result = client.stats().send().await;
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert_eq!(err.status_code, Some(401));
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC6b — stats() with all parameters combined
+    // UTS: rest/unit/stats.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc6b_stats_all_params() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .stats()
+            .start("1704067200000")
+            .end("1706745599000")
+            .forwards()
+            .limit(50)
+            .params(&[("unit", "hour")])
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let query: Vec<(String, String)> = reqs[0]
+            .url
+            .query_pairs()
+            .map(|(k, v): (std::borrow::Cow<str>, std::borrow::Cow<str>)| {
+                (k.to_string(), v.to_string())
+            })
+            .collect();
+        assert_eq!(
+            query.iter().find(|(k, _)| k == "start").unwrap().1,
+            "1704067200000"
+        );
+        assert_eq!(
+            query.iter().find(|(k, _)| k == "end").unwrap().1,
+            "1706745599000"
+        );
+        assert_eq!(
+            query.iter().find(|(k, _)| k == "direction").unwrap().1,
+            "forwards"
+        );
+        assert_eq!(query.iter().find(|(k, _)| k == "limit").unwrap().1, "50");
+        assert_eq!(query.iter().find(|(k, _)| k == "unit").unwrap().1, "hour");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC19f — request() supports HTTP methods
+    // UTS: rest/unit/request.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc19f_request_http_methods() -> Result<()> {
+        use crate::http::Method;
+
+        for method in [
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ] {
+            let mock = MockHttpClient::new();
+            mock.queue_response(MockResponse::json(200, &json!([])));
+
+            let client = ClientOptions::new("appId.keyId:keySecret")
+                .use_binary_protocol(false)
+                .rest_with_http_client(Box::new(mock))
+                .unwrap();
+
+            client.request(method.clone(), "/test").send().await?;
+
+            let reqs = get_mock(&client).captured_requests();
+            assert_eq!(reqs[0].method, method);
+            assert_eq!(reqs[0].url.path(), "/test");
+        }
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC19f — request() query parameters
+    // UTS: rest/unit/request.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc19f_request_query_params() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .request(crate::http::Method::GET, "/channels/test/messages")
+            .params(&[("limit", "10"), ("direction", "backwards")])
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let query: Vec<(String, String)> = reqs[0]
+            .url
+            .query_pairs()
+            .map(|(k, v): (std::borrow::Cow<str>, std::borrow::Cow<str>)| {
+                (k.to_string(), v.to_string())
+            })
+            .collect();
+        assert_eq!(query.iter().find(|(k, _)| k == "limit").unwrap().1, "10");
+        assert_eq!(
+            query.iter().find(|(k, _)| k == "direction").unwrap().1,
+            "backwards"
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC19f — request() custom headers
+    // UTS: rest/unit/request.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc19f_request_custom_headers() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let mut headers = crate::http::HeaderMap::new();
+        headers.insert("X-Custom-Header", "custom-value".parse().unwrap());
+
+        client
+            .request(crate::http::Method::GET, "/test")
+            .headers(headers)
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(
+            reqs[0]
+                .headers
+                .get("x-custom-header")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "custom-value"
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC19f — request() body sent correctly
+    // UTS: rest/unit/request.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc19f_request_body() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(201, &json!({"id": "123"})));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .request(crate::http::Method::POST, "/channels/test/messages")
+            .body(&json!({"name": "event", "data": "payload"}))
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_ref().unwrap()).unwrap();
+        assert_eq!(body["name"], "event");
+        assert_eq!(body["data"], "payload");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC19b — request() uses configured authentication
+    // UTS: rest/unit/request.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc19b_request_uses_auth() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .request(crate::http::Method::GET, "/test")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let auth = reqs[0]
+            .headers
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            auth.starts_with("Basic "),
+            "expected Basic auth, got: {}",
+            auth
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC19c — request() protocol headers (JSON)
+    // UTS: rest/unit/request.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc19c_request_json_protocol_headers() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .request(crate::http::Method::GET, "/test")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(
+            reqs[0].headers.get("accept").unwrap().to_str().unwrap(),
+            "application/json"
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC19c — request() protocol headers (MsgPack)
+    // UTS: rest/unit/request.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc19c_request_msgpack_protocol_headers() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::msgpack(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(true)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .request(crate::http::Method::GET, "/test")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(
+            reqs[0].headers.get("accept").unwrap().to_str().unwrap(),
+            "application/x-msgpack"
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL1k3 — No ID generated when idempotent publishing disabled
+    // UTS: rest/unit/channel/idempotency.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl1k3_no_id_when_idempotent_disabled() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(201, &json!({})));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        // idempotent_rest_publishing defaults to false in this SDK
+        let channel = client.channels().get("test");
+        channel
+            .publish()
+            .name("event")
+            .string("data")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_ref().unwrap()).unwrap();
+
+        // No automatic ID should be added when disabled
+        assert!(
+            body.get("id").is_none() || body["id"].is_null(),
+            "id should not be set when idempotent publishing is disabled"
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL1k — Client-supplied ID preserved
+    // UTS: rest/unit/channel/idempotency.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl1k_client_supplied_id_preserved() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(201, &json!({})));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let channel = client.channels().get("test");
+        channel
+            .publish()
+            .id("my-custom-id")
+            .name("event")
+            .string("data")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_ref().unwrap()).unwrap();
+
+        assert_eq!(body["id"], "my-custom-id");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC19 — request() path with leading slash
+    // UTS: rest/unit/request.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc19f_request_path_leading_slash() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .request(crate::http::Method::GET, "/channels/test")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs[0].url.path(), "/channels/test");
+
+        Ok(())
+    }
 }
