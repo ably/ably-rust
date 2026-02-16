@@ -819,9 +819,9 @@ pub struct Message {
     pub data: Data,
     #[serde(default, skip_serializing_if = "Encoding::is_none")]
     pub encoding: Encoding,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extras: Option<json::Map>,
@@ -950,6 +950,17 @@ fn decode_once(data: &mut Data, encoding: &str, opts: Option<&ChannelOptions>) -
             Data::String(s) => serde_json::from_str::<serde_json::Value>(s)
                 .map(Into::into)
                 .map_err(Into::into),
+            Data::Binary(b) => {
+                let s = std::str::from_utf8(b).map_err(|_| {
+                    Error::new(
+                        ErrorCode::InvalidMessageDataOrEncoding,
+                        "invalid utf-8 in JSON message data",
+                    )
+                })?;
+                serde_json::from_str::<serde_json::Value>(s)
+                    .map(Into::into)
+                    .map_err(Into::into)
+            }
             _ => Err(Error::new(
                 ErrorCode::InvalidMessageDataOrEncoding,
                 "invalid JSON message data",

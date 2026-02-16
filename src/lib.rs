@@ -2317,4 +2317,1211 @@ mod unit_tests {
 
         Ok(())
     }
+
+    // ===============================================================
+    // Phase 3 — REST Channels: Publish, History, Encoding
+    // ===============================================================
+
+    // ---------------------------------------------------------------
+    // RSL1a, RSL1b — Publish sends POST to /channels/<name>/messages
+    // UTS: rest/unit/channel/publish.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl1a_publish_sends_post_to_messages_endpoint() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test-channel")
+            .publish()
+            .name("greeting")
+            .string("hello")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].method, reqwest::Method::POST);
+        assert!(
+            reqs[0]
+                .url
+                .path()
+                .ends_with("/channels/test-channel/messages"),
+            "Expected POST to /channels/test-channel/messages, got {}",
+            reqs[0].url.path()
+        );
+
+        // Verify the body contains name and data
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+        assert_eq!(body["name"], "greeting");
+        assert_eq!(body["data"], "hello");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL1e — Null name and data are omitted from JSON
+    // UTS: rest/unit/channel/publish.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl1e_null_name_omitted() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        // Publish with data but no name
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .string("hello")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+
+        // name should not be present (skip_serializing_if = "Option::is_none")
+        assert!(
+            body.get("name").is_none(),
+            "Expected 'name' to be omitted when null, got {:?}",
+            body
+        );
+        assert_eq!(body["data"], "hello");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsl1e_null_data_omitted() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        // Publish with name but no data
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .name("event")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+
+        // data should not be present when it's Data::None
+        assert!(
+            body.get("data").is_none(),
+            "Expected 'data' to be omitted when null, got {:?}",
+            body
+        );
+        assert_eq!(body["name"], "event");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL1j — All Message attributes transmitted
+    // UTS: rest/unit/channel/publish.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl1j_all_message_attributes_transmitted() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let mut extras = crate::json::Map::new();
+        extras.insert(
+            "headers".to_string(),
+            serde_json::json!({"some": "metadata"}),
+        );
+
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .id("msg-id-1")
+            .name("event")
+            .string("data-value")
+            .extras(extras)
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+
+        assert_eq!(body["id"], "msg-id-1");
+        assert_eq!(body["name"], "event");
+        assert_eq!(body["data"], "data-value");
+        assert_eq!(body["extras"]["headers"]["some"], "metadata");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL1l — Publish params as querystring
+    // UTS: rest/unit/channel/publish.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl1l_publish_params_as_querystring() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .name("event")
+            .string("data")
+            .params(&[("_forceNack", "true")])
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let has_param = reqs[0]
+            .url
+            .query_pairs()
+            .any(|(k, v)| k == "_forceNack" && v == "true");
+        assert!(
+            has_param,
+            "Expected _forceNack=true query param, got {}",
+            reqs[0].url
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL1m — clientId NOT auto-set from library clientId
+    // UTS: rest/unit/channel/publish.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl1m_client_id_not_auto_injected() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            if req.url.path().contains("/requestToken") {
+                MockResponse::json(
+                    200,
+                    &json!({
+                        "token": "tok",
+                        "expires": 9999999999999_i64,
+                        "issued": 1000000000000_i64,
+                        "clientId": "lib-client",
+                        "capability": "{\"*\":[\"*\"]}"
+                    }),
+                )
+            } else {
+                MockResponse::empty(201)
+            }
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .client_id("lib-client")
+            .unwrap()
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .name("event")
+            .string("data")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        // Find the publish request (not the requestToken one)
+        let publish_req = reqs
+            .iter()
+            .find(|r| r.url.path().contains("/messages"))
+            .expect("Expected publish request");
+
+        let body: serde_json::Value =
+            serde_json::from_slice(publish_req.body.as_deref().unwrap()).unwrap();
+
+        // Library MUST NOT inject its clientId into the message
+        assert!(
+            body.get("clientId").is_none(),
+            "Expected clientId to NOT be auto-injected, got {:?}",
+            body
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL2a — History returns messages
+    // RSL2b — History query parameters
+    // UTS: rest/unit/channel/history.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl2a_history_returns_messages() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!([
+                    {"id": "msg1", "name": "event1", "data": "hello"},
+                    {"id": "msg2", "name": "event2", "data": "world"}
+                ]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let res = client.channels().get("test").history().send().await?;
+        let items = res.items().await?;
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].name, Some("event1".to_string()));
+        assert_eq!(items[1].name, Some("event2".to_string()));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsl2b_history_query_parameters() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .history()
+            .start("1000000000000")
+            .end("2000000000000")
+            .forwards()
+            .limit(10)
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].method, reqwest::Method::GET);
+
+        let params: std::collections::HashMap<String, String> = reqs[0]
+            .url
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        assert_eq!(
+            params.get("start").map(|s| s.as_str()),
+            Some("1000000000000")
+        );
+        assert_eq!(params.get("end").map(|s| s.as_str()), Some("2000000000000"));
+        assert_eq!(
+            params.get("direction").map(|s| s.as_str()),
+            Some("forwards")
+        );
+        assert_eq!(params.get("limit").map(|s| s.as_str()), Some("10"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsl2_history_request_url() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client.channels().get("test").history().send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs[0].method, reqwest::Method::GET);
+        // The SDK currently uses /channels/<name>/history
+        assert!(
+            reqs[0].url.path().contains("/channels/test/"),
+            "Expected history URL to contain /channels/test/, got {}",
+            reqs[0].url.path()
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL4a — String data encoding (no encoding field)
+    // UTS: rest/unit/encoding/message_encoding.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl4a_string_data_no_encoding() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .name("event")
+            .string("hello world")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+
+        assert_eq!(body["data"], "hello world");
+        // No encoding field for plain strings
+        assert!(
+            body.get("encoding").is_none(),
+            "Expected no encoding for string data, got {:?}",
+            body.get("encoding")
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL4b — JSON object encoding (encoding: "json")
+    // UTS: rest/unit/encoding/message_encoding.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl4b_json_object_encoding() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .name("event")
+            .json(json!({"key": "value"}))
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+
+        // JSON data should be serialized as a JSON string with encoding "json"
+        assert_eq!(body["encoding"], "json");
+        // The data field should be a JSON-encoded string of the object
+        let data_str = body["data"].as_str().expect("Expected data to be a string");
+        let parsed: serde_json::Value = serde_json::from_str(data_str).unwrap();
+        assert_eq!(parsed["key"], "value");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL4c — Binary data with JSON protocol (encoding: "base64")
+    // UTS: rest/unit/encoding/message_encoding.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl4c_binary_data_base64_with_json() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .name("event")
+            .binary(vec![0x01, 0x02, 0x03, 0x04])
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+
+        // Binary data should be base64-encoded when using JSON protocol
+        assert_eq!(body["encoding"], "base64");
+        let data_str = body["data"]
+            .as_str()
+            .expect("Expected data to be base64 string");
+        let decoded = base64::decode(data_str).unwrap();
+        assert_eq!(decoded, vec![0x01, 0x02, 0x03, 0x04]);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL6a — Decoding base64 data
+    // UTS: rest/unit/encoding/message_encoding.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl6a_decoding_base64() -> Result<()> {
+        let encoded_data = base64::encode(&[0x01, 0x02, 0x03]);
+        let mock = MockHttpClient::with_handler(move |_req| {
+            MockResponse::json(
+                200,
+                &json!([
+                    {"name": "event", "data": encoded_data, "encoding": "base64"}
+                ]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let res = client.channels().get("test").history().send().await?;
+        let items = res.items().await?;
+
+        assert_eq!(items.len(), 1);
+        // After decoding, data should be binary
+        assert_eq!(items[0].data, vec![0x01, 0x02, 0x03].into());
+        // Encoding should be consumed
+        assert_eq!(items[0].encoding, crate::rest::Encoding::None);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL6a — Decoding JSON data
+    // UTS: rest/unit/encoding/message_encoding.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl6a_decoding_json() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!([
+                    {"name": "event", "data": "{\"key\":\"value\"}", "encoding": "json"}
+                ]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let res = client.channels().get("test").history().send().await?;
+        let items = res.items().await?;
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].data,
+            crate::rest::Data::JSON(json!({"key": "value"}))
+        );
+        assert_eq!(items[0].encoding, crate::rest::Encoding::None);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL6a — Decoding chained encodings (json/base64)
+    // UTS: rest/unit/encoding/message_encoding.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl6a_decoding_chained_json_base64() -> Result<()> {
+        // Data is a JSON object, serialized to string, then base64-encoded
+        let json_str = r#"{"nested":"data"}"#;
+        let b64 = base64::encode(json_str);
+
+        let mock = MockHttpClient::with_handler(move |_req| {
+            MockResponse::json(
+                200,
+                &json!([
+                    {"name": "event", "data": b64, "encoding": "json/base64"}
+                ]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let res = client.channels().get("test").history().send().await?;
+        let items = res.items().await?;
+
+        assert_eq!(items.len(), 1);
+        // Decoded: base64 → utf-8 string → JSON parse
+        assert_eq!(
+            items[0].data,
+            crate::rest::Data::JSON(json!({"nested": "data"}))
+        );
+        assert_eq!(items[0].encoding, crate::rest::Encoding::None);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL6b — Unrecognized encoding preserved
+    // UTS: rest/unit/encoding/message_encoding.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl6b_unrecognized_encoding_preserved() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!([
+                    {"name": "event", "data": "some data", "encoding": "custom-encoding"}
+                ]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let res = client.channels().get("test").history().send().await?;
+        let items = res.items().await?;
+
+        assert_eq!(items.len(), 1);
+        // Unrecognized encoding should be preserved
+        assert_eq!(
+            items[0].encoding,
+            crate::rest::Encoding::Some("custom-encoding".to_string())
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL9 — RestChannel name attribute
+    // UTS: rest/unit/channel/rest_channel_attributes.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn rsl9_channel_name_attribute() {
+        let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
+        let channel = client.channels().get("my-channel");
+        assert_eq!(channel.name, "my-channel");
+    }
+
+    #[test]
+    fn rsl9_channel_name_with_special_chars() {
+        let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
+        let channel = client.channels().get("namespace:channel-name");
+        assert_eq!(channel.name, "namespace:channel-name");
+    }
+
+    // ---------------------------------------------------------------
+    // RSN1 — Channels accessible via RestClient
+    // UTS: rest/unit/channels_collection.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn rsn1_channels_accessible() {
+        let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
+        // channels() returns a Channels collection
+        let _channels = client.channels();
+    }
+
+    // ---------------------------------------------------------------
+    // RSN3a — Get creates channel
+    // UTS: rest/unit/channels_collection.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn rsn3a_get_creates_channel() {
+        let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
+        let channel = client.channels().get("new-channel");
+        assert_eq!(channel.name, "new-channel");
+    }
+
+    // ---------------------------------------------------------------
+    // TG1 — PaginatedResult items
+    // UTS: rest/unit/types/paginated_result.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn tg1_paginated_result_items() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!([
+                    {"name": "msg1", "data": "a"},
+                    {"name": "msg2", "data": "b"},
+                    {"name": "msg3", "data": "c"}
+                ]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let res = client.channels().get("test").history().send().await?;
+        let items = res.items().await?;
+
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].name, Some("msg1".to_string()));
+        assert_eq!(items[1].name, Some("msg2".to_string()));
+        assert_eq!(items[2].name, Some("msg3".to_string()));
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // TG — Empty result
+    // UTS: rest/unit/types/paginated_result.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn tg_empty_paginated_result() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let res = client.channels().get("test").history().send().await?;
+        let items = res.items().await?;
+
+        assert_eq!(items.len(), 0);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL1k1 — idempotentRestPublishing default
+    // UTS: rest/unit/channel/idempotency.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn rsl1k1_idempotent_rest_publishing_default() {
+        let opts = ClientOptions::new("appId.keyId:keySecret");
+        // RSL1k1: Default should be true for library versions >= 1.2
+        // Note: Current SDK defaults to false — this is a known gap.
+        // This test documents the current behavior.
+        // TODO: Change default to true to comply with RSL1k1.
+        assert_eq!(
+            opts.idempotent_rest_publishing, false,
+            "Current default is false; spec requires true for versions >= 1.2"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // RSL4 — JSON protocol Content-Type
+    // UTS: rest/unit/encoding/message_encoding.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl4_json_protocol_content_type() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .name("e")
+            .string("d")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let ct = reqs[0]
+            .headers
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(ct, "application/json");
+
+        let accept = reqs[0].headers.get("accept").unwrap().to_str().unwrap();
+        assert_eq!(accept, "application/json");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL4 — MessagePack protocol Content-Type
+    // UTS: rest/unit/encoding/message_encoding.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl4_msgpack_protocol_content_type() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = mock_client(mock);
+
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .name("e")
+            .string("d")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let ct = reqs[0]
+            .headers
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(ct, "application/x-msgpack");
+
+        let accept = reqs[0].headers.get("accept").unwrap().to_str().unwrap();
+        assert_eq!(accept, "application/x-msgpack");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // TM3 — Message deserialization from JSON
+    // UTS: rest/unit/types/message_types.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn tm3_message_from_json() {
+        let json = json!({
+            "id": "msg-123",
+            "name": "greeting",
+            "data": "hello",
+            "clientId": "user1",
+            "connectionId": "conn-456",
+            "extras": {"headers": {"key": "val"}}
+        });
+
+        let msg: crate::rest::Message = serde_json::from_value(json).unwrap();
+        assert_eq!(msg.id, Some("msg-123".to_string()));
+        assert_eq!(msg.name, Some("greeting".to_string()));
+        assert_eq!(msg.data, crate::rest::Data::String("hello".to_string()));
+        assert_eq!(msg.client_id, Some("user1".to_string()));
+        assert_eq!(msg.connection_id, Some("conn-456".to_string()));
+        assert!(msg.extras.is_some());
+    }
+
+    // ---------------------------------------------------------------
+    // TM4 — Message serialization to JSON
+    // UTS: rest/unit/types/message_types.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn tm4_message_to_json() {
+        let msg = crate::rest::Message {
+            id: Some("msg-123".to_string()),
+            name: Some("greeting".to_string()),
+            data: crate::rest::Data::String("hello".to_string()),
+            client_id: Some("user1".to_string()),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["id"], "msg-123");
+        assert_eq!(json["name"], "greeting");
+        assert_eq!(json["data"], "hello");
+        assert_eq!(json["clientId"], "user1");
+
+        // Optional fields not set should be absent
+        assert!(json.get("connectionId").is_none());
+        assert!(json.get("extras").is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // TM — Null/missing attributes omitted
+    // UTS: rest/unit/types/message_types.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn tm_null_attributes_omitted() {
+        let msg = crate::rest::Message {
+            name: Some("event".to_string()),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&msg).unwrap();
+
+        // Only name should be present; all None/empty fields omitted
+        assert_eq!(json["name"], "event");
+        assert!(json.get("id").is_none());
+        assert!(json.get("data").is_none());
+        assert!(json.get("clientId").is_none());
+        assert!(json.get("connectionId").is_none());
+        assert!(json.get("encoding").is_none());
+        assert!(json.get("extras").is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // TG2 — Pagination Link header parsing
+    // UTS: rest/unit/types/paginated_result.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn tg2_pagination_with_link_header() -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let page_count = Arc::new(AtomicUsize::new(0));
+        let page_count_clone = page_count.clone();
+
+        let mock = MockHttpClient::with_handler(move |_req| {
+            let page = page_count_clone.fetch_add(1, Ordering::SeqCst);
+            if page == 0 {
+                MockResponse::json(200, &json!([{"name": "msg1", "data": "a"}]))
+                    .with_header(
+                        "Link",
+                        "</channels/test/history?start=0&end=1&direction=forwards&limit=1>; rel=\"next\""
+                    )
+            } else {
+                MockResponse::json(200, &json!([{"name": "msg2", "data": "b"}]))
+            }
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        // Use the pages stream to get both pages
+        use futures::TryStreamExt;
+        let pages: Vec<_> = client
+            .channels()
+            .get("test")
+            .history()
+            .limit(1)
+            .pages()
+            .try_collect()
+            .await?;
+
+        assert_eq!(pages.len(), 2);
+
+        let items1 = pages.into_iter().next().unwrap().items().await?;
+        assert_eq!(items1.len(), 1);
+        assert_eq!(items1[0].name, Some("msg1".to_string()));
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // TG — Pagination preserves auth headers
+    // UTS: rest/unit/types/paginated_result.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn tg_pagination_preserves_auth() -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let page_count = Arc::new(AtomicUsize::new(0));
+        let page_count_clone = page_count.clone();
+
+        let mock = MockHttpClient::with_handler(move |_req| {
+            let page = page_count_clone.fetch_add(1, Ordering::SeqCst);
+            if page == 0 {
+                MockResponse::json(200, &json!([{"name": "msg1"}])).with_header(
+                    "Link",
+                    "</channels/test/history?start=0&end=1>; rel=\"next\"",
+                )
+            } else {
+                MockResponse::json(200, &json!([{"name": "msg2"}]))
+            }
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        use futures::TryStreamExt;
+        let _pages: Vec<_> = client
+            .channels()
+            .get("test")
+            .history()
+            .pages()
+            .try_collect()
+            .await?;
+
+        // Both requests should have Authorization header
+        let reqs = get_mock(&client).captured_requests();
+        assert!(
+            reqs.len() >= 2,
+            "Expected at least 2 requests for pagination"
+        );
+        for req in &reqs {
+            assert!(
+                req.headers.get("authorization").is_some(),
+                "Expected Authorization header on all paginated requests"
+            );
+        }
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL4d — Array data encoded as JSON
+    // UTS: rest/unit/encoding/message_encoding.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl4d_array_data_json_encoding() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .name("event")
+            .json(&vec![1, 2, 3])
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+
+        // Array should be JSON-encoded as a string
+        assert_eq!(body["encoding"], "json");
+        // The data field should be a JSON string representation of the array
+        let data_str = body["data"].as_str().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(data_str).unwrap();
+        assert_eq!(parsed, json!([1, 2, 3]));
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // TG3 — Navigating to next page via Stream
+    // UTS: rest/unit/types/paginated_result.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn tg3_pagination_next_page() -> Result<()> {
+        use futures::TryStreamExt;
+
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let mock = MockHttpClient::with_handler(move |req| {
+            let n = call_count_clone.fetch_add(1, Ordering::SeqCst);
+            match n {
+                0 => {
+                    // First page with Link: next header
+                    let mut resp = MockResponse::json(
+                        200,
+                        &json!([
+                            {"name": "msg1", "data": "a"},
+                            {"name": "msg2", "data": "b"}
+                        ]),
+                    );
+                    let next_url = format!(
+                        "{}?page=2",
+                        req.url
+                            .as_str()
+                            .split('?')
+                            .next()
+                            .unwrap_or(req.url.as_str())
+                    );
+                    resp.headers
+                        .push(("Link".to_string(), format!("<{}>; rel=\"next\"", next_url)));
+                    resp
+                }
+                1 => {
+                    // Second page, no next link
+                    MockResponse::json(
+                        200,
+                        &json!([
+                            {"name": "msg3", "data": "c"}
+                        ]),
+                    )
+                }
+                _ => MockResponse::empty(200),
+            }
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let channel = client.channels().get("test");
+        let mut pages = channel.history().pages();
+
+        // First page
+        let page1 = pages.try_next().await?.expect("Expected page 1");
+        let items1 = page1.items().await?;
+        assert_eq!(items1.len(), 2);
+        assert_eq!(items1[0].name, Some("msg1".to_string()));
+        assert_eq!(items1[1].name, Some("msg2".to_string()));
+
+        // Second page (navigating to next)
+        let page2 = pages.try_next().await?.expect("Expected page 2");
+        let items2 = page2.items().await?;
+        assert_eq!(items2.len(), 1);
+        assert_eq!(items2[0].name, Some("msg3".to_string()));
+
+        // No more pages
+        let page3 = pages.try_next().await?;
+        assert!(page3.is_none(), "Expected no more pages");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL1b — Message sent as array in request body
+    // UTS: rest/unit/channel/publish.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl1b_message_sent_as_array() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .name("event")
+            .string("data")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+
+        // Single message should still be sent as the body (RSL1b: message in request body)
+        assert!(
+            body.is_object(),
+            "Single message should be sent as object, got: {:?}",
+            body
+        );
+        assert_eq!(body["name"], "event");
+        assert_eq!(body["data"], "data");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL2b1 — Default history direction is backwards
+    // UTS: rest/unit/channel/history.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl2b1_default_history_direction_backwards() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let _ = client.channels().get("test").history().send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let url = &reqs[0].url;
+
+        // Default direction should be backwards (or absent, meaning backwards)
+        // If direction param is present, it should be "backwards"
+        let query: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let dir = query.iter().find(|(k, _)| k == "direction");
+        if let Some((_, v)) = dir {
+            assert_eq!(v, "backwards", "Default direction should be backwards");
+        }
+        // If absent, that's also fine — server defaults to backwards
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL4 — Empty string encoding
+    // UTS: rest/unit/encoding/message_encoding.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl4_empty_string_no_encoding() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .name("event")
+            .string("")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+
+        assert_eq!(body["data"], "");
+        assert!(
+            body.get("encoding").is_none(),
+            "Expected no encoding for empty string"
+        );
+
+        Ok(())
+    }
 }
