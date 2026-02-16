@@ -4375,4 +4375,543 @@ mod unit_tests {
 
         Ok(())
     }
+
+    // ===============================================================
+    // Phase 5 — Fallback Hosts & Endpoint Configuration
+    // UTS: rest/unit/fallback.md
+    // ===============================================================
+
+    // ---------------------------------------------------------------
+    // RSC15m — Fallback only when fallback domains non-empty
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc15m_no_fallback_when_fallback_hosts_empty() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(500, &json!({"error": {"code": 50000}})));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .fallback_hosts(vec![])
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let err = client.time().await.unwrap_err();
+        assert_eq!(err.status_code, Some(500));
+
+        // Should not retry — only 1 request
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC15l3 — HTTP 5xx status codes trigger fallback
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc15l3_5xx_triggers_fallback() -> Result<()> {
+        for status in [500u16, 501, 502, 503, 504] {
+            let mock = MockHttpClient::new();
+            mock.queue_response(MockResponse::json(
+                status,
+                &json!({"error": {"code": status as u32 * 100}}),
+            ));
+            mock.queue_response(MockResponse::json(200, &json!([1234567890000_i64])));
+
+            let client = ClientOptions::new("appId.keyId:keySecret")
+                .use_binary_protocol(false)
+                .rest_with_http_client(Box::new(mock))
+                .unwrap();
+
+            let time = client.time().await.unwrap();
+            assert_eq!(time.timestamp_millis(), 1234567890000);
+
+            let reqs = get_mock(&client).captured_requests();
+            assert_eq!(reqs.len(), 2, "status {} should trigger fallback", status);
+            assert_ne!(
+                reqs[0].url.host_str(),
+                reqs[1].url.host_str(),
+                "fallback should use a different host for status {}",
+                status
+            );
+        }
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC15l — HTTP 4xx errors do NOT trigger fallback
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc15l_4xx_does_not_trigger_fallback() -> Result<()> {
+        for status in [400u16, 404] {
+            let mock = MockHttpClient::new();
+            mock.queue_response(MockResponse::json(
+                status,
+                &json!({"error": {"code": status as u32 * 100, "message": "test error"}}),
+            ));
+
+            let client = ClientOptions::new("appId.keyId:keySecret")
+                .use_binary_protocol(false)
+                .rest_with_http_client(Box::new(mock))
+                .unwrap();
+
+            let err = client.time().await.unwrap_err();
+            assert_eq!(err.status_code, Some(status as u32));
+
+            let reqs = get_mock(&client).captured_requests();
+            assert_eq!(
+                reqs.len(),
+                1,
+                "status {} should NOT trigger fallback",
+                status
+            );
+        }
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC15a — Fallback hosts tried when primary fails
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc15a_fallback_hosts_tried_on_primary_failure() -> Result<()> {
+        // Queue 4 responses: primary + 3 fallbacks (httpMaxRetryCount default)
+        // All fail so we can see all hosts tried
+        let mock = MockHttpClient::new();
+        for _ in 0..4 {
+            mock.queue_response(MockResponse::json(500, &json!({"error": {"code": 50000}})));
+        }
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let _ = client.time().await;
+
+        let reqs = get_mock(&client).captured_requests();
+        // primary + up to httpMaxRetryCount (3) fallbacks = 4
+        assert_eq!(reqs.len(), 4);
+
+        // First request to the primary host
+        assert_eq!(reqs[0].url.host_str().unwrap(), "rest.ably.io");
+
+        // Subsequent requests to fallback hosts
+        let expected_fallbacks = vec![
+            "a.ably-realtime.com",
+            "b.ably-realtime.com",
+            "c.ably-realtime.com",
+            "d.ably-realtime.com",
+            "e.ably-realtime.com",
+        ];
+        for req in &reqs[1..] {
+            let host = req.url.host_str().unwrap();
+            assert!(
+                expected_fallbacks.contains(&host),
+                "fallback host '{}' not in expected list",
+                host
+            );
+        }
+
+        // All fallback hosts used should be distinct
+        let fallback_hosts: Vec<&str> = reqs[1..]
+            .iter()
+            .map(|r| r.url.host_str().unwrap())
+            .collect();
+        let unique: std::collections::HashSet<&&str> = fallback_hosts.iter().collect();
+        assert_eq!(
+            unique.len(),
+            fallback_hosts.len(),
+            "fallback hosts should be distinct"
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC15a — Fallback hosts randomized
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc15a_fallback_hosts_randomized() -> Result<()> {
+        // Run multiple times and check that fallback order varies
+        let mut orders: Vec<Vec<String>> = Vec::new();
+
+        for _ in 0..10 {
+            let mock = MockHttpClient::new();
+            for _ in 0..4 {
+                mock.queue_response(MockResponse::json(500, &json!({"error": {"code": 50000}})));
+            }
+
+            let client = ClientOptions::new("appId.keyId:keySecret")
+                .use_binary_protocol(false)
+                .rest_with_http_client(Box::new(mock))
+                .unwrap();
+
+            let _ = client.time().await;
+
+            let reqs = get_mock(&client).captured_requests();
+            let fallback_order: Vec<String> = reqs[1..]
+                .iter()
+                .map(|r| r.url.host_str().unwrap().to_string())
+                .collect();
+            orders.push(fallback_order);
+        }
+
+        // At least 2 different orderings should appear in 10 runs
+        let first = &orders[0];
+        let has_different = orders.iter().any(|o| o != first);
+        assert!(
+            has_different,
+            "fallback hosts should be randomized across runs"
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC15l — Fallback succeeds on second host
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc15l_fallback_succeeds_on_second_host() -> Result<()> {
+        let mock = MockHttpClient::new();
+        // Primary fails
+        mock.queue_response(MockResponse::json(500, &json!({"error": {"code": 50000}})));
+        // First fallback succeeds
+        mock.queue_response(MockResponse::json(200, &json!([1234567890000_i64])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let time = client.time().await?;
+        assert_eq!(time.timestamp_millis(), 1234567890000);
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].url.host_str().unwrap(), "rest.ably.io");
+        assert_ne!(reqs[1].url.host_str().unwrap(), "rest.ably.io");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC15 — httpMaxRetryCount limits fallback attempts
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc15_http_max_retry_count_limits_fallbacks() -> Result<()> {
+        let mock = MockHttpClient::new();
+        // Queue many failures
+        for _ in 0..10 {
+            mock.queue_response(MockResponse::json(500, &json!({"error": {"code": 50000}})));
+        }
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .http_max_retry_count(2)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let _ = client.time().await;
+
+        let reqs = get_mock(&client).captured_requests();
+        // primary + 2 fallbacks = 3
+        assert_eq!(reqs.len(), 3);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // REC1a — Default primary domain
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rec1a_default_primary_domain() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([1234567890000_i64])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client.time().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs[0].url.host_str().unwrap(), "rest.ably.io");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // REC1d1 — Custom restHost sets primary domain
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rec1d1_custom_rest_host() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([1234567890000_i64])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_host("custom.rest.example.com")?
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client.time().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs[0].url.host_str().unwrap(), "custom.rest.example.com");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // REC1c2 — Environment option determines primary domain
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rec1c2_environment_sets_primary_domain() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!([1234567890000_i64])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .environment("sandbox")?
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client.time().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs[0].url.host_str().unwrap(), "sandbox-rest.ably.io");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // REC1c1 — Environment conflicts with restHost
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn rec1c1_environment_conflicts_with_rest_host() {
+        let result = ClientOptions::new("appId.keyId:keySecret")
+            .rest_host("custom.host.com")
+            .and_then(|opts| opts.environment("sandbox"));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rec1c1_rest_host_conflicts_with_environment() {
+        let result = ClientOptions::new("appId.keyId:keySecret")
+            .environment("sandbox")
+            .and_then(|opts| opts.rest_host("custom.host.com"));
+
+        assert!(result.is_err());
+    }
+
+    // ---------------------------------------------------------------
+    // REC2a2 — Custom fallbackHosts overrides defaults
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rec2a2_custom_fallback_hosts() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(500, &json!({"error": {"code": 50000}})));
+        mock.queue_response(MockResponse::json(200, &json!([1234567890000_i64])));
+
+        let custom_fallbacks = vec![
+            "fb1.example.com".to_string(),
+            "fb2.example.com".to_string(),
+            "fb3.example.com".to_string(),
+        ];
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .fallback_hosts(custom_fallbacks.clone())
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client.time().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].url.host_str().unwrap(), "rest.ably.io");
+        let fallback_host = reqs[1].url.host_str().unwrap();
+        assert!(
+            custom_fallbacks.iter().any(|h| h == fallback_host),
+            "fallback host '{}' should be one of the custom hosts",
+            fallback_host
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // REC2c5 — Environment sets fallback domains
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rec2c5_environment_sets_fallback_domains() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(500, &json!({"error": {"code": 50000}})));
+        mock.queue_response(MockResponse::json(200, &json!([1234567890000_i64])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .environment("sandbox")?
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client.time().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].url.host_str().unwrap(), "sandbox-rest.ably.io");
+
+        let expected_env_fallbacks = vec![
+            "sandbox-a-fallback.ably-realtime.com",
+            "sandbox-b-fallback.ably-realtime.com",
+            "sandbox-c-fallback.ably-realtime.com",
+            "sandbox-d-fallback.ably-realtime.com",
+            "sandbox-e-fallback.ably-realtime.com",
+        ];
+        let fallback_host = reqs[1].url.host_str().unwrap();
+        assert!(
+            expected_env_fallbacks.iter().any(|h| *h == fallback_host),
+            "env fallback host '{}' not in expected list",
+            fallback_host
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // REC2c6 — Custom restHost disables fallback hosts
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rec2c6_custom_rest_host_no_fallbacks() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(500, &json!({"error": {"code": 50000}})));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_host("custom.rest.example.com")?
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let err = client.time().await.unwrap_err();
+        assert_eq!(err.status_code, Some(500));
+
+        let reqs = get_mock(&client).captured_requests();
+        // Only 1 request — no fallback
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].url.host_str().unwrap(), "custom.rest.example.com");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC15 — Non-retriable error stops fallback chain
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc15_non_retriable_stops_fallback_chain() -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+
+        let mock = MockHttpClient::with_handler(move |_req| {
+            let n = counter_clone.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                // Primary: retriable 500
+                MockResponse::json(500, &json!({"error": {"code": 50000}}))
+            } else {
+                // First fallback: non-retriable 400
+                MockResponse::json(
+                    400,
+                    &json!({"error": {"code": 40000, "message": "bad request"}}),
+                )
+            }
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let err = client.time().await.unwrap_err();
+        assert_eq!(err.status_code, Some(400));
+
+        // Only 2 requests: primary (500) + first fallback (400), then stop
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 2);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // REC2c1 — Default fallback domains
+    // UTS: rest/unit/fallback.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rec2c1_default_fallback_domains() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(500, &json!({"error": {"code": 50000}})));
+        mock.queue_response(MockResponse::json(200, &json!([1234567890000_i64])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client.time().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].url.host_str().unwrap(), "rest.ably.io");
+
+        let expected_fallbacks = vec![
+            "a.ably-realtime.com",
+            "b.ably-realtime.com",
+            "c.ably-realtime.com",
+            "d.ably-realtime.com",
+            "e.ably-realtime.com",
+        ];
+        let fallback_host = reqs[1].url.host_str().unwrap();
+        assert!(
+            expected_fallbacks.iter().any(|h| *h == fallback_host),
+            "default fallback host '{}' not in expected list",
+            fallback_host
+        );
+
+        Ok(())
+    }
 }
