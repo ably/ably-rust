@@ -18,6 +18,17 @@ use crate::ClientOptions;
 #[cfg(test)]
 use crate::mock_ws::{MockTransport, MockTransportConnection, ServerAction};
 
+/// Errors that qualify for fallback host retry (RTN17f).
+fn is_fallback_eligible_error(status_code: Option<u16>, is_connection_refused: bool) -> bool {
+    if is_connection_refused {
+        return true;
+    }
+    if let Some(code) = status_code {
+        return (500..=504).contains(&code);
+    }
+    false
+}
+
 /// Default connection state TTL (120 seconds) used when server hasn't provided one.
 const DEFAULT_CONNECTION_STATE_TTL_MS: u64 = 120_000;
 
@@ -124,6 +135,15 @@ struct ConnectionInner {
             tokio::sync::oneshot::Sender<Result<Duration, ErrorInfo>>,
         )>,
     >,
+
+    /// Max idle interval from server (RTN23a). 0 = no heartbeat monitoring.
+    max_idle_interval: Mutex<u64>,
+
+    /// Fallback hosts to try when primary fails (RTN17).
+    fallback_hosts: Vec<String>,
+
+    /// The primary realtime host (for RTN17i: always try primary first).
+    primary_host: String,
 }
 
 impl Connection {
@@ -168,6 +188,9 @@ impl Connection {
 
         let (state_tx, _) = broadcast::channel(64);
 
+        let primary_host = options.realtime_host.clone();
+        let fallback_hosts = options.fallback_hosts.clone();
+
         Self {
             inner: Arc::new(ConnectionInner {
                 state: Mutex::new(ConnectionState::Initialized),
@@ -187,6 +210,9 @@ impl Connection {
                 close_requested: Mutex::new(false),
                 client_msg_tx: Mutex::new(None),
                 pending_pings: Mutex::new(Vec::new()),
+                max_idle_interval: Mutex::new(0),
+                fallback_hosts,
+                primary_host,
             }),
         }
     }
@@ -430,7 +456,15 @@ impl Connection {
 
     /// Build a connection URL, optionally with resume parameters.
     fn build_url(inner: &ConnectionInner) -> url::Url {
+        Connection::build_url_with_host(inner, None)
+    }
+
+    /// Build a connection URL with an optional host override (for fallback hosts).
+    fn build_url_with_host(inner: &ConnectionInner, host: Option<&str>) -> url::Url {
         let mut url = inner.ws_url.clone();
+        if let Some(h) = host {
+            url.set_host(Some(h)).expect("valid fallback host");
+        }
         {
             let mut pairs = url.query_pairs_mut();
             for (k, v) in &inner.ws_params {
@@ -457,6 +491,55 @@ impl Connection {
         *self.inner.task_handle.lock().unwrap() = Some(handle);
     }
 
+    /// Attempt to connect to a specific URL and handle messages until disconnected.
+    /// Returns (was_ever_connected, last_disconnect_status_code, was_connection_refused).
+    /// `was_ever_connected` is true if we received CONNECTED (even if later disconnected).
+    #[cfg(test)]
+    async fn try_connect(inner: &ConnectionInner, url: url::Url) -> (bool, Option<u16>, bool) {
+        // Snapshot connection id to detect if we got CONNECTED during this attempt
+        let id_before = inner.id.lock().unwrap().clone();
+
+        match inner.transport.connect(url).await {
+            Ok(mut conn) => {
+                let (client_tx, mut client_rx) =
+                    tokio::sync::mpsc::unbounded_channel::<ProtocolMessage>();
+                {
+                    *inner.client_msg_tx.lock().unwrap() = Some(client_tx);
+                }
+
+                Connection::handle_connection(inner, &mut conn, &mut client_rx).await;
+
+                {
+                    *inner.client_msg_tx.lock().unwrap() = None;
+                }
+
+                let state = *inner.state.lock().unwrap();
+
+                // Extract status code from error_reason if DISCONNECTED
+                let status_code = if state == ConnectionState::Disconnected {
+                    inner
+                        .error_reason
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .and_then(|e| e.status_code)
+                } else {
+                    None
+                };
+
+                // Did we receive CONNECTED during this connection attempt?
+                let id_after = inner.id.lock().unwrap().clone();
+                let got_connected = state == ConnectionState::Connected
+                    || (id_after.is_some() && id_after != id_before);
+
+                (got_connected, status_code, false)
+            }
+            Err(_) => {
+                (false, None, true) // Connection refused
+            }
+        }
+    }
+
     /// The main connection loop that handles connect, reconnect, and state transitions.
     #[cfg(test)]
     async fn connection_loop(inner: &ConnectionInner) {
@@ -477,27 +560,68 @@ impl Connection {
                 break;
             }
 
+            // RTN17i: Always try primary host first
             let url = Connection::build_url(inner);
+            let (was_connected, status_code, was_refused) =
+                Connection::try_connect(inner, url).await;
 
-            // Attempt to connect via the mock transport
-            match inner.transport.connect(url).await {
-                Ok(mut conn) => {
-                    // Set up client message channel
-                    let (client_tx, mut client_rx) =
-                        tokio::sync::mpsc::unbounded_channel::<ProtocolMessage>();
-                    {
-                        *inner.client_msg_tx.lock().unwrap() = Some(client_tx);
+            if was_connected {
+                // We were connected and then disconnected (or still connected).
+                // The state has been set by handle_protocol_message.
+                // Fall through to retry logic below.
+            } else {
+                // RTN17: Primary failed — try fallback hosts if eligible
+                let should_fallback = is_fallback_eligible_error(status_code, was_refused)
+                    && !inner.fallback_hosts.is_empty();
+
+                if should_fallback {
+                    // RTN17j: Try fallback hosts in random order
+                    let mut fallbacks = inner.fallback_hosts.clone();
+                    // Simple shuffle using rand_id for entropy
+                    for i in (1..fallbacks.len()).rev() {
+                        let j_str = rand_id();
+                        let j = j_str
+                            .bytes()
+                            .fold(0usize, |acc, b| acc.wrapping_add(b as usize))
+                            % (i + 1);
+                        fallbacks.swap(i, j);
                     }
 
-                    // Handle the connection (blocks until disconnected)
-                    Connection::handle_connection(inner, &mut conn, &mut client_rx).await;
+                    let mut fallback_connected = false;
+                    for host in &fallbacks {
+                        let close_requested = *inner.close_requested.lock().unwrap();
+                        if close_requested {
+                            return;
+                        }
 
-                    // Clean up client message channel
-                    {
-                        *inner.client_msg_tx.lock().unwrap() = None;
+                        let url = Connection::build_url_with_host(inner, Some(host));
+                        let (was_connected, _status, _refused) =
+                            Connection::try_connect(inner, url).await;
+
+                        if was_connected {
+                            fallback_connected = true;
+                            break;
+                        }
                     }
-                }
-                Err(_err) => {
+
+                    if !fallback_connected {
+                        // All fallbacks failed too
+                        let error = ErrorInfo {
+                            code: Some(80000),
+                            status_code: Some(400),
+                            message: Some("Connection refused".to_string()),
+                            href: None,
+                        };
+                        Connection::set_state_inner(
+                            inner,
+                            ConnectionState::Disconnected,
+                            Some(error),
+                        );
+                    }
+                } else if *inner.state.lock().unwrap() != ConnectionState::Disconnected
+                    && *inner.state.lock().unwrap() != ConnectionState::Failed
+                {
+                    // No fallback available/eligible — mark as disconnected
                     let error = ErrorInfo {
                         code: Some(80000),
                         status_code: Some(400),
@@ -582,37 +706,17 @@ impl Connection {
                     Connection::set_state_inner(inner, ConnectionState::Connecting, None);
 
                     let url = Connection::build_url(inner);
-                    match inner.transport.connect(url).await {
-                        Ok(mut conn) => {
-                            let (client_tx, mut client_rx) =
-                                tokio::sync::mpsc::unbounded_channel::<ProtocolMessage>();
-                            {
-                                *inner.client_msg_tx.lock().unwrap() = Some(client_tx);
-                            }
+                    let (was_connected, _, _) = Connection::try_connect(inner, url).await;
 
-                            Connection::handle_connection(inner, &mut conn, &mut client_rx).await;
-
-                            {
-                                *inner.client_msg_tx.lock().unwrap() = None;
-                            }
-
-                            let state = *inner.state.lock().unwrap();
-                            if state == ConnectionState::Connected {
-                                // Reconnected — clear disconnected_since and break out
-                                *inner.disconnected_since.lock().unwrap() = None;
-                                // Re-enter the main loop for future disconnects
-                                // But we're already connected, the handle_connection
-                                // will run until disconnected again
-                                break;
-                            }
-                            // If still disconnected/suspended, continue retry loop
-                            Connection::set_state_inner(inner, ConnectionState::Suspended, None);
-                        }
-                        Err(_) => {
-                            // Still can't connect, stay in SUSPENDED
-                            Connection::set_state_inner(inner, ConnectionState::Suspended, None);
+                    if was_connected {
+                        let state = *inner.state.lock().unwrap();
+                        if state == ConnectionState::Connected {
+                            *inner.disconnected_since.lock().unwrap() = None;
+                            break;
                         }
                     }
+                    // Still can't connect, stay in SUSPENDED
+                    Connection::set_state_inner(inner, ConnectionState::Suspended, None);
                 }
 
                 // If we broke out of suspended loop due to successful reconnect,
@@ -620,15 +724,12 @@ impl Connection {
                 let state = *inner.state.lock().unwrap();
                 match state {
                     ConnectionState::Disconnected => {
-                        // Reset disconnected_since for the new disconnection cycle
                         *inner.disconnected_since.lock().unwrap() =
                             Some(tokio::time::Instant::now());
                         Connection::set_state_inner(inner, ConnectionState::Connecting, None);
                         continue;
                     }
                     ConnectionState::Connected => {
-                        // Already handled inside handle_connection
-                        // The handle_connection exited, meaning we got disconnected again
                         continue;
                     }
                     _ => break,
@@ -656,20 +757,57 @@ impl Connection {
     }
 
     /// Process messages on an established connection.
+    /// Includes RTN23a idle timer: if no message is received for
+    /// maxIdleInterval + realtimeRequestTimeout, disconnects and reconnects.
     #[cfg(test)]
     async fn handle_connection(
         inner: &ConnectionInner,
         conn: &mut MockTransportConnection,
         client_rx: &mut tokio::sync::mpsc::UnboundedReceiver<ProtocolMessage>,
     ) {
+        // RTN23a: Compute idle timeout from maxIdleInterval + realtimeRequestTimeout.
+        // We'll recompute this after each CONNECTED message updates max_idle_interval.
+        let compute_idle_timeout = |inner: &ConnectionInner| -> Option<Duration> {
+            let max_idle = *inner.max_idle_interval.lock().unwrap();
+            if max_idle > 0 {
+                let timeout_ms = max_idle + inner.realtime_request_timeout.as_millis() as u64;
+                Some(Duration::from_millis(timeout_ms))
+            } else {
+                None
+            }
+        };
+
+        let mut idle_timeout = compute_idle_timeout(inner);
+        let mut idle_deadline = idle_timeout.map(|d| tokio::time::Instant::now() + d);
+
         loop {
+            // Build the idle timer future
+            let idle_sleep = async {
+                if let Some(deadline) = idle_deadline {
+                    tokio::time::sleep_until(deadline).await;
+                } else {
+                    // No idle timeout — sleep forever (will never fire)
+                    std::future::pending::<()>().await;
+                }
+            };
+
             tokio::select! {
                 server_msg = conn.recv() => {
+                    // RTN23a: Any message from server resets the idle timer
+                    if let Some(timeout) = idle_timeout {
+                        idle_deadline = Some(tokio::time::Instant::now() + timeout);
+                    }
+
                     match server_msg {
                         Some(ServerAction::Message(msg)) => {
                             let should_break = Connection::handle_protocol_message(inner, msg);
                             if should_break {
                                 break;
+                            }
+                            // Recompute idle timeout in case CONNECTED updated max_idle_interval
+                            idle_timeout = compute_idle_timeout(inner);
+                            if let Some(timeout) = idle_timeout {
+                                idle_deadline = Some(tokio::time::Instant::now() + timeout);
                             }
                         }
                         Some(ServerAction::MessageThenClose(msg)) => {
@@ -702,6 +840,21 @@ impl Connection {
                         conn.send_message(msg);
                     }
                 }
+                _ = idle_sleep => {
+                    // RTN23a: Idle timeout expired — disconnect and trigger reconnect
+                    let error = ErrorInfo {
+                        code: Some(80003),
+                        status_code: None,
+                        message: Some("No activity for maxIdleInterval + realtimeRequestTimeout".to_string()),
+                        href: None,
+                    };
+                    Connection::set_state_inner(
+                        inner,
+                        ConnectionState::Disconnected,
+                        Some(error),
+                    );
+                    break;
+                }
             }
         }
     }
@@ -713,23 +866,25 @@ impl Connection {
             Action::Connected => {
                 let current_state = *inner.state.lock().unwrap();
 
+                // Update connection details common to both normal and UPDATE paths
+                if let Some(ref id) = msg.connection_id {
+                    *inner.id.lock().unwrap() = Some(id.clone());
+                }
+                if let Some(ref details) = msg.connection_details {
+                    if let Some(ref key) = details.connection_key {
+                        *inner.key.lock().unwrap() = Some(key.clone());
+                    }
+                    if let Some(ttl) = details.connection_state_ttl {
+                        *inner.connection_state_ttl.lock().unwrap() = ttl;
+                    }
+                    // RTN23a: Store maxIdleInterval for heartbeat idle detection
+                    if let Some(max_idle) = details.max_idle_interval {
+                        *inner.max_idle_interval.lock().unwrap() = max_idle;
+                    }
+                }
+
                 // RTN24: If already CONNECTED, emit UPDATE instead
                 if current_state == ConnectionState::Connected {
-                    // Update ID and key
-                    if let Some(ref id) = msg.connection_id {
-                        *inner.id.lock().unwrap() = Some(id.clone());
-                    }
-                    if let Some(ref details) = msg.connection_details {
-                        if let Some(ref key) = details.connection_key {
-                            *inner.key.lock().unwrap() = Some(key.clone());
-                        }
-                        // Update connection state TTL
-                        if let Some(ttl) = details.connection_state_ttl {
-                            *inner.connection_state_ttl.lock().unwrap() = ttl;
-                        }
-                    }
-
-                    // Emit UPDATE event
                     let change = ConnectionStateChange {
                         previous: ConnectionState::Connected,
                         current: ConnectionState::Connected,
@@ -738,20 +893,6 @@ impl Connection {
                     };
                     let _ = inner.state_tx.send(change);
                     return false;
-                }
-
-                // Normal CONNECTED handling
-                if let Some(ref id) = msg.connection_id {
-                    *inner.id.lock().unwrap() = Some(id.clone());
-                }
-                if let Some(ref details) = msg.connection_details {
-                    if let Some(ref key) = details.connection_key {
-                        *inner.key.lock().unwrap() = Some(key.clone());
-                    }
-                    // Update connection state TTL from server
-                    if let Some(ttl) = details.connection_state_ttl {
-                        *inner.connection_state_ttl.lock().unwrap() = ttl;
-                    }
                 }
 
                 // Clear disconnected_since on successful connection
@@ -797,6 +938,14 @@ impl Connection {
                     }
                 }
                 // Heartbeats without matching ID are ignored (server-initiated)
+                false
+            }
+            Action::Auth => {
+                // RTN22: Server requests re-authentication.
+                // The client should obtain a new token and send AUTH back.
+                // For now, we note the request — full auth callback integration
+                // will be completed when the realtime auth layer is built.
+                // The message is still processed (idle timer reset, etc.)
                 false
             }
             _ => {
