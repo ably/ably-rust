@@ -762,7 +762,7 @@ impl From<serde_json::Value> for Data {
 
 /// The encoding of a message, which is either unset or is a list of data
 /// encodings separated by the '/' character.
-#[derive(Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum Encoding {
     None,
@@ -815,7 +815,7 @@ pub struct Message {
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(skip_serializing_if = "Data::is_none")]
+    #[serde(default, skip_serializing_if = "Data::is_none")]
     pub data: Data,
     #[serde(default, skip_serializing_if = "Encoding::is_none")]
     pub encoding: Encoding,
@@ -895,16 +895,49 @@ impl Message {
     }
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PresenceMessage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub action: PresenceAction,
-    pub client_id: String,
-    pub connection_id: String,
-    #[serde(skip_serializing_if = "Data::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Data::is_none")]
     pub data: Data,
     #[serde(default, skip_serializing_if = "Encoding::is_none")]
     pub encoding: Encoding,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extras: Option<json::Map>,
+}
+
+impl PresenceMessage {
+    /// Returns the member key combining connectionId and clientId (TP3h).
+    pub fn member_key(&self) -> Option<String> {
+        match (&self.connection_id, &self.client_id) {
+            (Some(conn), Some(client)) => Some(format!("{}:{}", conn, client)),
+            _ => None,
+        }
+    }
+}
+
+impl Default for PresenceMessage {
+    fn default() -> Self {
+        Self {
+            id: None,
+            action: PresenceAction::Absent,
+            client_id: None,
+            connection_id: None,
+            data: Data::None,
+            encoding: Encoding::None,
+            timestamp: None,
+            extras: None,
+        }
+    }
 }
 
 /// Iteratively decode the given data based on the given list of encodings.

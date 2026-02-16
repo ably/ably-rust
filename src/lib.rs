@@ -3524,4 +3524,855 @@ mod unit_tests {
 
         Ok(())
     }
+
+    // ===============================================================
+    // Phase 4: REST Presence
+    // ===============================================================
+
+    // ---------------------------------------------------------------
+    // RSP1a, RSL3 — Presence accessible via channel.presence
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn rsp1a_presence_accessible_via_channel() {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(200));
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        // Accessing channel.presence should work without error
+        let channel = client.channels().get("test");
+        let _presence = &channel.presence;
+        // If this compiles and doesn't panic, the test passes
+    }
+
+    // ---------------------------------------------------------------
+    // RSP3a — Presence get sends GET to /channels/<name>/presence
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp3a_presence_get_sends_get_to_presence_endpoint() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!([
+                    {"action": 1, "clientId": "client1", "data": "hello"},
+                    {"action": 1, "clientId": "client2", "data": "world"}
+                ]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let result = client
+            .channels()
+            .get("test-rsp3")
+            .presence
+            .get()
+            .send()
+            .await?;
+        let items = result.items().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].method, "GET");
+        assert!(
+            reqs[0].url.path().contains("/channels/test-rsp3/presence"),
+            "URL should contain /channels/test-rsp3/presence, got: {}",
+            reqs[0].url.path()
+        );
+        // Should not contain /history
+        assert!(
+            !reqs[0].url.path().contains("/history"),
+            "Presence get URL should not contain /history"
+        );
+
+        assert_eq!(items.len(), 2);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP3b — Presence get returns PresenceMessage objects with fields
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp3b_presence_get_returns_presence_messages() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!([{
+                    "action": 1,
+                    "clientId": "user123",
+                    "connectionId": "conn456",
+                    "data": "status data",
+                    "timestamp": 1234567890000u64
+                }]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let result = client.channels().get("test").presence.get().send().await?;
+        let items = result.items().await?;
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].action, crate::rest::PresenceAction::Present);
+        assert_eq!(items[0].client_id, Some("user123".to_string()));
+        assert_eq!(items[0].connection_id, Some("conn456".to_string()));
+        assert_eq!(
+            items[0].data,
+            crate::rest::Data::String("status data".to_string())
+        );
+        assert_eq!(items[0].timestamp, Some(1234567890000));
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP3c — Presence get with no members returns empty list
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp3c_presence_get_empty_returns_empty_list() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let result = client.channels().get("test").presence.get().send().await?;
+        let items = result.items().await?;
+
+        assert_eq!(items.len(), 0);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP3a1a — Presence get with limit parameter
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp3a1a_presence_get_with_limit() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .presence
+            .get()
+            .limit(50)
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let query: Vec<(String, String)> = reqs[0]
+            .url
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let limit = query.iter().find(|(k, _)| k == "limit");
+        assert_eq!(limit.unwrap().1, "50");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP3a2 — Presence get with clientId filter
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp3a2_presence_get_with_client_id_filter() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .presence
+            .get()
+            .client_id("specific-client")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let query: Vec<(String, String)> = reqs[0]
+            .url
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let cid = query.iter().find(|(k, _)| k == "clientId");
+        assert_eq!(cid.unwrap().1, "specific-client");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP3a3 — Presence get with connectionId filter
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp3a3_presence_get_with_connection_id_filter() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .presence
+            .get()
+            .connection_id("conn123")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let query: Vec<(String, String)> = reqs[0]
+            .url
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let cid = query.iter().find(|(k, _)| k == "connectionId");
+        assert_eq!(cid.unwrap().1, "conn123");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP4a — Presence history sends GET to /channels/<name>/presence/history
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp4a_presence_history_endpoint() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!([
+                    {"action": 2, "clientId": "client1", "data": "entered"},
+                    {"action": 4, "clientId": "client1", "data": "left"}
+                ]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let channel = client.channels().get("test-rsp4");
+        let result = channel.presence.history().send().await?;
+        let items = result.items().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs[0].method, "GET");
+        assert!(
+            reqs[0]
+                .url
+                .path()
+                .contains("/channels/test-rsp4/presence/history"),
+            "URL should contain /channels/test-rsp4/presence/history, got: {}",
+            reqs[0].url.path()
+        );
+
+        assert_eq!(items.len(), 2);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP4a — Presence history returns PresenceMessage with action types
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp4a_presence_history_returns_action_types() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!([
+                    {"action": 2, "clientId": "user1", "data": "d1", "timestamp": 1000},
+                    {"action": 3, "clientId": "user1", "data": "d2", "timestamp": 2000},
+                    {"action": 4, "clientId": "user1", "data": "d3", "timestamp": 3000}
+                ]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let channel = client.channels().get("test");
+        let result = channel.presence.history().send().await?;
+        let items = result.items().await?;
+
+        assert_eq!(items.len(), 3);
+        // PresenceAction: Absent=0, Present=1, Enter=2, Leave=3, Update=4
+        assert_eq!(items[0].action, crate::rest::PresenceAction::Enter); // action 2
+        assert_eq!(items[1].action, crate::rest::PresenceAction::Leave); // action 3
+        assert_eq!(items[2].action, crate::rest::PresenceAction::Update); // action 4
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP4 — Presence history with all parameters
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp4_presence_history_with_all_params() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let channel = client.channels().get("test");
+        channel
+            .presence
+            .history()
+            .start("1609459200000")
+            .end("1609545600000")
+            .forwards()
+            .limit(50)
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let query: Vec<(String, String)> = reqs[0]
+            .url
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+
+        assert_eq!(
+            query.iter().find(|(k, _)| k == "start").unwrap().1,
+            "1609459200000"
+        );
+        assert_eq!(
+            query.iter().find(|(k, _)| k == "end").unwrap().1,
+            "1609545600000"
+        );
+        assert_eq!(
+            query.iter().find(|(k, _)| k == "direction").unwrap().1,
+            "forwards"
+        );
+        assert_eq!(query.iter().find(|(k, _)| k == "limit").unwrap().1, "50");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP4b2a — Presence history default direction backwards
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp4b2a_presence_history_default_direction_backwards() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let channel = client.channels().get("test");
+        channel.presence.history().send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let query: Vec<(String, String)> = reqs[0]
+            .url
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let dir = query.iter().find(|(k, _)| k == "direction");
+        if let Some((_, v)) = dir {
+            assert_eq!(v, "backwards", "Default direction should be backwards");
+        }
+        // If absent, that's also fine — server defaults to backwards
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP5a — String data decoded as string (presence get)
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp5a_presence_string_data_decoded() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!([{"action": 1, "clientId": "c1", "data": "plain string data"}]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let result = client.channels().get("test").presence.get().send().await?;
+        let items = result.items().await?;
+
+        assert_eq!(
+            items[0].data,
+            crate::rest::Data::String("plain string data".to_string())
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP5b — JSON encoded data decoded to object (presence)
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp5b_presence_json_data_decoded() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!([{
+                    "action": 1,
+                    "clientId": "c1",
+                    "data": r#"{"status":"online","count":42}"#,
+                    "encoding": "json"
+                }]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let result = client.channels().get("test").presence.get().send().await?;
+        let items = result.items().await?;
+
+        assert_eq!(
+            items[0].data,
+            crate::rest::Data::JSON(json!({"status": "online", "count": 42}))
+        );
+        assert_eq!(items[0].encoding, crate::rest::Encoding::None);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP5c — Base64 encoded data decoded to binary (presence)
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp5c_presence_base64_data_decoded() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!([{
+                    "action": 1,
+                    "clientId": "c1",
+                    "data": "SGVsbG8gV29ybGQ=",
+                    "encoding": "base64"
+                }]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let result = client.channels().get("test").presence.get().send().await?;
+        let items = result.items().await?;
+
+        assert_eq!(
+            items[0].data,
+            crate::rest::Data::Binary(serde_bytes::ByteBuf::from(b"Hello World".to_vec()))
+        );
+        assert_eq!(items[0].encoding, crate::rest::Encoding::None);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP5d — UTF-8/base64 chained encoding decoded (presence)
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp5d_presence_utf8_base64_decoded() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!([{
+                    "action": 1,
+                    "clientId": "c1",
+                    "data": "SGVsbG8gV29ybGQ=",
+                    "encoding": "utf-8/base64"
+                }]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let result = client.channels().get("test").presence.get().send().await?;
+        let items = result.items().await?;
+
+        assert_eq!(
+            items[0].data,
+            crate::rest::Data::String("Hello World".to_string())
+        );
+        assert_eq!(items[0].encoding, crate::rest::Encoding::None);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP5e — Chained json/base64 encoding decoded (presence)
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp5e_presence_chained_json_base64_decoded() -> Result<()> {
+        // base64 of {"key":"value"}
+        let b64 = base64::encode(r#"{"key":"value"}"#);
+
+        let mock = MockHttpClient::with_handler(move |_req| {
+            MockResponse::json(
+                200,
+                &json!([{
+                    "action": 1,
+                    "clientId": "c1",
+                    "data": b64,
+                    "encoding": "json/base64"
+                }]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let result = client.channels().get("test").presence.get().send().await?;
+        let items = result.items().await?;
+
+        assert_eq!(
+            items[0].data,
+            crate::rest::Data::JSON(json!({"key": "value"}))
+        );
+        assert_eq!(items[0].encoding, crate::rest::Encoding::None);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP5f — History messages also decoded (presence)
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp5f_presence_history_messages_decoded() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!([{
+                    "action": 2,
+                    "clientId": "c1",
+                    "data": r#"{"event":"entered"}"#,
+                    "encoding": "json"
+                }]),
+            )
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let channel = client.channels().get("test");
+        let result = channel.presence.history().send().await?;
+        let items = result.items().await?;
+
+        assert_eq!(
+            items[0].data,
+            crate::rest::Data::JSON(json!({"event": "entered"}))
+        );
+        assert_eq!(items[0].encoding, crate::rest::Encoding::None);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // TP2 — PresenceAction enum values
+    // UTS: rest/unit/types/presence_message_types.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn tp2_presence_action_enum_values() {
+        assert_eq!(crate::rest::PresenceAction::Absent as u8, 0);
+        assert_eq!(crate::rest::PresenceAction::Present as u8, 1);
+        assert_eq!(crate::rest::PresenceAction::Enter as u8, 2);
+        assert_eq!(crate::rest::PresenceAction::Leave as u8, 3);
+        assert_eq!(crate::rest::PresenceAction::Update as u8, 4);
+    }
+
+    // ---------------------------------------------------------------
+    // TP3 — PresenceMessage from JSON (wire format)
+    // UTS: rest/unit/types/presence_message_types.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn tp3_presence_message_from_json() {
+        let json = json!({
+            "id": "pm-123",
+            "action": 2,
+            "clientId": "user-1",
+            "connectionId": "conn-1",
+            "data": "hello",
+            "timestamp": 1234567890000u64,
+            "extras": {"headers": {"x-key": "x-value"}}
+        });
+
+        let msg: crate::rest::PresenceMessage = serde_json::from_value(json).unwrap();
+        assert_eq!(msg.id, Some("pm-123".to_string()));
+        assert_eq!(msg.action, crate::rest::PresenceAction::Enter);
+        assert_eq!(msg.client_id, Some("user-1".to_string()));
+        assert_eq!(msg.connection_id, Some("conn-1".to_string()));
+        assert_eq!(msg.data, crate::rest::Data::String("hello".to_string()));
+        assert_eq!(msg.timestamp, Some(1234567890000));
+        assert!(msg.extras.is_some());
+    }
+
+    // ---------------------------------------------------------------
+    // TP3 — PresenceMessage to JSON (wire format)
+    // UTS: rest/unit/types/presence_message_types.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn tp3_presence_message_to_json() {
+        let msg = crate::rest::PresenceMessage {
+            action: crate::rest::PresenceAction::Enter,
+            client_id: Some("user-1".to_string()),
+            data: crate::rest::Data::String("hello".to_string()),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["action"], 2);
+        assert_eq!(json["clientId"], "user-1");
+        assert_eq!(json["data"], "hello");
+        // Optional fields not set should be absent
+        assert!(json.get("id").is_none());
+        assert!(json.get("connectionId").is_none());
+        assert!(json.get("timestamp").is_none());
+        assert!(json.get("extras").is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // TP3 — Null/missing attributes omitted from serialization
+    // UTS: rest/unit/types/presence_message_types.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn tp3_presence_null_attributes_omitted() {
+        let msg = crate::rest::PresenceMessage {
+            action: crate::rest::PresenceAction::Enter,
+            client_id: Some("user-1".to_string()),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["action"], 2);
+        assert_eq!(json["clientId"], "user-1");
+        assert!(json.get("data").is_none());
+        assert!(json.get("encoding").is_none());
+        assert!(json.get("extras").is_none());
+        assert!(json.get("id").is_none());
+        assert!(json.get("timestamp").is_none());
+        assert!(json.get("connectionId").is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // TP3h — memberKey combines connectionId and clientId
+    // UTS: rest/unit/types/presence_message_types.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn tp3h_member_key() {
+        let msg1 = crate::rest::PresenceMessage {
+            connection_id: Some("conn-1".to_string()),
+            client_id: Some("user-1".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(msg1.member_key(), Some("conn-1:user-1".to_string()));
+
+        let msg2 = crate::rest::PresenceMessage {
+            connection_id: Some("conn-2".to_string()),
+            client_id: Some("user-1".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(msg2.member_key(), Some("conn-2:user-1".to_string()));
+
+        // Same clientId, different connectionId — different memberKey
+        assert_ne!(msg1.member_key(), msg2.member_key());
+
+        // Missing fields — returns None
+        let msg3 = crate::rest::PresenceMessage {
+            client_id: Some("user-1".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(msg3.member_key(), None);
+    }
+
+    // ---------------------------------------------------------------
+    // TP2 — PresenceAction serde round-trip (numeric values)
+    // UTS: rest/unit/types/presence_message_types.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn tp2_presence_action_serde_roundtrip() {
+        // Serialize: action should be numeric
+        let msg = crate::rest::PresenceMessage {
+            action: crate::rest::PresenceAction::Enter,
+            client_id: Some("u".to_string()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["action"], 2, "Enter should serialize as 2");
+
+        // Deserialize: numeric action should parse
+        let json = json!({"action": 4, "clientId": "u"});
+        let msg: crate::rest::PresenceMessage = serde_json::from_value(json).unwrap();
+        assert_eq!(msg.action, crate::rest::PresenceAction::Update);
+
+        // All actions deserialize correctly
+        for (num, expected) in [
+            (0, crate::rest::PresenceAction::Absent),
+            (1, crate::rest::PresenceAction::Present),
+            (2, crate::rest::PresenceAction::Enter),
+            (3, crate::rest::PresenceAction::Leave),
+            (4, crate::rest::PresenceAction::Update),
+        ] {
+            let json = json!({"action": num});
+            let msg: crate::rest::PresenceMessage = serde_json::from_value(json).unwrap();
+            assert_eq!(
+                msg.action, expected,
+                "Action {} should deserialize correctly",
+                num
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // RSP3 — Presence get with multiple filters combined
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp3_presence_get_with_multiple_filters() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .presence
+            .get()
+            .limit(25)
+            .client_id("user1")
+            .connection_id("conn1")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let query: Vec<(String, String)> = reqs[0]
+            .url
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+
+        assert_eq!(query.iter().find(|(k, _)| k == "limit").unwrap().1, "25");
+        assert_eq!(
+            query.iter().find(|(k, _)| k == "clientId").unwrap().1,
+            "user1"
+        );
+        assert_eq!(
+            query.iter().find(|(k, _)| k == "connectionId").unwrap().1,
+            "conn1"
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP4b2b — Presence history with direction forwards
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp4b2b_presence_history_direction_forwards() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let channel = client.channels().get("test");
+        channel.presence.history().forwards().send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let query: Vec<(String, String)> = reqs[0]
+            .url
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        assert_eq!(
+            query.iter().find(|(k, _)| k == "direction").unwrap().1,
+            "forwards"
+        );
+
+        Ok(())
+    }
 }
