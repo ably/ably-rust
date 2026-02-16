@@ -11,7 +11,10 @@ pub mod error;
 pub mod auth;
 pub mod crypto;
 pub mod http;
+pub(crate) mod http_client;
 mod json;
+#[cfg(test)]
+pub(crate) mod mock_http;
 pub mod options;
 pub mod presence;
 pub mod rest;
@@ -853,6 +856,546 @@ mod tests {
             .send()
             .await
             .expect("Expected REST request to succeed");
+
+        Ok(())
+    }
+}
+
+/// Unit tests using mock HTTP client.
+///
+/// These correspond to UTS test specs in ../dart-experiments/uts/test/rest/unit/.
+#[cfg(test)]
+mod unit_tests {
+    use serde_json::json;
+
+    use crate::mock_http::{MockHttpClient, MockResponse};
+    use crate::{ClientOptions, Result};
+
+    /// Helper to create a Rest client with a mock HTTP backend.
+    fn mock_client(mock: MockHttpClient) -> crate::Rest {
+        ClientOptions::new("appId.keyId:keySecret")
+            .rest_with_http_client(Box::new(mock))
+            .unwrap()
+    }
+
+    // ---------------------------------------------------------------
+    // Mock infrastructure smoke test
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn mock_time_returns_response() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            assert_eq!(req.url.path(), "/time");
+            MockResponse::json(200, &json!([1234567890000_i64]))
+        });
+
+        let client = mock_client(mock);
+        let time = client.time().await?;
+
+        assert_eq!(time.timestamp_millis(), 1234567890000);
+        Ok(())
+    }
+
+    /// Helper to get captured requests from a client with a mock backend.
+    fn get_mock(client: &crate::Rest) -> &MockHttpClient {
+        client
+            .inner
+            .http_client
+            .as_any()
+            .downcast_ref::<MockHttpClient>()
+            .unwrap()
+    }
+
+    // ---------------------------------------------------------------
+    // RSC5 — Auth attribute
+    // UTS: rest/unit/rest_client.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn rsc5_auth_attribute() {
+        let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
+        // Auth object is accessible (Rust's type system ensures it's Auth)
+        let _auth = client.auth();
+    }
+
+    // ---------------------------------------------------------------
+    // RSC7e — X-Ably-Version header
+    // UTS: rest/unit/rest_client.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc7e_x_ably_version_header() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([1234567890000_i64]))
+        });
+
+        let client = mock_client(mock);
+        client.time().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+
+        let version = reqs[0]
+            .headers
+            .get("X-Ably-Version")
+            .expect("Expected X-Ably-Version header");
+        assert_eq!(version, "1.2");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC8a — MessagePack is the default protocol
+    // RSC8b — JSON when useBinaryProtocol is false
+    // UTS: rest/unit/rest_client.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc8a_default_protocol_is_msgpack() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = mock_client(mock);
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .name("e")
+            .string("d")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+
+        let content_type = reqs[0]
+            .headers
+            .get("content-type")
+            .expect("Expected Content-Type header")
+            .to_str()
+            .unwrap();
+        assert_eq!(content_type, "application/x-msgpack");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsc8b_json_protocol_when_configured() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .name("e")
+            .string("d")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+
+        let content_type = reqs[0]
+            .headers
+            .get("content-type")
+            .expect("Expected Content-Type header")
+            .to_str()
+            .unwrap();
+        assert_eq!(content_type, "application/json");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC17 — ClientId attribute
+    // UTS: rest/unit/rest_client.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn rsc17_client_id_attribute() {
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .client_id("explicit-client-id")
+            .unwrap()
+            .rest()
+            .unwrap();
+
+        assert_eq!(
+            client.options().client_id.as_deref(),
+            Some("explicit-client-id")
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // RSC18 — TLS configuration: default is HTTPS, tls=false uses HTTP
+    // UTS: rest/unit/rest_client.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc18_default_tls_uses_https() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([1234567890000_i64]))
+        });
+
+        let client = mock_client(mock);
+        client.time().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs[0].url.scheme(), "https");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsc18_tls_false_uses_http() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([1234567890000_i64]))
+        });
+
+        // Token auth is allowed over non-TLS.
+        let client = ClientOptions::new("some-token-string")
+            .tls(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client.time().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs[0].url.scheme(), "http");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC18 — Basic auth over HTTP rejected
+    // UTS: rest/unit/rest_client.md
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn rsc18_basic_auth_rejected_without_tls() {
+        let err = ClientOptions::new("appId.keyId:keySecret")
+            .tls(false)
+            .rest()
+            .expect_err("Expected error for basic auth over non-TLS");
+
+        assert_eq!(
+            err.code,
+            crate::error::ErrorCode::InvalidUseOfBasicAuthOverNonTLSTransport
+        );
+    }
+
+    #[tokio::test]
+    async fn rsc18_token_auth_allowed_without_tls() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([1234567890000_i64]))
+        });
+
+        // Token auth over HTTP should succeed.
+        let client = ClientOptions::new("some-token-string")
+            .tls(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let time = client.time().await?;
+        assert_eq!(time.timestamp_millis(), 1234567890000);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC7d — Ably-Agent header
+    // UTS: rest/unit/rest_client.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc7d_ably_agent_header() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([1234567890000_i64]))
+        });
+
+        let client = mock_client(mock);
+        client.time().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+
+        let agent = reqs[0]
+            .headers
+            .get("Ably-Agent")
+            .expect("Expected Ably-Agent header");
+        let agent_str = agent.to_str().unwrap();
+
+        // RSC7d1/RSC7d2: Must include library name and version in format ably-rust/x.y.z
+        assert!(
+            agent_str.starts_with("ably-rust/"),
+            "Expected Ably-Agent to start with 'ably-rust/', got '{}'",
+            agent_str
+        );
+
+        // Version part should match semver pattern
+        let version = &agent_str["ably-rust/".len()..];
+        assert!(
+            version.chars().all(|c| c.is_ascii_digit() || c == '.'),
+            "Expected version to be numeric with dots, got '{}'",
+            version
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC7c — Request IDs
+    // UTS: rest/unit/rest_client.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc7c_request_id_when_enabled() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([1234567890000_i64]))
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .add_request_ids(true)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client.time().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+
+        // Extract request_id from query params
+        let request_id = reqs[0]
+            .url
+            .query_pairs()
+            .find(|(k, _)| k == "request_id")
+            .map(|(_, v)| v.to_string())
+            .expect("Expected request_id query parameter");
+
+        // Should be at least 12 characters (base64url-encoded 16 bytes = 22 chars)
+        assert!(
+            request_id.len() >= 12,
+            "Expected request_id length >= 12, got {}",
+            request_id.len()
+        );
+
+        // Should be URL-safe base64
+        assert!(
+            request_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            "Expected URL-safe base64 request_id, got '{}'",
+            request_id
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsc7c_no_request_id_by_default() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([1234567890000_i64]))
+        });
+
+        let client = mock_client(mock);
+        client.time().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let has_request_id = reqs[0].url.query_pairs().any(|(k, _)| k == "request_id");
+
+        assert!(
+            !has_request_id,
+            "Expected no request_id query parameter by default"
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC8c — Accept header matches configured protocol
+    // UTS: rest/unit/rest_client.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc8c_accept_and_content_type_json() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .name("e")
+            .string("d")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+
+        let accept = reqs[0]
+            .headers
+            .get("accept")
+            .expect("Expected Accept header")
+            .to_str()
+            .unwrap();
+        assert_eq!(accept, "application/json");
+
+        let content_type = reqs[0]
+            .headers
+            .get("content-type")
+            .expect("Expected Content-Type header")
+            .to_str()
+            .unwrap();
+        assert_eq!(content_type, "application/json");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsc8c_accept_and_content_type_msgpack() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+
+        let client = mock_client(mock);
+
+        client
+            .channels()
+            .get("test")
+            .publish()
+            .name("e")
+            .string("d")
+            .send()
+            .await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+
+        let content_type = reqs[0]
+            .headers
+            .get("content-type")
+            .expect("Expected Content-Type header")
+            .to_str()
+            .unwrap();
+        assert_eq!(content_type, "application/x-msgpack");
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC8d — Handle mismatched response Content-Type
+    // UTS: rest/unit/rest_client.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc8d_mismatched_response_content_type() -> Result<()> {
+        // Client configured for JSON, but server returns msgpack.
+        let time_value: i64 = 1234567890000;
+        let msgpack_body =
+            rmp_serde::to_vec_named(&vec![time_value]).expect("failed to encode msgpack");
+
+        let mock = MockHttpClient::with_handler(move |_req| MockResponse {
+            status: 200,
+            headers: vec![(
+                "content-type".to_string(),
+                "application/x-msgpack".to_string(),
+            )],
+            body: msgpack_body.clone(),
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false) // Client prefers JSON
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        // Should successfully parse msgpack response despite requesting JSON.
+        let time = client.time().await?;
+        assert_eq!(time.timestamp_millis(), 1234567890000);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC8e — Unsupported Content-Type handling
+    // UTS: rest/unit/rest_client.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc8e_unsupported_content_type_error_status() -> Result<()> {
+        // Server returns 500 with text/html content.
+        let mock = MockHttpClient::with_handler(|_req| MockResponse {
+            status: 500,
+            headers: vec![("content-type".to_string(), "text/html".to_string())],
+            body: b"<html>Server Error</html>".to_vec(),
+        });
+
+        let client = mock_client(mock);
+
+        let err = client
+            .time()
+            .await
+            .expect_err("Expected error for unsupported content-type");
+
+        // HTTP status code should be propagated.
+        assert_eq!(err.status_code, Some(500));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsc8e_unsupported_content_type_success_status() -> Result<()> {
+        // Server returns 200 with text/html content.
+        let mock = MockHttpClient::with_handler(|_req| MockResponse {
+            status: 200,
+            headers: vec![("content-type".to_string(), "text/html".to_string())],
+            body: b"<html>OK</html>".to_vec(),
+        });
+
+        let client = mock_client(mock);
+
+        let err = client
+            .time()
+            .await
+            .expect_err("Expected error for unsupported content-type");
+
+        // RSC8e: Should return error code 40013 for 2xx with unsupported Content-Type.
+        assert_eq!(
+            err.code,
+            crate::error::ErrorCode::InvalidMessageDataOrEncoding
+        );
+        assert_eq!(err.status_code, Some(400));
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSC13 — Request timeouts
+    // UTS: rest/unit/rest_client.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc13_request_timeout() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([1234567890000_i64]))
+        });
+
+        // Set a 5-second delay on the mock, but only 100ms timeout on the client.
+        mock.set_response_delay(std::time::Duration::from_secs(5));
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .http_request_timeout(std::time::Duration::from_millis(100))
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let err = client.time().await.expect_err("Expected timeout error");
+
+        assert_eq!(err.code, crate::error::ErrorCode::TimeoutError);
 
         Ok(())
     }

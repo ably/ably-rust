@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use crate::auth::{AuthCallback, Credential};
 use crate::error::*;
+use crate::http_client::{HttpClient, ReqwestHttpClient};
 use crate::{auth, http, rest, Result};
 
 static REST_HOST: &str = "rest.ably.io";
@@ -304,6 +305,19 @@ impl ClientOptions {
         self
     }
 
+    /// Sets whether to include a random `request_id` query parameter in all
+    /// API requests. See RSC7c.
+    pub fn add_request_ids(mut self, v: bool) -> Self {
+        self.add_request_ids = v;
+        self
+    }
+
+    /// Sets whether to use TLS for connections. Defaults to true.
+    pub fn tls(mut self, v: bool) -> Self {
+        self.tls = v;
+        self
+    }
+
     fn rest_url(&self) -> Result<reqwest::Url> {
         let rest_url = if self.tls {
             format!("https://{}", self.rest_host)
@@ -324,20 +338,89 @@ impl ClientOptions {
     ///
     /// [RSC1b]: https://docs.ably.io/client-lib-development-guide/features/#RSC1b
     pub fn rest(self) -> Result<rest::Rest> {
-        let rest_url = self.rest_url()?;
-        let mut default_headers = http::HeaderMap::new();
-        default_headers.insert("X-Ably-Version", http::HeaderValue::from_static("1.2"));
-
-        if let Some(client_id) = &self.client_id {
-            default_headers.insert("X-Ably-ClientId", base64::encode(client_id).parse()?);
+        // RSC18: Reject basic auth (API key) over non-TLS connections.
+        if !self.tls {
+            if let Credential::Key(_) = &self.credential {
+                if !self.use_token_auth {
+                    return Err(Error::new(
+                        ErrorCode::InvalidUseOfBasicAuthOverNonTLSTransport,
+                        "Cannot use basic auth (API key) over insecure non-TLS connection",
+                    ));
+                }
+            }
         }
 
-        let http_client = reqwest::Client::builder()
+        let rest_url = self.rest_url()?;
+        let http_client = self.build_http_client()?;
+        Ok(rest::Rest::create(http_client, self, rest_url))
+    }
+
+    /// Build the default headers for HTTP requests.
+    pub(crate) fn default_headers(&self) -> Result<http::HeaderMap> {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("X-Ably-Version", http::HeaderValue::from_static("1.2"));
+        headers.insert(
+            "Ably-Agent",
+            http::HeaderValue::from_static(concat!("ably-rust/", env!("CARGO_PKG_VERSION"))),
+        );
+
+        // RSC8c: Accept header matches the configured protocol.
+        let accept = match self.format {
+            rest::Format::MessagePack => "application/x-msgpack",
+            rest::Format::JSON => "application/json",
+        };
+        headers.insert("Accept", http::HeaderValue::from_static(accept));
+
+        if let Some(client_id) = &self.client_id {
+            headers.insert("X-Ably-ClientId", base64::encode(client_id).parse()?);
+        }
+
+        Ok(headers)
+    }
+
+    /// Build the default HTTP client from these options.
+    fn build_http_client(&self) -> Result<Box<dyn HttpClient>> {
+        let default_headers = self.default_headers()?;
+
+        let reqwest_client = reqwest::Client::builder()
             .default_headers(default_headers)
             .timeout(self.http_request_timeout)
             .connect_timeout(self.http_open_timeout)
             .build()?;
 
+        Ok(Box::new(ReqwestHttpClient::new(reqwest_client)))
+    }
+
+    /// Build a Rest client with a custom HTTP client implementation.
+    ///
+    /// This is used in tests to inject a mock HTTP client.
+    #[cfg(test)]
+    pub(crate) fn rest_with_http_client(
+        self,
+        mut http_client: Box<dyn HttpClient>,
+    ) -> Result<rest::Rest> {
+        // RSC18: Reject basic auth (API key) over non-TLS connections.
+        if !self.tls {
+            if let Credential::Key(_) = &self.credential {
+                if !self.use_token_auth {
+                    return Err(Error::new(
+                        ErrorCode::InvalidUseOfBasicAuthOverNonTLSTransport,
+                        "Cannot use basic auth (API key) over insecure non-TLS connection",
+                    ));
+                }
+            }
+        }
+
+        // Apply default headers to mock clients so they behave like the
+        // production reqwest client (which has default_headers set).
+        let default_headers = self.default_headers()?;
+        if let Some(mock) = http_client
+            .as_any_mut()
+            .downcast_mut::<crate::mock_http::MockHttpClient>()
+        {
+            mock.set_default_headers(default_headers);
+        }
+        let rest_url = self.rest_url()?;
         Ok(rest::Rest::create(http_client, self, rest_url))
     }
 

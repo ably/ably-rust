@@ -14,6 +14,7 @@ use crate::auth::Auth;
 use crate::crypto::CipherParams;
 use crate::error::*;
 use crate::http::PaginatedRequestBuilder;
+use crate::http_client::HttpClient;
 use crate::options::ClientOptions;
 use crate::stats::Stats;
 use crate::{http, json, presence, stats, Result};
@@ -27,7 +28,7 @@ pub const DEFAULT_FORMAT: Format = Format::MessagePack;
 pub(crate) struct RestInner {
     #[allow(dead_code)]
     pub channels: (),
-    pub reqwest: reqwest::Client,
+    pub http_client: Box<dyn HttpClient>,
     pub opts: ClientOptions,
     pub url: reqwest::Url,
 }
@@ -54,10 +55,14 @@ impl Rest {
         ClientOptions::new(key).rest()
     }
 
-    pub(crate) fn create(reqwest: reqwest::Client, opts: ClientOptions, url: reqwest::Url) -> Self {
+    pub(crate) fn create(
+        http_client: Box<dyn HttpClient>,
+        opts: ClientOptions,
+        url: reqwest::Url,
+    ) -> Self {
         Self {
             inner: Arc::new(RestInner {
-                reqwest,
+                http_client,
                 opts,
                 url,
                 channels: (),
@@ -168,11 +173,26 @@ impl Rest {
         method: http::Method,
         url: impl reqwest::IntoUrl,
     ) -> http::RequestBuilder {
+        let mut url = url.into_url().expect("request_url called with invalid URL");
+
+        // RSC7c: Add a unique request_id query parameter when configured.
+        if self.inner.opts.add_request_ids {
+            let request_id = Self::generate_request_id();
+            url.query_pairs_mut().append_pair("request_id", &request_id);
+        }
+
         http::RequestBuilder::new(
             self,
-            self.inner.reqwest.request(method, url),
+            self.inner.http_client.request(method, url),
             self.inner.opts.format,
         )
+    }
+
+    /// Generate a URL-safe random request ID (base64url-encoded, 16 bytes).
+    fn generate_request_id() -> String {
+        use rand::Rng;
+        let bytes: [u8; 16] = rand::thread_rng().gen();
+        base64::encode_config(bytes, base64::URL_SAFE_NO_PAD)
     }
 
     /// Start building a paginated HTTP request to the Ably REST API.
@@ -297,7 +317,16 @@ impl Rest {
             self.auth().with_auth_headers(&mut req).await?;
         }
 
-        let res = self.inner.reqwest.execute(req).await?;
+        // RSC13: Apply HTTP request timeout.
+        let timeout = self.inner.opts.http_request_timeout;
+        let res = tokio::time::timeout(timeout, self.inner.http_client.execute(req))
+            .await
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::TimeoutError,
+                    format!("Request timed out after {}ms", timeout.as_millis()),
+                )
+            })??;
 
         // Return the response if it was successful, otherwise try to decode a
         // JSON error from the response body, falling back to a generic error

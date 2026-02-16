@@ -341,9 +341,11 @@ impl Response {
         match content_type.essence_str() {
             "application/json" => self.json().await,
             "application/x-msgpack" => self.msgpack().await,
-            _ => Err(Error::new(
-                ErrorCode::InvalidRequestBody,
-                format!("invalid response content-type: {}", content_type),
+            // RSC8e: Unsupported Content-Type on a 2xx response → error 40013.
+            _ => Err(Error::with_status(
+                ErrorCode::InvalidMessageDataOrEncoding,
+                400,
+                format!("unsupported response content-type: {}", content_type),
             )),
         }
     }
