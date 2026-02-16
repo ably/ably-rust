@@ -238,39 +238,330 @@ Publishing, history, message encoding/decoding, pagination.
 
 ---
 
-## Phase 7: Realtime Connection
+## Phase 7a: Realtime — Types, Transport & Basic Connection
 
 ### Goal
-WebSocket transport, connection state machine, heartbeats, fallback.
+Build the foundation: protocol types, mock WebSocket infrastructure, connection
+state machine, and basic connect/close lifecycle.
 
 ### Steps
-<!-- To be filled in during implementation -->
+
+1. **Read UTS mock WebSocket spec** (`uts/test/realtime/unit/helpers/mock_websocket.md`).
+   Understand the `MockWebSocket` interface: handler-based and await-based
+   connection patterns, `PendingConnection` with response methods, `MockConnection`
+   for injecting server messages, and `ServerAction` for message/disconnect events.
+
+2. **Define protocol types:**
+   - `Action` enum — integer-encoded protocol actions (Heartbeat=0 through Auth=17)
+   - `ProtocolMessage` — action, channel, connectionId, connectionKey,
+     connectionDetails, error, id, msgSerial, auth, messages, presence
+   - `ConnectionDetails` — connectionKey, maxIdleInterval, connectionStateTtl,
+     clientId, maxMessageSize, serverId
+   - `ErrorInfo` — code, statusCode, message, href
+   - `AuthDetails` — accessToken
+   - `ConnectionState` enum — Initialized, Connecting, Connected, Disconnected,
+     Suspended, Closing, Closed, Failed
+   - `ConnectionEvent` enum — same as ConnectionState plus Update
+   - `ConnectionStateChange` — previous, current, event, reason
+
+3. **Implement mock WebSocket infrastructure** (test-only):
+   - `MockWebSocket` with handler-based pattern (`onConnectionAttempt` callback)
+   - `PendingConnection` with `respond_with_success(msg)`, `respond_with_refused()`,
+     `respond_with_error(msg)` — captures URL for test assertions
+   - `MockConnection` for injecting server messages: `send_to_client(msg)`,
+     `send_to_client_and_close(msg)`, `simulate_disconnect()`
+   - `MockTransport` as the client-side transport interface with `connect(url)`
+   - Connection counting, client message capture, active connection tracking
+
+4. **Implement `Realtime` client constructor:**
+   - Accept `ClientOptions` with `autoConnect` (default true), `echoMessages`,
+     `transportParams`
+   - Build WebSocket URL from host, scheme (ws/wss), query params (v=2, format,
+     heartbeats=true, echo, key/token, custom transport params)
+   - `RTC1f`: custom `transportParams` override defaults with same key
+
+5. **Implement `Connection` with state machine:**
+   - State broadcast/event channel for state change notifications
+   - `connect()` — RTN11: clear close flag, transition to Connecting, spawn
+     connection task
+   - `close()` — RTN12: set close flag, transition through Closing to Closed
+   - `on_state_change()` — subscribe to state change events
+   - State accessors: `state()`, `id()`, `key()`, `error_reason()`
+
+6. **Implement connection lifecycle:**
+   - Spawn async task for WebSocket connection
+   - On CONNECTED message: store connectionId, connectionKey, connectionStateTtl;
+     transition to Connected
+   - On ERROR message (no channel): transition to Failed
+   - On CLOSED message: transition to Closed
+   - Auto-connect on construction when `autoConnect: true` (RTN3)
+
+7. **Write tests** for: auto-connect (RTN3), explicit connect, close lifecycle
+   (RTC15/RTC16), connection state events (RTN4), connection ID (RTN8a-c),
+   connection key (RTN9a-c), URL parameters (RTC1a echo, RTC1f transport params),
+   error reason on disconnected/failed (RTN25).
 
 ### References
-- Spec: `RTN1–RTN27`, `RTC1–RTC17`
-- UTS: `realtime/unit/connection/`, `realtime/unit/client/`
+- Spec: `RTN3`, `RTN4`, `RTN8`, `RTN9`, `RTN11`, `RTN12`, `RTN25`, `RTC1`,
+  `RTC12`, `RTC15`, `RTC16`
+- UTS: `realtime/unit/helpers/mock_websocket.md`,
+  `realtime/unit/connection/auto_connect_test.md`,
+  `realtime/unit/connection/connection_id_key_test.md`,
+  `realtime/unit/connection/error_reason_test.md`,
+  `realtime/unit/client/realtime_client.md`
+
+### Findings
+
+- **Mock WebSocket needs cloneable connections.** Tests often need to grab a
+  connection handle from the mock and inject messages from outside the handler.
+  The `MockConnection` type must be cloneable/shareable (e.g. using channels
+  rather than direct socket access).
+
+- **`heartbeats=true` must be in the URL.** For platforms where the WebSocket
+  library doesn't surface ping frame events (most platforms), the client must
+  request HEARTBEAT protocol messages by sending `heartbeats=true` in the
+  connection query parameters.
+
+- **Connection ID/key clearing in terminal states.** When transitioning to
+  Closed, Failed, or Suspended, the connection ID and key must be cleared
+  (set to null). This is easy to miss and affects resume behavior.
+
+- **`transportParams` override semantics.** Custom transport params with the
+  same key as a default param (e.g. `heartbeats`) should replace the default,
+  not append. Implement as: remove existing key, then add new value.
+
+---
+
+## Phase 7b: Realtime — Connection Failures, Resume & Ping
+
+### Goal
+Robust connection failure handling, resume/recovery, ping, whenState, and
+update events.
+
+### Steps
+
+1. **Implement connection retry loop** — the main async loop that manages
+   reconnection:
+   - On unexpected disconnect: transition to Disconnected, wait
+     `disconnectedRetryTimeout`, retry (RTN14d)
+   - Track `disconnected_since` timestamp; if elapsed time exceeds
+     `connectionStateTtl`, transition to Suspended (RTN14e)
+   - In Suspended: wait `suspendedRetryTimeout`, retry indefinitely (RTN14f)
+   - On close requested: break out of loop cleanly
+   - On Fatal error (ERROR with no channel): transition to Failed, stop
+
+2. **Implement connection resume** (RTN15):
+   - Add `resume=<connectionKey>` to URL query when reconnecting with a
+     previous connection key
+   - Clear connection key in terminal states (Suspended/Closed/Failed) to
+     prevent stale resumes
+   - Handle CONNECTED with error (failed resume): set error_reason but still
+     transition to Connected (RTN15c7)
+
+3. **Implement DISCONNECTED message handling:**
+   - Server sends DISCONNECTED → transition to Disconnected with error reason
+   - Token error codes (40140-40149): transition to Failed if no means to
+     renew token (RTN15h1)
+   - Non-token errors: normal reconnect cycle (RTN15h3)
+
+4. **Implement UPDATE events** (RTN24):
+   - When CONNECTED received while already Connected, emit an Update event
+     (not Connected event)
+   - Update connection details (ID, key, TTL) from the new CONNECTED message
+
+5. **Implement ping** (RTN13):
+   - Send HEARTBEAT with random ID via client message channel
+   - Match responses by ID using pending ping registry
+   - Return round-trip duration on success
+   - Error immediately in Initialized/Suspended/Closing/Closed/Failed states
+   - Defer in Connecting/Disconnected: wait for Connected, then ping
+   - Timeout with `realtimeRequestTimeout`
+   - Fail pending pings on terminal state transitions
+
+6. **Implement whenState** (RTN26):
+   - If already in target state: invoke callback immediately with null
+   - Otherwise: spawn listener that fires once on matching state transition
+
+7. **Multiplex server and client messages** using async select/race:
+   - Server messages from WebSocket
+   - Client messages from internal channel (for ping HEARTBEAT sends)
+
+8. **Write tests** for: RTN14a/d/e/f/g, RTN15a/b/c4/c6/c7/g/h1/h3/j,
+   RTN24 update events, RTN25 error reason, RTN13a/b ping, RTN26a/b whenState.
+
+### References
+- Spec: `RTN13`, `RTN14`, `RTN15`, `RTN24`, `RTN25`, `RTN26`
+- UTS: `realtime/unit/connection/connection_open_failures_test.md`,
+  `realtime/unit/connection/connection_failures_test.md`,
+  `realtime/unit/connection/connection_ping_test.md`,
+  `realtime/unit/connection/when_state_test.md`,
+  `realtime/unit/connection/update_events_test.md`
+
+### Findings
+
+- **await_state race condition.** When testing disconnect/reconnect sequences,
+  `await_state(Connected)` can return immediately if the state is still
+  Connected from the initial connection (before the disconnect message is
+  processed). Fix: always `await_state(Disconnected)` first, then
+  `await_state(Connected)` for the reconnection.
+
+- **Ping needs multiplexed message handling.** The connection message loop
+  must handle both server-to-client messages and client-to-server messages
+  (for ping). Use async select/race with an internal channel for client
+  messages, not direct WebSocket writes from the ping method.
+
+- **Pending pings must be failed on terminal states.** When the connection
+  transitions to Failed/Closed/Closing/Suspended, all pending ping futures
+  must be resolved with an error. Otherwise they hang forever.
+
+- **Connection key cleared too eagerly.** The key must only be cleared in
+  terminal states (Suspended/Closed/Failed), not in Disconnected. Clearing
+  in Disconnected prevents resume on reconnect.
+
+---
+
+## Phase 7c: Realtime — Heartbeats, Fallback & Timeouts
+
+### Goal
+Heartbeat idle detection, fallback host handling for initial connections,
+and timeout configuration. Features that require channels or auth are
+deferred to the phases where their dependencies are satisfied.
+
+### Steps
+
+1. **Implement heartbeat idle timer** (RTN23):
+   - Store `maxIdleInterval` from CONNECTED message's `connectionDetails`
+   - Compute idle timeout = `maxIdleInterval + realtimeRequestTimeout`
+   - Add idle timer as a third branch in the async select/race message loop
+   - On any received message (HEARTBEAT, ACK, MESSAGE, etc.): reset the timer
+   - On timeout expiry: transition to Disconnected and trigger reconnect
+   - Recompute timeout after each CONNECTED message (maxIdleInterval may change)
+   - If `maxIdleInterval` is 0 or absent: disable idle monitoring
+
+2. **Choose RTN23a vs RTN23b** based on platform:
+   - If your WebSocket library does NOT surface ping frame events (most platforms):
+     use RTN23a with HEARTBEAT protocol messages, send `heartbeats=true` in URL
+   - If your WebSocket library CAN surface ping frames: use RTN23b, send
+     `heartbeats=false` or omit the parameter
+
+3. **Implement fallback hosts for Realtime** (RTN17):
+   - Store `fallback_hosts` list and `primary_host` in connection state
+   - RTN17i: Always try primary host first on every connection attempt
+   - On connection refused or DISCONNECTED with 5xx status (RTN17f/f1):
+     try fallback hosts in random order
+   - RTN17g: If fallback host list is empty (custom host), skip fallback
+   - RTN17h: Default fallback hosts from client options (REC2)
+   - Extract a `try_connect(url)` helper to enable retrying across hosts
+   - Add `build_url_with_host(host)` for constructing fallback URLs
+
+4. **Verify timeout configuration** (RTC7):
+   - Default values: `realtimeRequestTimeout=10s`, `disconnectedRetryTimeout=15s`,
+     `suspendedRetryTimeout=30s`, `httpOpenTimeout=4s`, `httpRequestTimeout=10s`
+   - Custom `disconnectedRetryTimeout` controls reconnection delay
+
+5. **Update existing tests** that use `respond_with_refused()` for simple
+   retry testing: add empty fallback host list to prevent unintended fallback
+   attempts consuming mock connection attempts.
+
+6. **Write tests** for: heartbeats=true in URL, idle timeout disconnect/reconnect,
+   HEARTBEAT resets timer, any message resets timer, resume after idle timeout,
+   continuous activity keeps alive, primary host preference, connection refused
+   triggers fallback, 5xx triggers fallback, empty fallback set, default
+   fallback domains, disconnected retry timeout, default timeout values.
+
+### Deferred to later phases
+
+These features are listed in the RTN17/RTN22/RTC7 UTS specs but require
+channels or auth infrastructure that doesn't exist yet:
+
+- **RTN22** (server-initiated reauth) → **Phase 9** (needs authCallback)
+- **RTN7** (ACK/NACK) → **Phase 8** (needs channel publish)
+- **RTN17e** (HTTP requests use same fallback host) → **Phase 8** (needs channels)
+- **RTN17j** (connectivity check before fallback) → **Phase 8** (needs HTTP in RT)
+- **RTC7** attach/detach timeout tests → **Phase 8** (needs channel operations)
+
+### References
+- Spec: `RTN23`, `RTN17`, `RTC7`
+- UTS: `realtime/unit/connection/heartbeat_test.md`,
+  `realtime/unit/connection/fallback_hosts_test.md`,
+  `realtime/unit/client/realtime_timeouts.md`
+
+### Findings
+
+- **Fallback hosts break existing retry tests.** When fallback host support is
+  added, existing tests that use `respond_with_refused()` for simple retry
+  behavior will now also attempt fallback hosts, consuming extra mock connection
+  attempts and causing unexpected test failures. Fix: add empty fallback host
+  list to all tests that expect simple same-host retry without fallback.
+
+- **Idle timer must not use `sleep` directly.** The idle timer needs to be
+  reset on every received message. Use a deadline-based approach (compute
+  `now + timeout`, reset deadline on each message) rather than a fixed sleep,
+  and integrate it as a branch in the async select/race loop.
+
+- **`maxIdleInterval` of 0 means no idle monitoring.** Some CONNECTED messages
+  may have `maxIdleInterval: 0` or omit it entirely. The idle timer should
+  only be active when the value is positive. Tests that don't care about
+  heartbeats should set `maxIdleInterval: 0` to avoid unexpected idle timeouts.
+
+- **`try_connect` needs to distinguish "never connected" from "connected then
+  disconnected".** Fallback should only happen when the initial connection
+  fails, not when an established connection later disconnects. Track whether
+  CONNECTED was ever received during a connection attempt to make this
+  distinction.
+
+- **5xx in DISCONNECTED triggers fallback, but only pre-CONNECTED.** A
+  DISCONNECTED with 503 received *before* any CONNECTED message (server
+  rejects immediately) should trigger fallback. A DISCONNECTED received
+  *after* being CONNECTED (server kicks) should go through normal reconnect.
+
+- **Shuffling fallback hosts.** Use a random shuffle for the fallback host
+  list on each connection attempt cycle. The UTS has a probabilistic test
+  for randomness (run 5 iterations, check for variation) which is inherently
+  flaky — consider using a seeded RNG or documenting as optional.
 
 ---
 
 ## Phase 8: Realtime Channels
 
+### Goal
+Channel attach/detach, publish, subscribe over Realtime. Also absorbs
+connection-level features that require channels to be testable.
+
 ### Steps
 <!-- To be filled in during implementation -->
 
+### Includes deferred items from Phase 7c
+- ACK/NACK — `RTN7` (message delivery confirmation, needs channel publish)
+- RTC7 attach/detach timeouts (needs channel attach/detach operations)
+- RTN17e HTTP requests use same fallback host (needs channel operations)
+- RTN17j connectivity check before fallback (needs HTTP client in RT layer)
+
 ### References
-- Spec: `RTL1–RTL32`, `RTS1–RTS5`
-- UTS: `realtime/unit/channels/`
+- Spec: `RTL1–RTL32`, `RTS1–RTS5`, `RTN7`, `RTN17e`, `RTN17j`
+- UTS: `realtime/unit/channels/`,
+  `realtime/unit/connection/fallback_hosts_test.md` (RTN17e, RTN17j remainder),
+  `realtime/unit/client/realtime_timeouts.md` (RTC7 attach/detach tests)
 
 ---
 
 ## Phase 9: Realtime Auth
 
+### Goal
+Auth integration with Realtime connections, including server-initiated
+re-authentication.
+
 ### Steps
 <!-- To be filled in during implementation -->
 
+### Includes deferred items from Phase 7c
+- RTN22 server-initiated reauth (AUTH message, token renewal without
+  disconnect, forced disconnect on failure — needs authCallback in RT layer)
+
 ### References
-- Spec: `RTC8`, `RSA4` (Realtime parts), `RSA8d` (Realtime)
-- UTS: `realtime/unit/auth/`
+- Spec: `RTC8`, `RSA4` (Realtime parts), `RSA8d` (Realtime), `RTN22`
+- UTS: `realtime/unit/auth/`,
+  `realtime/unit/connection/server_initiated_reauth_test.md` (RTN22)
 
 ---
 
