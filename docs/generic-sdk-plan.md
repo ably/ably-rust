@@ -522,26 +522,97 @@ channels or auth infrastructure that doesn't exist yet:
 
 ---
 
-## Phase 8: Realtime Channels
+## Phase 8a: Realtime — Channel Foundation
 
 ### Goal
-Channel attach/detach, publish, subscribe over Realtime. Also absorbs
-connection-level features that require channels to be testable.
+Channel collection, state machine, and options infrastructure. Everything else
+in Phase 8 depends on being able to create channels and observe state changes.
+
+### Steps
+<!-- To be filled in during implementation -->
+
+### References
+- Spec: `RTS1–RTS4`, `RTL2`, `TB2–TB4`, `RTS3`, `RTL16`
+- UTS: `realtime/unit/channels/channels_collection_test.md`,
+  `realtime/unit/channels/channel_state_events_test.md`,
+  `realtime/unit/channels/channel_options_test.md`
+
+### Findings
+<!-- Issues discovered during this phase -->
+
+---
+
+## Phase 8b: Realtime — Attach & Detach
+
+### Goal
+Core channel lifecycle operations. Also absorbs ACK/NACK (RTN7) and RTC7
+attach/detach timeouts deferred from Phase 7c.
 
 ### Steps
 <!-- To be filled in during implementation -->
 
 ### Includes deferred items from Phase 7c
-- ACK/NACK — `RTN7` (message delivery confirmation, needs channel publish)
+- ACK/NACK — `RTN7` (message delivery confirmation, needed for attach)
 - RTC7 attach/detach timeouts (needs channel attach/detach operations)
+
+### References
+- Spec: `RTL4`, `RTL5`, `RTN7`, `RTC7`
+- UTS: `realtime/unit/channels/channel_attach_test.md` (16 tests),
+  `realtime/unit/channels/channel_detach_test.md` (13 tests),
+  `realtime/unit/client/realtime_timeouts.md` (RTC7 attach/detach tests)
+
+### Findings
+<!-- Issues discovered during this phase -->
+
+---
+
+## Phase 8c: Realtime — Messages
+
+### Goal
+Publishing and subscribing to messages on channels.
+
+### Steps
+<!-- To be filled in during implementation -->
+
+### References
+- Spec: `RTL6`, `RTL7`, `RTL8`, `TM2`
+- UTS: `realtime/unit/channels/channel_publish_test.md` (23 tests, ~60K),
+  `realtime/unit/channels/channel_subscribe_test.md` (16 tests),
+  `realtime/unit/channels/message_field_population_test.md` (8 tests)
+
+### Findings
+<!-- Issues discovered during this phase -->
+
+---
+
+## Phase 8d: Realtime — Advanced Channel Features
+
+### Goal
+Connection-state impact, server-initiated events, history, and edge cases.
+Also absorbs RTN17e/j deferred from Phase 7c.
+
+### Steps
+<!-- To be filled in during implementation -->
+
+### Includes deferred items from Phase 7c
 - RTN17e HTTP requests use same fallback host (needs channel operations)
 - RTN17j connectivity check before fallback (needs HTTP client in RT layer)
 
 ### References
-- Spec: `RTL1–RTL32`, `RTS1–RTS5`, `RTN7`, `RTN17e`, `RTN17j`
-- UTS: `realtime/unit/channels/`,
-  `realtime/unit/connection/fallback_hosts_test.md` (RTN17e, RTN17j remainder),
-  `realtime/unit/client/realtime_timeouts.md` (RTC7 attach/detach tests)
+- Spec: `RTL3`, `RTL10`, `RTL12`, `RTL13`, `RTL14`, `RTL15`, `RTL23–RTL24`,
+  `RTL25`, `RTN17e`, `RTN17j`
+- UTS: `realtime/unit/channels/channel_connection_state_test.md`,
+  `realtime/unit/channels/channel_properties_test.md`,
+  `realtime/unit/channels/channel_server_initiated_detach_test.md`,
+  `realtime/unit/channels/channel_additional_attached_test.md`,
+  `realtime/unit/channels/channel_error_test.md`,
+  `realtime/unit/channels/channel_attributes_test.md`,
+  `realtime/unit/channels/channel_when_state_test.md`,
+  `realtime/unit/channels/channel_history_test.md`,
+  `realtime/unit/connection/fallback_hosts_test.md` (RTN17e, RTN17j remainder)
+
+### Findings
+<!-- Issues discovered during this phase -->
 
 ---
 

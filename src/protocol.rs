@@ -213,3 +213,77 @@ pub struct ConnectionStateChange {
     pub event: ConnectionEvent,
     pub reason: Option<ErrorInfo>,
 }
+
+/// Channel state for Realtime channels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelState {
+    Initialized,
+    Attaching,
+    Attached,
+    Detaching,
+    Detached,
+    Suspended,
+    Failed,
+}
+
+/// Events emitted by channels, matching ChannelState plus Update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelEvent {
+    Initialized,
+    Attaching,
+    Attached,
+    Detaching,
+    Detached,
+    Suspended,
+    Failed,
+    Update,
+}
+
+impl From<ChannelState> for ChannelEvent {
+    fn from(state: ChannelState) -> Self {
+        match state {
+            ChannelState::Initialized => ChannelEvent::Initialized,
+            ChannelState::Attaching => ChannelEvent::Attaching,
+            ChannelState::Attached => ChannelEvent::Attached,
+            ChannelState::Detaching => ChannelEvent::Detaching,
+            ChannelState::Detached => ChannelEvent::Detached,
+            ChannelState::Suspended => ChannelEvent::Suspended,
+            ChannelState::Failed => ChannelEvent::Failed,
+        }
+    }
+}
+
+/// A state change event emitted when the channel state transitions.
+#[derive(Debug, Clone)]
+pub struct ChannelStateChange {
+    pub previous: ChannelState,
+    pub current: ChannelState,
+    pub event: ChannelEvent,
+    pub reason: Option<ErrorInfo>,
+    pub resumed: bool,
+    pub has_backlog: bool,
+}
+
+/// Channel modes for Realtime channels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelMode {
+    Presence,
+    Publish,
+    Subscribe,
+    PresenceSubscribe,
+}
+
+/// Protocol message flags (bitmask).
+pub mod flags {
+    pub const HAS_PRESENCE: i64 = 1 << 0;
+    pub const HAS_BACKLOG: i64 = 1 << 1;
+    pub const RESUMED: i64 = 1 << 2;
+    pub const HAS_LOCAL_PRESENCE: i64 = 1 << 3;
+    pub const TRANSIENT: i64 = 1 << 4;
+    pub const ATTACH_RESUME: i64 = 1 << 5;
+    // Channel mode flags (used in ATTACH messages)
+    pub const PRESENCE: i64 = 1 << 16;
+    pub const PUBLISH: i64 = 1 << 17;
+    pub const SUBSCRIBE: i64 = 1 << 18;
+    pub const PRESENCE_SUBSCRIBE: i64 = 1 << 19;
+}

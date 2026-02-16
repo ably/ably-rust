@@ -9,6 +9,7 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 
 use crate::auth::Credential;
+use crate::channel::Channels;
 use crate::protocol::{
     Action, ConnectionEvent, ConnectionState, ConnectionStateChange, ErrorInfo, ProtocolMessage,
 };
@@ -38,6 +39,8 @@ const DEFAULT_CONNECTION_STATE_TTL_MS: u64 = 120_000;
 pub struct Realtime {
     /// The connection object managing the WebSocket lifecycle.
     pub connection: Connection,
+    /// The channels collection.
+    pub channels: Channels,
 }
 
 impl Realtime {
@@ -49,9 +52,13 @@ impl Realtime {
         transport: Arc<MockTransport>,
     ) -> crate::Result<Self> {
         let auto_connect = options.auto_connect;
-        let connection = Connection::new(options, transport);
+        let channels = Channels::new();
+        let connection = Connection::new(options, transport, &channels);
 
-        let client = Self { connection };
+        let client = Self {
+            connection,
+            channels,
+        };
 
         if auto_connect {
             client.connect();
@@ -144,11 +151,14 @@ struct ConnectionInner {
 
     /// The primary realtime host (for RTN17i: always try primary first).
     primary_host: String,
+
+    /// The channels collection for routing channel messages.
+    channels: Channels,
 }
 
 impl Connection {
     #[cfg(test)]
-    fn new(options: &ClientOptions, transport: Arc<MockTransport>) -> Self {
+    fn new(options: &ClientOptions, transport: Arc<MockTransport>, channels: &Channels) -> Self {
         let host = &options.realtime_host;
         let scheme = if options.tls { "wss" } else { "ws" };
 
@@ -213,6 +223,7 @@ impl Connection {
                 max_idle_interval: Mutex::new(0),
                 fallback_hosts,
                 primary_host,
+                channels: channels.clone(),
             }),
         }
     }
@@ -504,14 +515,17 @@ impl Connection {
                 let (client_tx, mut client_rx) =
                     tokio::sync::mpsc::unbounded_channel::<ProtocolMessage>();
                 {
-                    *inner.client_msg_tx.lock().unwrap() = Some(client_tx);
+                    *inner.client_msg_tx.lock().unwrap() = Some(client_tx.clone());
                 }
+                // Share client_msg_tx with channels so they can send ATTACH/DETACH
+                inner.channels.set_client_msg_tx(Some(client_tx));
 
                 Connection::handle_connection(inner, &mut conn, &mut client_rx).await;
 
                 {
                     *inner.client_msg_tx.lock().unwrap() = None;
                 }
+                inner.channels.set_client_msg_tx(None);
 
                 let state = *inner.state.lock().unwrap();
 
@@ -921,12 +935,17 @@ impl Connection {
             }
             Action::Error => {
                 let reason = msg.error.clone();
-                // Connection-level error (no channel) -> FAILED
-                if msg.channel.is_none() {
+                if let Some(ref channel_name) = msg.channel {
+                    // Channel-level error — route to channel
+                    if let Some(channel) = inner.channels.get_if_exists(channel_name) {
+                        channel.handle_message(&msg);
+                    }
+                    false
+                } else {
+                    // Connection-level error (no channel) -> FAILED
                     Connection::set_state_inner(inner, ConnectionState::Failed, reason);
-                    return true;
+                    true
                 }
-                false
             }
             Action::Heartbeat => {
                 // RTN13e: Match heartbeat responses to pending pings by ID
@@ -948,10 +967,16 @@ impl Connection {
                 // The message is still processed (idle timer reset, etc.)
                 false
             }
-            _ => {
-                // Other messages handled by channel layer (Phase 8)
+            Action::Attached | Action::Detached | Action::Message | Action::Presence => {
+                // Route channel-scoped messages to the appropriate channel
+                if let Some(ref channel_name) = msg.channel {
+                    if let Some(channel) = inner.channels.get_if_exists(channel_name) {
+                        channel.handle_message(&msg);
+                    }
+                }
                 false
             }
+            _ => false,
         }
     }
 

@@ -267,39 +267,91 @@ Tasks:
 
 ---
 
-### Phase 8: Realtime — Channels
+### Phase 8a: Realtime — Channel Foundation
 
-**Goal:** Channel attach/detach, publish, subscribe over Realtime.
+**Goal:** Channel collection, state machine, and options infrastructure.
 
 Tasks:
-- [ ] Channel state machine — `RTL2`
-- [ ] Connection state side effects — `RTL3`
-- [ ] Attach — `RTL4`
-- [ ] Detach — `RTL5`
-- [ ] Publish — `RTL6`
-- [ ] Subscribe/unsubscribe — `RTL7`, `RTL8`
-- [ ] History — `RTL10`
-- [ ] Channel properties — `RTL15`
-- [ ] Channel options — `RTL16`, `RTS3`
+- [ ] Channels collection — `RTS1–RTS4` (get, release, iteration)
+- [ ] Channel state events — `RTL2` (state change EventEmitter)
+- [ ] Channel options — `TB2–TB4`, `RTS3`, `RTL16` (modes, params)
+
+**UTS test specs:**
+- `realtime/unit/channels/channels_collection_test.md`
+- `realtime/unit/channels/channel_state_events_test.md`
+- `realtime/unit/channels/channel_options_test.md`
+
+**Why first:** Everything else depends on being able to create channels and
+observe state changes. No dependency on attach/detach.
+
+---
+
+### Phase 8b: Realtime — Attach & Detach
+
+**Goal:** Core channel lifecycle operations.
+
+Tasks:
+- [ ] Attach — `RTL4` (attach flow, implicit attach, error handling)
+- [ ] Detach — `RTL5` (detach flow, error states)
+- [ ] RTC7 attach/detach timeouts (deferred from Phase 7c)
+- [ ] ACK/NACK — `RTN7` (deferred from Phase 7c, needed for attach confirmations)
+
+**UTS test specs:**
+- `realtime/unit/channels/channel_attach_test.md` (16 tests)
+- `realtime/unit/channels/channel_detach_test.md` (13 tests)
+- `realtime/unit/client/realtime_timeouts.md` — RTC7 attach/detach tests
+
+**Depends on:** Phase 8a
+
+---
+
+### Phase 8c: Realtime — Messages
+
+**Goal:** Publishing and subscribing to messages on channels.
+
+Tasks:
+- [ ] Publish — `RTL6` (publish, queuing, encoding, implicit attach)
+- [ ] Subscribe/unsubscribe — `RTL7`, `RTL8` (subscribe, filtering)
+- [ ] Message field population — `TM2` (id, timestamp, connectionId, etc.)
+
+**UTS test specs:**
+- `realtime/unit/channels/channel_publish_test.md` (23 tests, ~60K)
+- `realtime/unit/channels/channel_subscribe_test.md` (16 tests)
+- `realtime/unit/channels/message_field_population_test.md` (8 tests)
+
+**Depends on:** Phase 8b
+
+---
+
+### Phase 8d: Realtime — Advanced Channel Features
+
+**Goal:** Connection-state impact, server-initiated events, history, and edge
+cases.
+
+Tasks:
+- [ ] Connection state effects — `RTL3`
+- [ ] Channel properties — `RTL15` (attachSerial, channelSerial)
 - [ ] Server-initiated detach — `RTL13`
+- [ ] Additional ATTACHED — `RTL12` (reattach on updated ATTACHED)
 - [ ] Error handling — `RTL14`
-- [ ] Additional ATTACHED — `RTL12`
-- [ ] Message ordering — `RTL21`
-- [ ] Channels collection — `RTS1–RTS5`
 - [ ] Channel attributes — `RTL23–RTL24`
 - [ ] `whenState` — `RTL25`
-- [ ] ACK/NACK — `RTN7` (deferred from Phase 7c)
-- [ ] RTC7 attach/detach timeouts (deferred from Phase 7c)
+- [ ] Channel history — `RTL10`
 - [ ] RTN17e HTTP requests use same fallback host (deferred from Phase 7c)
 - [ ] RTN17j connectivity check before fallback (deferred from Phase 7c)
 
 **UTS test specs:**
-- `realtime/unit/channels/` (14 files)
-- `realtime/integration/channel_history_test.md`
+- `realtime/unit/channels/channel_connection_state_test.md`
+- `realtime/unit/channels/channel_properties_test.md`
+- `realtime/unit/channels/channel_server_initiated_detach_test.md`
+- `realtime/unit/channels/channel_additional_attached_test.md`
+- `realtime/unit/channels/channel_error_test.md`
+- `realtime/unit/channels/channel_attributes_test.md`
+- `realtime/unit/channels/channel_when_state_test.md`
+- `realtime/unit/channels/channel_history_test.md`
 - `realtime/unit/connection/fallback_hosts_test.md` — RTN17e, RTN17j remainder
-- `realtime/unit/client/realtime_timeouts.md` — RTC7 attach/detach tests
 
-**Existing state:** Not implemented.
+**Depends on:** Phase 8c
 
 ---
 
@@ -438,12 +490,18 @@ Phase 0: Test Infrastructure
     │                       │
     │                       └── Phase 7c: Heartbeats, Fallback, Timeouts
     │                               │
-    │                               ├── Phase 8: RT Channels (+RTN7, RTN17e/j, RTC7)
-    │                               │       │
-    │                               │       ├── Phase 10: Presence
-    │                               │       ├── Phase 11: VCDiff
-    │                               │       ├── Phase 12: LiveObjects
-    │                               │       └── Phase 13: Mutable Messages
+    │                               └── Phase 8a: Channel Foundation
+    │                                       │
+    │                                       └── Phase 8b: Attach/Detach (+RTN7, RTC7)
+    │                                               │
+    │                                               └── Phase 8c: Messages
+    │                                                       │
+    │                                                       └── Phase 8d: Advanced (+RTN17e/j)
+    │                                                               │
+    │                                                               ├── Phase 10: Presence
+    │                                                               ├── Phase 11: VCDiff
+    │                                                               ├── Phase 12: LiveObjects
+    │                                                               └── Phase 13: Mutable Messages
     │                               │
     │                               └── Phase 9: RT Auth (+RTN22)
     │
