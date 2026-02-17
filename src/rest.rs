@@ -547,6 +547,123 @@ impl<'a> Channel<'a> {
             self.opts.clone(),
         )
     }
+
+    /// Get a single message by its serial. RSL11.
+    pub async fn get_message(&self, serial: &str) -> Result<Message> {
+        if serial.is_empty() {
+            return Err(Error::new(
+                ErrorCode::BadRequest,
+                "serial is required (RSL11a)",
+            ));
+        }
+        let encoded = urlencoding::encode(serial);
+        let resp = self
+            .rest
+            .request(
+                http::Method::GET,
+                &format!("/channels/{}/messages/{}", self.name, encoded),
+            )
+            .send()
+            .await?;
+        let mut msg: Message = resp.body().await?;
+        Message::decode(&mut msg, &self.opts);
+        Ok(msg)
+    }
+
+    /// Get message versions as a paginated result. RSL14.
+    pub fn message_versions(&self, serial: &str) -> PaginatedRequestBuilder<Message> {
+        let encoded = urlencoding::encode(serial);
+        self.rest.paginated_request_with_options(
+            http::Method::GET,
+            &format!("/channels/{}/messages/{}/versions", self.name, encoded),
+            self.opts.clone(),
+        )
+    }
+
+    /// Update a message. RSL15.
+    pub async fn update_message(
+        &self,
+        msg: &Message,
+        operation: Option<&MessageOperation>,
+        params: Option<&[(&str, &str)]>,
+    ) -> Result<UpdateDeleteResult> {
+        self.send_message_mutation(msg, MessageAction::MessageUpdate, operation, params)
+            .await
+    }
+
+    /// Delete a message. RSL15.
+    pub async fn delete_message(
+        &self,
+        msg: &Message,
+        operation: Option<&MessageOperation>,
+        params: Option<&[(&str, &str)]>,
+    ) -> Result<UpdateDeleteResult> {
+        self.send_message_mutation(msg, MessageAction::MessageDelete, operation, params)
+            .await
+    }
+
+    /// Append to a message. RSL15.
+    pub async fn append_message(
+        &self,
+        msg: &Message,
+        operation: Option<&MessageOperation>,
+        params: Option<&[(&str, &str)]>,
+    ) -> Result<UpdateDeleteResult> {
+        self.send_message_mutation(msg, MessageAction::MessageAppend, operation, params)
+            .await
+    }
+
+    /// Shared helper for update/delete/append. RSL15.
+    async fn send_message_mutation(
+        &self,
+        msg: &Message,
+        action: MessageAction,
+        operation: Option<&MessageOperation>,
+        params: Option<&[(&str, &str)]>,
+    ) -> Result<UpdateDeleteResult> {
+        // RSL15a: serial is required
+        let serial = msg
+            .serial
+            .as_deref()
+            .ok_or_else(|| Error::new(ErrorCode::BadRequest, "serial is required (RSL15a)"))?;
+
+        // RSL15b: URL-encode serial in path
+        let encoded = urlencoding::encode(serial);
+
+        // RSL15c: Clone the message — do not mutate the user's copy
+        let mut body = msg.clone();
+        body.action = Some(action);
+
+        // RSL15b7: Set version from MessageOperation if provided
+        if let Some(op) = operation {
+            body.version = Some(serde_json::to_value(op).unwrap_or_default());
+        }
+
+        // RSL15d: Encode message data per RSL4
+        let cipher = self.opts.as_ref().and_then(|o| o.cipher.as_ref());
+        body.encode(&self.rest.inner.opts.format, cipher)?;
+
+        let mut req = self.rest.request(
+            http::Method::PATCH,
+            &format!("/channels/{}/messages/{}", self.name, encoded),
+        );
+
+        // RSL15f: Add query params if provided
+        if let Some(p) = params {
+            req = req.params(&p);
+        }
+
+        let resp = req.body(&body).send().await?;
+        resp.body().await
+    }
+
+    /// Get the annotations interface for this channel. RSL10.
+    pub fn annotations(&self) -> RestAnnotations<'_> {
+        RestAnnotations {
+            rest: self.rest,
+            channel_name: &self.name,
+        }
+    }
 }
 
 pub struct Presence<'a> {
@@ -579,6 +696,75 @@ impl<'a> Presence<'a> {
             http::Method::GET,
             &format!("/channels/{}/presence/history", self.name),
             self.opts.clone(),
+        )
+    }
+}
+
+/// REST annotations interface for a channel. RSL10, RSAN1-3.
+pub struct RestAnnotations<'a> {
+    rest: &'a Rest,
+    channel_name: &'a str,
+}
+
+impl<'a> RestAnnotations<'a> {
+    /// Publish an annotation on a message. RSAN1.
+    pub async fn publish(&self, msg_serial: &str, annotation: &Annotation) -> Result<()> {
+        // RSAN1a3: type is required
+        if annotation.annotation_type.is_none() {
+            return Err(Error::new(
+                ErrorCode::BadRequest,
+                "annotation type is required (RSAN1a3)",
+            ));
+        }
+
+        let mut body = annotation.clone();
+        body.action = Some(AnnotationAction::AnnotationCreate);
+
+        let encoded_serial = urlencoding::encode(msg_serial);
+        self.rest
+            .request(
+                http::Method::POST,
+                &format!(
+                    "/channels/{}/messages/{}/annotations",
+                    self.channel_name, encoded_serial
+                ),
+            )
+            .body(&body)
+            .send()
+            .await
+            .map(|_| ())
+    }
+
+    /// Delete an annotation on a message. RSAN2.
+    pub async fn delete(&self, msg_serial: &str, annotation: &Annotation) -> Result<()> {
+        let mut body = annotation.clone();
+        body.action = Some(AnnotationAction::AnnotationDelete);
+
+        let encoded_serial = urlencoding::encode(msg_serial);
+        self.rest
+            .request(
+                http::Method::POST,
+                &format!(
+                    "/channels/{}/messages/{}/annotations",
+                    self.channel_name, encoded_serial
+                ),
+            )
+            .body(&body)
+            .send()
+            .await
+            .map(|_| ())
+    }
+
+    /// Get annotations on a message as a paginated result. RSAN3.
+    pub fn get(&self, msg_serial: &str) -> PaginatedRequestBuilder<Annotation> {
+        let encoded_serial = urlencoding::encode(msg_serial);
+        self.rest.paginated_request_with_options(
+            http::Method::GET,
+            &format!(
+                "/channels/{}/messages/{}/annotations",
+                self.channel_name, encoded_serial
+            ),
+            (),
         )
     }
 }
@@ -896,8 +1082,78 @@ impl Default for Encoding {
     }
 }
 
+/// Action type for mutable messages. TM5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
+pub enum MessageAction {
+    MessageCreate = 0,
+    MessageUpdate = 1,
+    MessageDelete = 2,
+    Meta = 3,
+    MessageSummary = 4,
+    MessageAppend = 5,
+}
+
+/// Metadata for a message mutation operation. MOP2a-c.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageOperation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// Result of an update, delete, or append operation. UDR1, UDR2a.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateDeleteResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version_serial: Option<String>,
+}
+
+/// Action type for annotations. TAN2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
+pub enum AnnotationAction {
+    AnnotationCreate = 0,
+    AnnotationDelete = 1,
+}
+
+/// An annotation on a message. TAN1, TAN2.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Annotation {
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub annotation_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<AnnotationAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub msg_serial: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extras: Option<serde_json::Value>,
+}
+
 /// A message which is published to a channel or returned by a history request.
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -913,6 +1169,18 @@ pub struct Message {
     pub connection_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extras: Option<json::Map>,
+    /// Message action for mutable messages. TM2j.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<MessageAction>,
+    /// Message serial for mutable messages. TM2r.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+    /// Message version metadata. TM2s.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<serde_json::Value>,
+    /// Message annotations summary. TM2u, TM8a.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<serde_json::Value>,
 }
 
 impl Message {
@@ -1187,6 +1455,12 @@ impl Decode for PresenceMessage {
     fn decode(item: &mut Self::Item, options: &Self::Options) {
         crate::rest::decode(&mut item.data, &mut item.encoding, options.as_ref());
     }
+}
+
+impl Decode for Annotation {
+    type Options = ();
+    type Item = Self;
+    fn decode(_item: &mut Self::Item, _options: &Self::Options) {}
 }
 
 impl<T: DeserializeOwned + 'static + Send> Decode for DecodeRaw<T> {

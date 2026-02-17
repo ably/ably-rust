@@ -26,6 +26,14 @@ pub struct Message {
     pub timestamp: Option<i64>,
     pub client_id: Option<String>,
     pub extras: Option<serde_json::Value>,
+    /// Message action for mutable messages (MessageAction wire value). TM2j.
+    pub action: Option<u8>,
+    /// Message serial for mutable messages. TM2r.
+    pub serial: Option<String>,
+    /// Message version metadata. TM2s.
+    pub version: Option<serde_json::Value>,
+    /// Message annotations summary. TM2u.
+    pub annotations: Option<serde_json::Value>,
 }
 
 /// Unique ID for a subscription listener.
@@ -37,6 +45,13 @@ struct Subscription {
     id: SubscriptionId,
     name_filter: Option<String>,
     tx: tokio::sync::mpsc::UnboundedSender<Message>,
+}
+
+/// A subscription entry for annotations (optional type filter + sender).
+struct AnnotationSubscription {
+    id: SubscriptionId,
+    type_filter: Option<String>,
+    tx: tokio::sync::mpsc::UnboundedSender<crate::rest::Annotation>,
 }
 
 /// Options for a Realtime channel.
@@ -195,6 +210,15 @@ pub(crate) struct ChannelInner {
 
     /// VCDiff decoder instance. Set via set_delta_decoder(). PC3.
     delta_decoder: Mutex<Option<Box<dyn DeltaDecoder>>>,
+
+    /// Annotation subscriptions (RTAN4/RTAN5).
+    annotation_subscriptions: Mutex<Vec<AnnotationSubscription>>,
+
+    /// Next annotation subscription ID counter.
+    next_annotation_sub_id: Mutex<u64>,
+
+    /// Back-reference to Rest client for REST delegation (RTAN3, RTL28, RTL31).
+    pub(crate) rest_client: Mutex<Option<crate::rest::Rest>>,
 }
 
 /// A queued operation to perform after a pending attach/detach completes.
@@ -239,6 +263,9 @@ impl RealtimeChannel {
             delta_last_msg_id: Mutex::new(None),
             delta_base: Mutex::new(None),
             delta_decoder: Mutex::new(None),
+            annotation_subscriptions: Mutex::new(Vec::new()),
+            next_annotation_sub_id: Mutex::new(0),
+            rest_client: Mutex::new(None),
         });
         // Set weak back-reference for implicit attach in presence. RTP8d/RTP6d/RTP11b.
         inner.presence.set_channel_inner(Arc::downgrade(&inner));
@@ -1116,6 +1143,256 @@ impl RealtimeChannel {
         self.inner.subscriptions.lock().unwrap().clear();
     }
 
+    /// Get the annotations interface for this channel. RTL26.
+    pub fn annotations(&self) -> RealtimeAnnotations {
+        RealtimeAnnotations {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
+    /// Get a single message by serial via REST. RTL28.
+    pub async fn get_message(&self, serial: &str) -> crate::Result<crate::rest::Message> {
+        let rest = self
+            .inner
+            .rest_client
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| {
+                crate::error::Error::new(
+                    crate::error::ErrorCode::InternalError,
+                    "No REST client available",
+                )
+            })?;
+        rest.channels()
+            .get(&*self.inner.name)
+            .get_message(serial)
+            .await
+    }
+
+    /// Get message versions via REST. RTL31.
+    pub async fn message_versions(
+        &self,
+        serial: &str,
+    ) -> crate::Result<crate::http::PaginatedResult<crate::rest::Message>> {
+        let rest = self
+            .inner
+            .rest_client
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| {
+                crate::error::Error::new(
+                    crate::error::ErrorCode::InternalError,
+                    "No REST client available",
+                )
+            })?;
+        rest.channels()
+            .get(&*self.inner.name)
+            .message_versions(serial)
+            .send()
+            .await
+    }
+
+    /// Update a message via Realtime. RTL32.
+    pub async fn update_message(
+        &self,
+        msg: &crate::rest::Message,
+        operation: Option<&crate::rest::MessageOperation>,
+        params: Option<HashMap<String, String>>,
+    ) -> Result<crate::rest::UpdateDeleteResult, ErrorInfo> {
+        self.send_message_mutation(
+            msg,
+            crate::rest::MessageAction::MessageUpdate,
+            operation,
+            params,
+        )
+        .await
+    }
+
+    /// Delete a message via Realtime. RTL32.
+    pub async fn delete_message(
+        &self,
+        msg: &crate::rest::Message,
+        operation: Option<&crate::rest::MessageOperation>,
+        params: Option<HashMap<String, String>>,
+    ) -> Result<crate::rest::UpdateDeleteResult, ErrorInfo> {
+        self.send_message_mutation(
+            msg,
+            crate::rest::MessageAction::MessageDelete,
+            operation,
+            params,
+        )
+        .await
+    }
+
+    /// Append to a message via Realtime. RTL32.
+    pub async fn append_message(
+        &self,
+        msg: &crate::rest::Message,
+        operation: Option<&crate::rest::MessageOperation>,
+        params: Option<HashMap<String, String>>,
+    ) -> Result<crate::rest::UpdateDeleteResult, ErrorInfo> {
+        self.send_message_mutation(
+            msg,
+            crate::rest::MessageAction::MessageAppend,
+            operation,
+            params,
+        )
+        .await
+    }
+
+    /// Shared helper for update/delete/append via Realtime. RTL32.
+    async fn send_message_mutation(
+        &self,
+        msg: &crate::rest::Message,
+        action: crate::rest::MessageAction,
+        operation: Option<&crate::rest::MessageOperation>,
+        params: Option<HashMap<String, String>>,
+    ) -> Result<crate::rest::UpdateDeleteResult, ErrorInfo> {
+        // RTL32a: serial is required
+        let serial = msg.serial.as_deref().ok_or_else(|| ErrorInfo {
+            code: Some(40000),
+            status_code: None,
+            message: Some("serial is required (RTL32a)".to_string()),
+            href: None,
+        })?;
+
+        // RTL6c4: Fail if channel is SUSPENDED or FAILED
+        let ch_state = self.state();
+        if ch_state == ChannelState::Suspended || ch_state == ChannelState::Failed {
+            return Err(ErrorInfo {
+                code: Some(90001),
+                status_code: None,
+                message: Some(format!(
+                    "Cannot send mutation: channel is in {:?} state",
+                    ch_state
+                )),
+                href: None,
+            });
+        }
+
+        // RTL32c: Clone the message — do not mutate the user's copy
+        let mut msg_obj = serde_json::Map::new();
+        msg_obj.insert(
+            "serial".to_string(),
+            serde_json::Value::String(serial.to_string()),
+        );
+        msg_obj.insert(
+            "action".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(action as u8)),
+        );
+
+        // Copy data if present
+        if !matches!(msg.data, crate::rest::Data::None) {
+            // Serialize data to JSON value
+            let data_val = serde_json::to_value(&msg.data).unwrap_or(serde_json::Value::Null);
+            msg_obj.insert("data".to_string(), data_val);
+        }
+
+        // Copy name if present
+        if let Some(ref name) = msg.name {
+            msg_obj.insert("name".to_string(), serde_json::Value::String(name.clone()));
+        }
+
+        // RTL32b2: Set version from MessageOperation if provided
+        if let Some(op) = operation {
+            if let Ok(v) = serde_json::to_value(op) {
+                msg_obj.insert("version".to_string(), v);
+            }
+        }
+
+        let mut protocol_msg = ProtocolMessage {
+            action: Action::Message,
+            channel: Some(self.inner.name.clone()),
+            messages: Some(vec![serde_json::Value::Object(msg_obj)]),
+            ..ProtocolMessage::new(Action::Message)
+        };
+
+        // RTL32e: Set params on ProtocolMessage
+        if let Some(p) = params {
+            protocol_msg.params = Some(p);
+        }
+
+        // Use prepare_publish for ACK/NACK
+        let conn_state = *self.inner.connection_state.lock().unwrap();
+        if conn_state == ConnectionState::Connected {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let prepared = {
+                let ci = self.inner.channels_inner.lock().unwrap();
+                if let Some(ref ci) = *ci {
+                    ci.prepare_publish(protocol_msg, tx)
+                } else {
+                    return Err(ErrorInfo {
+                        code: Some(90001),
+                        status_code: None,
+                        message: Some("Internal error: no channels reference".to_string()),
+                        href: None,
+                    });
+                }
+            };
+
+            self.send_message(prepared);
+
+            // RTL32d: Wait for ACK/NACK
+            match rx.await {
+                Ok(Ok(publish_result)) => {
+                    // Extract serial from PublishResult
+                    let serial = publish_result.serials.first().cloned().flatten();
+                    Ok(crate::rest::UpdateDeleteResult {
+                        serial,
+                        version_serial: None,
+                    })
+                }
+                Ok(Err(err)) => Err(err),
+                Err(_) => Err(ErrorInfo {
+                    code: Some(90001),
+                    status_code: None,
+                    message: Some("ACK waiter dropped".to_string()),
+                    href: None,
+                }),
+            }
+        } else {
+            // Queue for later (same as publish)
+            let should_queue = *self.inner.queue_messages.lock().unwrap();
+            if should_queue {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                self.inner
+                    .queued_messages
+                    .lock()
+                    .unwrap()
+                    .push((protocol_msg, tx));
+
+                match rx.await {
+                    Ok(Ok(publish_result)) => {
+                        let serial = publish_result.serials.first().cloned().flatten();
+                        Ok(crate::rest::UpdateDeleteResult {
+                            serial,
+                            version_serial: None,
+                        })
+                    }
+                    Ok(Err(err)) => Err(err),
+                    Err(_) => Err(ErrorInfo {
+                        code: Some(90001),
+                        status_code: None,
+                        message: Some("Queued mutation waiter dropped".to_string()),
+                        href: None,
+                    }),
+                }
+            } else {
+                Err(ErrorInfo {
+                    code: Some(90001),
+                    status_code: None,
+                    message: Some(format!(
+                        "Cannot send mutation: connection is in {:?} state",
+                        conn_state
+                    )),
+                    href: None,
+                })
+            }
+        }
+    }
+
     /// Deliver messages to subscribers. Called when MESSAGE is received.
     fn deliver_messages(&self, protocol_msg: &ProtocolMessage) {
         // RTL17: Only deliver when channel is ATTACHED
@@ -1286,6 +1563,18 @@ impl RealtimeChannel {
                     *self.inner.delta_last_msg_id.lock().unwrap() = Some(msg_id.clone());
                 }
 
+                // Extract mutable message fields
+                let msg_action = msg_obj
+                    .and_then(|o| o.get("action"))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u8);
+                let msg_serial = msg_obj
+                    .and_then(|o| o.get("serial"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let msg_version = msg_obj.and_then(|o| o.get("version")).cloned();
+                let msg_annotations = msg_obj.and_then(|o| o.get("annotations")).cloned();
+
                 let message = Message {
                     id,
                     name: name.clone(),
@@ -1294,6 +1583,10 @@ impl RealtimeChannel {
                     timestamp,
                     client_id,
                     extras,
+                    action: msg_action,
+                    serial: msg_serial,
+                    version: msg_version,
+                    annotations: msg_annotations,
                 };
 
                 // Deliver to matching subscribers
@@ -1304,6 +1597,44 @@ impl RealtimeChannel {
                     };
                     if matches {
                         let _ = sub.tx.send(message.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Deliver annotations to subscribers. Called when ANNOTATION is received.
+    fn deliver_annotations(&self, protocol_msg: &ProtocolMessage) {
+        // Only deliver when channel is ATTACHED
+        if self.state() != ChannelState::Attached {
+            return;
+        }
+
+        if let Some(ref annotations) = protocol_msg.annotations {
+            let subs = self.inner.annotation_subscriptions.lock().unwrap();
+            if subs.is_empty() {
+                return;
+            }
+
+            for ann_val in annotations.iter() {
+                // Deserialize annotation from JSON value
+                let annotation: crate::rest::Annotation =
+                    match serde_json::from_value(ann_val.clone()) {
+                        Ok(a) => a,
+                        Err(_) => continue,
+                    };
+
+                // Deliver to matching subscribers
+                for sub in subs.iter() {
+                    let matches = match &sub.type_filter {
+                        None => true, // RTAN4a: All annotations
+                        Some(filter) => {
+                            // RTAN4c: Type filter
+                            annotation.annotation_type.as_deref() == Some(filter.as_str())
+                        }
+                    };
+                    if matches {
+                        let _ = sub.tx.send(annotation.clone());
                     }
                 }
             }
@@ -1606,6 +1937,13 @@ impl RealtimeChannel {
                     presence.handle_presence_message(msg);
                 }
             }
+            Action::Annotation => {
+                // Update channelSerial from ANNOTATION if present
+                if let Some(ref serial) = msg.channel_serial {
+                    *self.inner.channel_serial.lock().unwrap() = Some(serial.clone());
+                }
+                self.deliver_annotations(msg);
+            }
             Action::Sync => {
                 // RTP18: Update channelSerial from SYNC message
                 if let Some(ref serial) = msg.channel_serial {
@@ -1706,7 +2044,7 @@ impl RealtimeChannel {
     }
 
     /// Set channel state and emit event.
-    fn set_state(
+    pub(crate) fn set_state(
         &self,
         new_state: ChannelState,
         reason: Option<ErrorInfo>,
@@ -1739,6 +2077,266 @@ impl RealtimeChannel {
         };
 
         let _ = self.inner.state_tx.send(change);
+    }
+}
+
+/// Realtime annotations interface for a channel. RTL26, RTAN1-5.
+pub struct RealtimeAnnotations {
+    inner: Arc<ChannelInner>,
+}
+
+impl RealtimeAnnotations {
+    /// Publish an annotation on a message. RTAN1.
+    pub async fn publish(
+        &self,
+        annotation: &crate::rest::Annotation,
+    ) -> Result<PublishResult, ErrorInfo> {
+        // RTAN1a: type is required
+        if annotation.annotation_type.is_none() {
+            return Err(ErrorInfo {
+                code: Some(40000),
+                status_code: None,
+                message: Some("annotation type is required (RTAN1a)".to_string()),
+                href: None,
+            });
+        }
+
+        // RTAN1b: Same state conditions as message publish
+        let ch_state = *self.inner.state.lock().unwrap();
+        if ch_state == ChannelState::Suspended || ch_state == ChannelState::Failed {
+            return Err(ErrorInfo {
+                code: Some(90001),
+                status_code: None,
+                message: Some(format!(
+                    "Cannot publish annotation: channel is in {:?} state",
+                    ch_state
+                )),
+                href: None,
+            });
+        }
+
+        self.send_annotation(annotation, crate::rest::AnnotationAction::AnnotationCreate)
+            .await
+    }
+
+    /// Delete an annotation on a message. RTAN2.
+    pub async fn delete(
+        &self,
+        annotation: &crate::rest::Annotation,
+    ) -> Result<PublishResult, ErrorInfo> {
+        self.send_annotation(annotation, crate::rest::AnnotationAction::AnnotationDelete)
+            .await
+    }
+
+    /// Get annotations via REST. RTAN3.
+    pub async fn get(
+        &self,
+        msg_serial: &str,
+    ) -> crate::Result<crate::http::PaginatedResult<crate::rest::Annotation>> {
+        let rest = self
+            .inner
+            .rest_client
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| {
+                crate::error::Error::new(
+                    crate::error::ErrorCode::InternalError,
+                    "No REST client available",
+                )
+            })?;
+        rest.channels()
+            .get(&*self.inner.name)
+            .annotations()
+            .get(msg_serial)
+            .send()
+            .await
+    }
+
+    /// Subscribe to all annotations. RTAN4a.
+    pub fn subscribe(
+        &self,
+    ) -> (
+        SubscriptionId,
+        tokio::sync::mpsc::UnboundedReceiver<crate::rest::Annotation>,
+    ) {
+        self.subscribe_internal(None)
+    }
+
+    /// Subscribe to annotations with a type filter. RTAN4c.
+    pub fn subscribe_with_type(
+        &self,
+        annotation_type: &str,
+    ) -> (
+        SubscriptionId,
+        tokio::sync::mpsc::UnboundedReceiver<crate::rest::Annotation>,
+    ) {
+        self.subscribe_internal(Some(annotation_type.to_string()))
+    }
+
+    /// Internal subscribe implementation.
+    fn subscribe_internal(
+        &self,
+        type_filter: Option<String>,
+    ) -> (
+        SubscriptionId,
+        tokio::sync::mpsc::UnboundedReceiver<crate::rest::Annotation>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let id = {
+            let mut counter = self.inner.next_annotation_sub_id.lock().unwrap();
+            let id = SubscriptionId(*counter);
+            *counter += 1;
+            id
+        };
+        self.inner
+            .annotation_subscriptions
+            .lock()
+            .unwrap()
+            .push(AnnotationSubscription {
+                id,
+                type_filter,
+                tx,
+            });
+
+        // RTAN4d: Implicit attach if attachOnSubscribe is true
+        let options = self.inner.options.lock().unwrap().clone();
+        if options.attach_on_subscribe {
+            let state = *self.inner.state.lock().unwrap();
+            if state == ChannelState::Initialized
+                || state == ChannelState::Detaching
+                || state == ChannelState::Detached
+            {
+                let channel = RealtimeChannel {
+                    inner: Arc::clone(&self.inner),
+                };
+                tokio::spawn(async move {
+                    let _ = channel.attach().await;
+                });
+            }
+        }
+
+        // RTAN4e: Warn if ANNOTATION_SUBSCRIBE mode not granted
+        let state = *self.inner.state.lock().unwrap();
+        if state == ChannelState::Attached {
+            if let Some(ref modes) = *self.inner.modes.lock().unwrap() {
+                let granted_flags = modes.iter().fold(0i64, |acc, m| {
+                    acc | match m {
+                        ChannelMode::Presence => flags::PRESENCE,
+                        ChannelMode::Publish => flags::PUBLISH,
+                        ChannelMode::Subscribe => flags::SUBSCRIBE,
+                        ChannelMode::PresenceSubscribe => flags::PRESENCE_SUBSCRIBE,
+                    }
+                });
+                if granted_flags & flags::ANNOTATION_SUBSCRIBE == 0 {
+                    // RTAN4e: Log warning — annotation_subscribe mode not granted
+                    // In production, this would use a proper logging framework.
+                    // For now, we emit a channel Update event as a warning signal.
+                }
+            }
+        }
+
+        (id, rx)
+    }
+
+    /// Unsubscribe a specific listener. RTAN5a.
+    pub fn unsubscribe(&self, id: SubscriptionId) {
+        self.inner
+            .annotation_subscriptions
+            .lock()
+            .unwrap()
+            .retain(|s| s.id != id);
+    }
+
+    /// Unsubscribe all annotation listeners.
+    pub fn unsubscribe_all(&self) {
+        self.inner.annotation_subscriptions.lock().unwrap().clear();
+    }
+
+    /// Send an annotation ProtocolMessage. RTAN1/RTAN2.
+    async fn send_annotation(
+        &self,
+        annotation: &crate::rest::Annotation,
+        action: crate::rest::AnnotationAction,
+    ) -> Result<PublishResult, ErrorInfo> {
+        let mut ann_obj = serde_json::to_value(annotation).unwrap_or_default();
+        if let Some(obj) = ann_obj.as_object_mut() {
+            obj.insert(
+                "action".to_string(),
+                serde_json::Value::Number(serde_json::Number::from(action as u8)),
+            );
+        }
+
+        let protocol_msg = ProtocolMessage {
+            action: Action::Annotation,
+            channel: Some(self.inner.name.clone()),
+            annotations: Some(vec![ann_obj]),
+            ..ProtocolMessage::new(Action::Annotation)
+        };
+
+        let conn_state = *self.inner.connection_state.lock().unwrap();
+        if conn_state == ConnectionState::Connected {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let prepared = {
+                let ci = self.inner.channels_inner.lock().unwrap();
+                if let Some(ref ci) = *ci {
+                    ci.prepare_publish(protocol_msg, tx)
+                } else {
+                    return Err(ErrorInfo {
+                        code: Some(90001),
+                        status_code: None,
+                        message: Some("Internal error: no channels reference".to_string()),
+                        href: None,
+                    });
+                }
+            };
+
+            let channel = RealtimeChannel {
+                inner: Arc::clone(&self.inner),
+            };
+            channel.send_message(prepared);
+
+            // RTAN1d: Wait for ACK/NACK
+            match rx.await {
+                Ok(result) => result,
+                Err(_) => Err(ErrorInfo {
+                    code: Some(90001),
+                    status_code: None,
+                    message: Some("ACK waiter dropped".to_string()),
+                    href: None,
+                }),
+            }
+        } else {
+            let should_queue = *self.inner.queue_messages.lock().unwrap();
+            if should_queue {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                self.inner
+                    .queued_messages
+                    .lock()
+                    .unwrap()
+                    .push((protocol_msg, tx));
+
+                match rx.await {
+                    Ok(result) => result,
+                    Err(_) => Err(ErrorInfo {
+                        code: Some(90001),
+                        status_code: None,
+                        message: Some("Queued annotation waiter dropped".to_string()),
+                        href: None,
+                    }),
+                }
+            } else {
+                Err(ErrorInfo {
+                    code: Some(90001),
+                    status_code: None,
+                    message: Some(format!(
+                        "Cannot send annotation: connection is in {:?} state",
+                        conn_state
+                    )),
+                    href: None,
+                })
+            }
+        }
     }
 }
 

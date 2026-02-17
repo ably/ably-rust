@@ -1464,7 +1464,8 @@ impl Connection {
             | Action::Detached
             | Action::Message
             | Action::Presence
-            | Action::Sync => {
+            | Action::Sync
+            | Action::Annotation => {
                 // Route channel-scoped messages to the appropriate channel
                 if let Some(ref channel_name) = msg.channel {
                     if let Some(channel) = inner.channels.get_if_exists(channel_name) {

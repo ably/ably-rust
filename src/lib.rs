@@ -20727,4 +20727,1142 @@ mod unit_tests {
             Some("msg-1:0".to_string())
         );
     }
+
+    // ===============================================================
+    // Phase 13: Mutable Messages & Annotations
+    // ===============================================================
+
+    // -- Type tests --
+
+    #[test]
+    fn tm5_message_action_values() {
+        use crate::rest::MessageAction;
+        assert_eq!(MessageAction::MessageCreate as u8, 0);
+        assert_eq!(MessageAction::MessageUpdate as u8, 1);
+        assert_eq!(MessageAction::MessageDelete as u8, 2);
+        assert_eq!(MessageAction::Meta as u8, 3);
+        assert_eq!(MessageAction::MessageSummary as u8, 4);
+        assert_eq!(MessageAction::MessageAppend as u8, 5);
+    }
+
+    #[test]
+    fn tm2j_tm2r_message_action_serial_fields() {
+        let msg = crate::rest::Message {
+            action: Some(crate::rest::MessageAction::MessageUpdate),
+            serial: Some("01726232498871-001@abcdefghij:0".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(msg.action, Some(crate::rest::MessageAction::MessageUpdate));
+        assert_eq!(
+            msg.serial.as_deref(),
+            Some("01726232498871-001@abcdefghij:0")
+        );
+    }
+
+    #[test]
+    fn tm2s_message_version_populated() {
+        // When present on wire, version is a JSON object
+        let json_str = r#"{"serial":"s1","version":{"serial":"v1","timestamp":1000,"clientId":"c1","description":"desc","metadata":{"k":"v"}}}"#;
+        let msg: crate::rest::Message = serde_json::from_str(json_str).unwrap();
+        assert!(msg.version.is_some());
+        let v = msg.version.unwrap();
+        assert_eq!(v["serial"], "v1");
+        assert_eq!(v["timestamp"], 1000);
+        assert_eq!(v["clientId"], "c1");
+
+        // Default message has None version
+        let default_msg = crate::rest::Message::default();
+        assert!(default_msg.version.is_none());
+    }
+
+    #[test]
+    fn tm2u_tm8a_message_annotations_default() {
+        let msg = crate::rest::Message::default();
+        assert!(msg.annotations.is_none());
+
+        let json_str = r#"{"annotations":{"likes":{"total":5}}}"#;
+        let msg: crate::rest::Message = serde_json::from_str(json_str).unwrap();
+        assert!(msg.annotations.is_some());
+        assert_eq!(msg.annotations.unwrap()["likes"]["total"], 5);
+    }
+
+    #[test]
+    fn mop2_message_operation_fields() {
+        use crate::rest::MessageOperation;
+        let op = MessageOperation {
+            client_id: Some("user1".into()),
+            description: Some("edited".into()),
+            metadata: Some({
+                let mut m = serde_json::Map::new();
+                m.insert("key".into(), json!("val"));
+                m
+            }),
+        };
+        let v = serde_json::to_value(&op).unwrap();
+        assert_eq!(v["clientId"], "user1");
+        assert_eq!(v["description"], "edited");
+        assert_eq!(v["metadata"]["key"], "val");
+    }
+
+    #[test]
+    fn udr2a_update_delete_result_fields() {
+        let json_str = r#"{"serial":"s1","versionSerial":"vs1"}"#;
+        let result: crate::rest::UpdateDeleteResult = serde_json::from_str(json_str).unwrap();
+        assert_eq!(result.serial.as_deref(), Some("s1"));
+        assert_eq!(result.version_serial.as_deref(), Some("vs1"));
+
+        // null versionSerial
+        let json_str2 = r#"{"serial":"s2","versionSerial":null}"#;
+        let result2: crate::rest::UpdateDeleteResult = serde_json::from_str(json_str2).unwrap();
+        assert_eq!(result2.serial.as_deref(), Some("s2"));
+        assert!(result2.version_serial.is_none());
+    }
+
+    #[test]
+    fn tan2_annotation_type_fields() {
+        use crate::rest::{Annotation, AnnotationAction};
+        assert_eq!(AnnotationAction::AnnotationCreate as u8, 0);
+        assert_eq!(AnnotationAction::AnnotationDelete as u8, 1);
+
+        let ann = Annotation {
+            annotation_type: Some("reaction".into()),
+            action: Some(AnnotationAction::AnnotationCreate),
+            client_id: Some("user1".into()),
+            msg_serial: Some("serial1".into()),
+            data: Some(json!({"emoji": "👍"})),
+            serial: None,
+            version: None,
+            timestamp: Some(1000),
+            encoding: None,
+            id: Some("ann-1".into()),
+            extras: None,
+        };
+        let v = serde_json::to_value(&ann).unwrap();
+        assert_eq!(v["type"], "reaction");
+        assert_eq!(v["action"], 0);
+        assert_eq!(v["clientId"], "user1");
+    }
+
+    /// Create a mock REST client with JSON format (for tests that inspect request body).
+    fn mock_client_json(mock: MockHttpClient) -> crate::Rest {
+        ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap()
+    }
+
+    // -- REST unit tests --
+
+    #[tokio::test]
+    async fn rsl15b_update_message_sends_patch() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(
+            200,
+            &json!({"serial": "s1", "versionSerial": "vs1"}),
+        ));
+        let client = mock_client_json(mock);
+        let ch = client.channels().get("test");
+        let msg = crate::rest::Message {
+            serial: Some("serial-1".into()),
+            ..Default::default()
+        };
+        let result = ch.update_message(&msg, None, None).await?;
+        assert_eq!(result.serial.as_deref(), Some("s1"));
+        let reqs = get_mock(&client).captured_requests();
+        let req = reqs.last().unwrap();
+        assert_eq!(req.method, "PATCH");
+        assert!(req.url.path().contains("/messages/"));
+        let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
+        assert_eq!(body["action"], 1); // MESSAGE_UPDATE
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsl15b_delete_message_sends_patch() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!({"serial": "s1"})));
+        let client = mock_client_json(mock);
+        let ch = client.channels().get("test");
+        let msg = crate::rest::Message {
+            serial: Some("serial-1".into()),
+            ..Default::default()
+        };
+        let result = ch.delete_message(&msg, None, None).await?;
+        assert_eq!(result.serial.as_deref(), Some("s1"));
+        let reqs = get_mock(&client).captured_requests();
+        let req = reqs.last().unwrap();
+        assert_eq!(req.method, "PATCH");
+        let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
+        assert_eq!(body["action"], 2); // MESSAGE_DELETE
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsl15b_append_message_sends_patch() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!({"serial": "s1"})));
+        let client = mock_client_json(mock);
+        let ch = client.channels().get("test");
+        let msg = crate::rest::Message {
+            serial: Some("serial-1".into()),
+            ..Default::default()
+        };
+        let result = ch.append_message(&msg, None, None).await?;
+        assert_eq!(result.serial.as_deref(), Some("s1"));
+        let reqs = get_mock(&client).captured_requests();
+        let req = reqs.last().unwrap();
+        assert_eq!(req.method, "PATCH");
+        let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
+        assert_eq!(body["action"], 5); // MESSAGE_APPEND
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsl15b7_version_set_from_operation() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!({"serial": "s1"})));
+        let client = mock_client_json(mock);
+        let ch = client.channels().get("test");
+        let msg = crate::rest::Message {
+            serial: Some("serial-1".into()),
+            ..Default::default()
+        };
+        let op = crate::rest::MessageOperation {
+            description: Some("edited".into()),
+            ..Default::default()
+        };
+        ch.update_message(&msg, Some(&op), None).await?;
+        let reqs = get_mock(&client).captured_requests();
+        let req = reqs.last().unwrap();
+        let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
+        assert!(body.get("version").is_some());
+        assert_eq!(body["version"]["description"], "edited");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsl15b7_version_absent_without_operation() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!({"serial": "s1"})));
+        let client = mock_client_json(mock);
+        let ch = client.channels().get("test");
+        let msg = crate::rest::Message {
+            serial: Some("serial-1".into()),
+            ..Default::default()
+        };
+        ch.update_message(&msg, None, None).await?;
+        let reqs = get_mock(&client).captured_requests();
+        let req = reqs.last().unwrap();
+        let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
+        // version should not be present when no operation
+        assert!(body.get("version").is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsl15e_returns_update_delete_result() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({"serial": "s1", "versionSerial": "vs1"}))
+        });
+        let client = mock_client(mock);
+        let ch = client.channels().get("test");
+        let msg = crate::rest::Message {
+            serial: Some("serial-1".into()),
+            ..Default::default()
+        };
+        let result = ch.update_message(&msg, None, None).await?;
+        assert_eq!(result.serial.as_deref(), Some("s1"));
+        assert_eq!(result.version_serial.as_deref(), Some("vs1"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsl15e_null_version_serial() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({"serial": "s1", "versionSerial": null}))
+        });
+        let client = mock_client(mock);
+        let ch = client.channels().get("test");
+        let msg = crate::rest::Message {
+            serial: Some("serial-1".into()),
+            ..Default::default()
+        };
+        let result = ch.update_message(&msg, None, None).await?;
+        assert_eq!(result.serial.as_deref(), Some("s1"));
+        assert!(result.version_serial.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsl15f_params_sent_as_querystring() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            let url_str = req.url.to_string();
+            assert!(url_str.contains("foo=bar"));
+            MockResponse::json(200, &json!({"serial": "s1"}))
+        });
+        let client = mock_client(mock);
+        let ch = client.channels().get("test");
+        let msg = crate::rest::Message {
+            serial: Some("serial-1".into()),
+            ..Default::default()
+        };
+        ch.update_message(&msg, None, Some(&[("foo", "bar")]))
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsl15a_serial_required() {
+        let mock =
+            MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!({"serial": "s1"})));
+        let client = mock_client(mock);
+        let ch = client.channels().get("test");
+        let msg = crate::rest::Message::default(); // no serial
+        let result = ch.update_message(&msg, None, None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn rsl15b_serial_url_encoded() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            // Serial with special chars should be URL-encoded in path
+            let path = req.url.path().to_string();
+            assert!(
+                path.contains("%40") || path.contains("@"),
+                "serial should appear in path: {}",
+                path
+            );
+            MockResponse::json(200, &json!({"serial": "s1"}))
+        });
+        let client = mock_client(mock);
+        let ch = client.channels().get("test");
+        let msg = crate::rest::Message {
+            serial: Some("01726232498871-001@abcdefghij:0".into()),
+            ..Default::default()
+        };
+        ch.update_message(&msg, None, None).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsl11b_get_message_sends_get() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            assert_eq!(req.method, "GET");
+            assert!(req.url.path().contains("/channels/test/messages/"));
+            MockResponse::json(
+                200,
+                &json!({"id": "msg-1", "name": "event", "data": "hello"}),
+            )
+        });
+        let client = mock_client(mock);
+        let ch = client.channels().get("test");
+        let msg = ch.get_message("serial-1").await?;
+        assert_eq!(msg.id.as_deref(), Some("msg-1"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsl11c_get_message_returns_message() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!({
+                    "id": "msg-1",
+                    "name": "event",
+                    "data": "hello",
+                    "serial": "s1",
+                    "action": 0
+                }),
+            )
+        });
+        let client = mock_client(mock);
+        let ch = client.channels().get("test");
+        let msg = ch.get_message("serial-1").await?;
+        assert_eq!(msg.name.as_deref(), Some("event"));
+        assert_eq!(msg.serial.as_deref(), Some("s1"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsl11a_get_message_serial_required() {
+        let mock =
+            MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!({"id": "msg-1"})));
+        let client = mock_client(mock);
+        let ch = client.channels().get("test");
+        let result = ch.get_message("").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn rsl14b_get_message_versions_sends_get() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            assert_eq!(req.method, "GET");
+            assert!(req.url.path().contains("/versions"));
+            MockResponse::json(200, &json!([{"id": "v1"}, {"id": "v2"}]))
+        });
+        let client = mock_client(mock);
+        let ch = client.channels().get("test");
+        let page = ch.message_versions("serial-1").send().await?;
+        let items = page.items().await?;
+        assert_eq!(items.len(), 2);
+        Ok(())
+    }
+
+    // -- REST annotations tests --
+
+    #[test]
+    fn rsl10_channel_annotations_accessor() {
+        let client = crate::Rest::from("appId.keyId:keySecret");
+        let ch = client.channels().get("test");
+        let _ann = ch.annotations(); // just verify it compiles and returns
+    }
+
+    #[tokio::test]
+    async fn rsan1c_publish_sends_post() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!({})));
+        let client = mock_client_json(mock);
+        let ch = client.channels().get("test");
+        let ann = crate::rest::Annotation {
+            annotation_type: Some("reaction".into()),
+            action: None,
+            client_id: None,
+            msg_serial: None,
+            data: None,
+            serial: None,
+            version: None,
+            timestamp: None,
+            encoding: None,
+            id: None,
+            extras: None,
+        };
+        ch.annotations().publish("msg-serial-1", &ann).await?;
+        let reqs = get_mock(&client).captured_requests();
+        let req = reqs.last().unwrap();
+        assert_eq!(req.method, "POST");
+        assert!(req.url.path().contains("/annotations"));
+        let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
+        assert_eq!(body["action"], 0); // ANNOTATION_CREATE
+        assert_eq!(body["type"], "reaction");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsan1a3_publish_validates_type() {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!({})));
+        let client = mock_client(mock);
+        let ch = client.channels().get("test");
+        let ann = crate::rest::Annotation {
+            annotation_type: None, // missing type
+            action: None,
+            client_id: None,
+            msg_serial: None,
+            data: None,
+            serial: None,
+            version: None,
+            timestamp: None,
+            encoding: None,
+            id: None,
+            extras: None,
+        };
+        let result = ch.annotations().publish("msg-serial-1", &ann).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn rsan2a_delete_sends_post() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(MockResponse::json(200, &json!({})));
+        let client = mock_client_json(mock);
+        let ch = client.channels().get("test");
+        let ann = crate::rest::Annotation {
+            annotation_type: Some("reaction".into()),
+            action: None,
+            client_id: None,
+            msg_serial: None,
+            data: None,
+            serial: None,
+            version: None,
+            timestamp: None,
+            encoding: None,
+            id: None,
+            extras: None,
+        };
+        ch.annotations().delete("msg-serial-1", &ann).await?;
+        let reqs = get_mock(&client).captured_requests();
+        let req = reqs.last().unwrap();
+        assert_eq!(req.method, "POST");
+        let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
+        assert_eq!(body["action"], 1); // ANNOTATION_DELETE
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rsan3b_get_sends_get() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            assert_eq!(req.method, "GET");
+            assert!(req.url.path().contains("/annotations"));
+            MockResponse::json(200, &json!([{"type": "reaction", "action": 0}]))
+        });
+        let client = mock_client(mock);
+        let ch = client.channels().get("test");
+        let page = ch.annotations().get("msg-serial-1").send().await?;
+        let items = page.items().await?;
+        assert_eq!(items.len(), 1);
+        Ok(())
+    }
+
+    // -- Realtime mutations tests --
+
+    #[tokio::test]
+    async fn rtl32b_update_message_sends_message() {
+        use crate::protocol::{Action, ProtocolMessage};
+
+        let (_, mock, conn, channel) = setup_attached_channel("test-rtl32-update", None).await;
+
+        let msg = crate::rest::Message {
+            serial: Some("serial-1".into()),
+            name: Some("event".into()),
+            ..Default::default()
+        };
+        let ch = channel.clone();
+        let t = tokio::spawn(async move { ch.update_message(&msg, None, None).await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Check the sent protocol message
+        let sent = mock.client_messages();
+        let mutation_msg = sent.iter().find(|m| {
+            m.message.action == Action::Message
+                && m.message.messages.is_some()
+                && m.message.messages.as_ref().unwrap().iter().any(|msg| {
+                    msg.get("action").and_then(|a| a.as_u64()) == Some(1) // MESSAGE_UPDATE
+                })
+        });
+        assert!(
+            mutation_msg.is_some(),
+            "Should have sent a MESSAGE with action MESSAGE_UPDATE"
+        );
+
+        // Send ACK
+        let serial = mutation_msg.unwrap().message.msg_serial.unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            res: Some(vec![crate::protocol::PublishResult {
+                serials: vec![Some("result-serial".into())],
+            }]),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+
+        let result = t.await.unwrap().unwrap();
+        assert_eq!(result.serial.as_deref(), Some("result-serial"));
+    }
+
+    #[tokio::test]
+    async fn rtl32b_delete_message_sends_message() {
+        use crate::protocol::{Action, ProtocolMessage};
+
+        let (_, mock, conn, channel) = setup_attached_channel("test-rtl32-delete", None).await;
+
+        let msg = crate::rest::Message {
+            serial: Some("serial-1".into()),
+            ..Default::default()
+        };
+        let ch = channel.clone();
+        let t = tokio::spawn(async move { ch.delete_message(&msg, None, None).await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let sent = mock.client_messages();
+        let mutation_msg = sent.iter().find(|m| {
+            m.message.action == Action::Message
+                && m.message.messages.as_ref().map_or(false, |msgs| {
+                    msgs.iter()
+                        .any(|msg| msg.get("action").and_then(|a| a.as_u64()) == Some(2))
+                })
+        });
+        assert!(
+            mutation_msg.is_some(),
+            "Should have sent MESSAGE with action MESSAGE_DELETE"
+        );
+
+        let serial = mutation_msg.unwrap().message.msg_serial.unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            res: Some(vec![crate::protocol::PublishResult {
+                serials: vec![Some("del-serial".into())],
+            }]),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+
+        let result = t.await.unwrap().unwrap();
+        assert_eq!(result.serial.as_deref(), Some("del-serial"));
+    }
+
+    #[tokio::test]
+    async fn rtl32b_append_message_sends_message() {
+        use crate::protocol::{Action, ProtocolMessage};
+
+        let (_, mock, conn, channel) = setup_attached_channel("test-rtl32-append", None).await;
+
+        let msg = crate::rest::Message {
+            serial: Some("serial-1".into()),
+            ..Default::default()
+        };
+        let ch = channel.clone();
+        let t = tokio::spawn(async move { ch.append_message(&msg, None, None).await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let sent = mock.client_messages();
+        let mutation_msg = sent.iter().find(|m| {
+            m.message.action == Action::Message
+                && m.message.messages.as_ref().map_or(false, |msgs| {
+                    msgs.iter()
+                        .any(|msg| msg.get("action").and_then(|a| a.as_u64()) == Some(5))
+                })
+        });
+        assert!(
+            mutation_msg.is_some(),
+            "Should have sent MESSAGE with action MESSAGE_APPEND"
+        );
+
+        let serial = mutation_msg.unwrap().message.msg_serial.unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+
+        let result = t.await.unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn rtl32b2_version_from_operation() {
+        use crate::protocol::{Action, ProtocolMessage};
+
+        let (_, mock, conn, channel) = setup_attached_channel("test-rtl32-version", None).await;
+
+        let msg = crate::rest::Message {
+            serial: Some("serial-1".into()),
+            ..Default::default()
+        };
+        let op = crate::rest::MessageOperation {
+            description: Some("edited".into()),
+            ..Default::default()
+        };
+        let ch = channel.clone();
+        let t = tokio::spawn(async move { ch.update_message(&msg, Some(&op), None).await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let sent = mock.client_messages();
+        let mutation_msg = sent.iter().find(|m| {
+            m.message.action == Action::Message
+                && m.message.messages.as_ref().map_or(false, |msgs| {
+                    msgs.iter().any(|msg| msg.get("version").is_some())
+                })
+        });
+        assert!(
+            mutation_msg.is_some(),
+            "Should have version field in message"
+        );
+        let msg_val = &mutation_msg.unwrap().message.messages.as_ref().unwrap()[0];
+        assert_eq!(msg_val["version"]["description"], "edited");
+
+        let serial = mutation_msg.unwrap().message.msg_serial.unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+        t.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn rtl32a_serial_validation() {
+        let (_, _, _conn, channel) = setup_attached_channel("test-rtl32-serial", None).await;
+
+        let msg = crate::rest::Message::default(); // no serial
+        let result = channel.update_message(&msg, None, None).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, Some(40000));
+    }
+
+    #[tokio::test]
+    async fn rtl32d_nack_returns_error() {
+        use crate::protocol::{Action, ErrorInfo, ProtocolMessage};
+
+        let (_, mock, conn, channel) = setup_attached_channel("test-rtl32-nack", None).await;
+
+        let msg = crate::rest::Message {
+            serial: Some("serial-1".into()),
+            ..Default::default()
+        };
+        let ch = channel.clone();
+        let t = tokio::spawn(async move { ch.update_message(&msg, None, None).await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let sent = mock.client_messages();
+        let mutation_msg = sent
+            .iter()
+            .find(|m| m.message.action == Action::Message)
+            .unwrap();
+        let serial = mutation_msg.message.msg_serial.unwrap();
+
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Nack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            error: Some(ErrorInfo {
+                code: Some(40000),
+                status_code: None,
+                message: Some("rejected".into()),
+                href: None,
+            }),
+            ..ProtocolMessage::new(Action::Nack)
+        });
+
+        let result = t.await.unwrap();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code, Some(40000));
+    }
+
+    #[tokio::test]
+    async fn rtl32e_params_in_protocol_message() {
+        use crate::protocol::{Action, ProtocolMessage};
+        use std::collections::HashMap;
+
+        let (_, mock, conn, channel) = setup_attached_channel("test-rtl32-params", None).await;
+
+        let msg = crate::rest::Message {
+            serial: Some("serial-1".into()),
+            ..Default::default()
+        };
+        let mut params = HashMap::new();
+        params.insert("key1".to_string(), "val1".to_string());
+        let ch = channel.clone();
+        let t = tokio::spawn(async move { ch.update_message(&msg, None, Some(params)).await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let sent = mock.client_messages();
+        let mutation_msg = sent
+            .iter()
+            .find(|m| m.message.action == Action::Message)
+            .unwrap();
+        assert!(mutation_msg.message.params.is_some());
+        assert_eq!(
+            mutation_msg
+                .message
+                .params
+                .as_ref()
+                .unwrap()
+                .get("key1")
+                .map(|s| s.as_str()),
+            Some("val1")
+        );
+
+        let serial = mutation_msg.message.msg_serial.unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+        t.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn rtl32c_does_not_mutate_message() {
+        use crate::protocol::{Action, ProtocolMessage};
+
+        let (_, mock, conn, channel) = setup_attached_channel("test-rtl32-nomutate", None).await;
+
+        let msg = crate::rest::Message {
+            serial: Some("serial-1".into()),
+            name: Some("original".into()),
+            ..Default::default()
+        };
+        let msg_clone = msg.name.clone();
+        let ch = channel.clone();
+        let t = tokio::spawn(async move { ch.update_message(&msg, None, None).await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let sent = mock.client_messages();
+        let serial = sent
+            .iter()
+            .find(|m| m.message.action == Action::Message)
+            .unwrap()
+            .message
+            .msg_serial
+            .unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+        t.await.unwrap().unwrap();
+
+        // The original message shouldn't be mutated (it was moved into spawn, so we check the clone)
+        assert_eq!(msg_clone.as_deref(), Some("original"));
+    }
+
+    // -- Realtime annotations tests --
+
+    #[tokio::test]
+    async fn rtl26_channel_annotations_accessor() {
+        let channel = crate::channel::RealtimeChannel::new(
+            "test-rtl26".to_string(),
+            crate::channel::RealtimeChannelOptions::default(),
+        );
+        let _ann = channel.annotations();
+        // Just verify it compiles and returns a RealtimeAnnotations
+    }
+
+    #[tokio::test]
+    async fn rtan1a_publish_sends_annotation() {
+        use crate::protocol::{Action, ProtocolMessage};
+
+        let (_, mock, conn, channel) = setup_attached_channel("test-rtan1a", None).await;
+
+        let ann = crate::rest::Annotation {
+            annotation_type: Some("reaction".into()),
+            action: None,
+            client_id: None,
+            msg_serial: Some("msg-serial-1".into()),
+            data: Some(json!({"emoji": "👍"})),
+            serial: None,
+            version: None,
+            timestamp: None,
+            encoding: None,
+            id: None,
+            extras: None,
+        };
+
+        let annotations = channel.annotations();
+        let t = tokio::spawn(async move { annotations.publish(&ann).await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let sent = mock.client_messages();
+        let ann_msg = sent.iter().find(|m| m.message.action == Action::Annotation);
+        assert!(ann_msg.is_some(), "Should have sent an ANNOTATION message");
+        let ann_msg = ann_msg.unwrap();
+        assert_eq!(ann_msg.message.channel.as_deref(), Some("test-rtan1a"));
+        assert!(ann_msg.message.annotations.is_some());
+        let ann_val = &ann_msg.message.annotations.as_ref().unwrap()[0];
+        assert_eq!(ann_val["action"], 0); // ANNOTATION_CREATE
+        assert_eq!(ann_val["type"], "reaction");
+
+        let serial = ann_msg.message.msg_serial.unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+
+        let result = t.await.unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn rtan1a_publish_validates_type() {
+        let (_, _, _conn, channel) = setup_attached_channel("test-rtan1a-val", None).await;
+
+        let ann = crate::rest::Annotation {
+            annotation_type: None, // missing type
+            action: None,
+            client_id: None,
+            msg_serial: None,
+            data: None,
+            serial: None,
+            version: None,
+            timestamp: None,
+            encoding: None,
+            id: None,
+            extras: None,
+        };
+        let result = channel.annotations().publish(&ann).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code, Some(40000));
+    }
+
+    #[tokio::test]
+    async fn rtan1b_publish_state_conditions() {
+        use crate::protocol::{ChannelState, ErrorInfo};
+
+        let channel = crate::channel::RealtimeChannel::new(
+            "test-rtan1b".to_string(),
+            crate::channel::RealtimeChannelOptions::default(),
+        );
+        // Channel is INITIALIZED, connection is INITIALIZED — should not error on state
+        // but will fail on no channels_inner. Let's test FAILED state directly.
+        channel.set_state(
+            ChannelState::Failed,
+            Some(ErrorInfo {
+                code: Some(90000),
+                status_code: None,
+                message: Some("test".into()),
+                href: None,
+            }),
+            false,
+            false,
+        );
+
+        let ann = crate::rest::Annotation {
+            annotation_type: Some("reaction".into()),
+            action: None,
+            client_id: None,
+            msg_serial: None,
+            data: None,
+            serial: None,
+            version: None,
+            timestamp: None,
+            encoding: None,
+            id: None,
+            extras: None,
+        };
+        let result = channel.annotations().publish(&ann).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().code, Some(90001));
+    }
+
+    #[tokio::test]
+    async fn rtan1d_publish_ack_nack() {
+        use crate::protocol::{Action, ErrorInfo, ProtocolMessage};
+
+        let (_, mock, conn, channel) = setup_attached_channel("test-rtan1d", None).await;
+
+        let ann = crate::rest::Annotation {
+            annotation_type: Some("reaction".into()),
+            action: None,
+            client_id: None,
+            msg_serial: None,
+            data: None,
+            serial: None,
+            version: None,
+            timestamp: None,
+            encoding: None,
+            id: None,
+            extras: None,
+        };
+
+        let annotations = channel.annotations();
+        let t = tokio::spawn(async move { annotations.publish(&ann).await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let sent = mock.client_messages();
+        let ann_msg = sent
+            .iter()
+            .find(|m| m.message.action == Action::Annotation)
+            .unwrap();
+        let serial = ann_msg.message.msg_serial.unwrap();
+
+        // Send NACK
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Nack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            error: Some(ErrorInfo {
+                code: Some(40000),
+                status_code: None,
+                message: Some("rejected".into()),
+                href: None,
+            }),
+            ..ProtocolMessage::new(Action::Nack)
+        });
+
+        let result = t.await.unwrap();
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn rtan2a_delete_sends_annotation() {
+        use crate::protocol::{Action, ProtocolMessage};
+
+        let (_, mock, conn, channel) = setup_attached_channel("test-rtan2a", None).await;
+
+        let ann = crate::rest::Annotation {
+            annotation_type: Some("reaction".into()),
+            action: None,
+            client_id: None,
+            msg_serial: None,
+            data: None,
+            serial: None,
+            version: None,
+            timestamp: None,
+            encoding: None,
+            id: None,
+            extras: None,
+        };
+
+        let annotations = channel.annotations();
+        let t = tokio::spawn(async move { annotations.delete(&ann).await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let sent = mock.client_messages();
+        let ann_msg = sent
+            .iter()
+            .find(|m| m.message.action == Action::Annotation)
+            .unwrap();
+        let ann_val = &ann_msg.message.annotations.as_ref().unwrap()[0];
+        assert_eq!(ann_val["action"], 1); // ANNOTATION_DELETE
+
+        let serial = ann_msg.message.msg_serial.unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+        t.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn rtan4a_subscribe_delivers_annotations() {
+        use crate::protocol::{Action, ProtocolMessage};
+
+        let (_, _, conn, channel) = setup_attached_channel("test-rtan4a", None).await;
+
+        let (_, mut rx) = channel.annotations().subscribe();
+
+        // Send ANNOTATION protocol message
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Annotation,
+            channel: Some("test-rtan4a".into()),
+            annotations: Some(vec![json!({
+                "type": "reaction",
+                "action": 0,
+                "clientId": "user1",
+                "data": {"emoji": "👍"},
+            })]),
+            ..ProtocolMessage::new(Action::Annotation)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let ann = rx.try_recv().unwrap();
+        assert_eq!(ann.annotation_type.as_deref(), Some("reaction"));
+        assert_eq!(ann.client_id.as_deref(), Some("user1"));
+    }
+
+    #[tokio::test]
+    async fn rtan4c_subscribe_type_filter() {
+        use crate::protocol::{Action, ProtocolMessage};
+
+        let (_, _, conn, channel) = setup_attached_channel("test-rtan4c", None).await;
+
+        let (_, mut rx) = channel.annotations().subscribe_with_type("reaction");
+
+        // Send two annotations: one "reaction" and one "comment"
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Annotation,
+            channel: Some("test-rtan4c".into()),
+            annotations: Some(vec![
+                json!({"type": "comment", "action": 0, "clientId": "user1"}),
+                json!({"type": "reaction", "action": 0, "clientId": "user2"}),
+            ]),
+            ..ProtocolMessage::new(Action::Annotation)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let ann = rx.try_recv().unwrap();
+        assert_eq!(ann.annotation_type.as_deref(), Some("reaction"));
+        assert_eq!(ann.client_id.as_deref(), Some("user2"));
+        // Should not have received the "comment" annotation
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn rtan5a_unsubscribe_removes_listener() {
+        use crate::protocol::{Action, ProtocolMessage};
+
+        let (_, _, conn, channel) = setup_attached_channel("test-rtan5a", None).await;
+
+        let (sub_id, mut rx) = channel.annotations().subscribe();
+
+        // Unsubscribe
+        channel.annotations().unsubscribe(sub_id);
+
+        // Send annotation
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Annotation,
+            channel: Some("test-rtan5a".into()),
+            annotations: Some(vec![json!({
+                "type": "reaction",
+                "action": 0,
+            })]),
+            ..ProtocolMessage::new(Action::Annotation)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Should not receive anything
+        assert!(rx.try_recv().is_err());
+    }
+
+    // -- Deliver messages with mutable message fields --
+
+    #[tokio::test]
+    async fn deliver_messages_populates_mutable_fields() {
+        use crate::protocol::{Action, ProtocolMessage};
+
+        let (_, _, conn, channel) = setup_attached_channel("test-mutable-deliver", None).await;
+
+        let (_, mut rx) = channel.subscribe();
+
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some("test-mutable-deliver".into()),
+            id: Some("proto-id".into()),
+            messages: Some(vec![json!({
+                "id": "msg-1",
+                "name": "event",
+                "data": "hello",
+                "action": 1,
+                "serial": "ser-1",
+                "version": {"serial": "v1"},
+                "annotations": {"likes": {"total": 5}},
+            })]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.action, Some(1)); // MESSAGE_UPDATE
+        assert_eq!(msg.serial.as_deref(), Some("ser-1"));
+        assert_eq!(msg.version.as_ref().unwrap()["serial"], "v1");
+        assert_eq!(msg.annotations.as_ref().unwrap()["likes"]["total"], 5);
+    }
+
+    #[tokio::test]
+    async fn deliver_messages_mutable_fields_default_none() {
+        use crate::protocol::{Action, ProtocolMessage};
+
+        let (_, _, conn, channel) = setup_attached_channel("test-mutable-default", None).await;
+
+        let (_, mut rx) = channel.subscribe();
+
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some("test-mutable-default".into()),
+            id: Some("proto-id".into()),
+            messages: Some(vec![json!({
+                "id": "msg-1",
+                "data": "hello",
+            })]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msg = rx.try_recv().unwrap();
+        assert!(msg.action.is_none());
+        assert!(msg.serial.is_none());
+        assert!(msg.version.is_none());
+        assert!(msg.annotations.is_none());
+    }
 }

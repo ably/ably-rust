@@ -30,6 +30,7 @@ pub enum Action {
     Message = 15,
     Sync = 16,
     Auth = 17,
+    Annotation = 18,
 }
 
 /// A protocol message exchanged over the WebSocket connection.
@@ -92,6 +93,10 @@ pub struct ProtocolMessage {
     /// ACK results containing publish serials. TR4s.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub res: Option<Vec<PublishResult>>,
+
+    /// Annotations array for ANNOTATION protocol messages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<Vec<serde_json::Value>>,
 }
 
 /// Result of a publish operation, returned via ACK. PBR1.
@@ -123,6 +128,7 @@ impl ProtocolMessage {
             channel_serial: None,
             timestamp: None,
             res: None,
+            annotations: None,
         }
     }
 
@@ -315,4 +321,5 @@ pub mod flags {
     pub const PUBLISH: i64 = 1 << 17;
     pub const SUBSCRIBE: i64 = 1 << 18;
     pub const PRESENCE_SUBSCRIBE: i64 = 1 << 19;
+    pub const ANNOTATION_SUBSCRIBE: i64 = 1 << 20;
 }
