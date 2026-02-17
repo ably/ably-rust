@@ -856,7 +856,86 @@ channel reattachment.
 
 ---
 
-## Phase 12: LiveObjects
+## Phase 12: Mutable Messages & Annotations
+
+### Goal
+REST and Realtime support for message mutation (update, delete, append) and
+annotations on messages.
+
+### Steps
+
+1. **Add protocol extensions** — `Action::Annotation = 18`, `ANNOTATION_SUBSCRIBE`
+   flag (`1 << 20`), `annotations` field on ProtocolMessage.
+
+2. **Add new types:**
+   - `MessageAction` enum (TM5): MessageCreate=0, MessageUpdate=1, MessageDelete=2,
+     Meta=3, MessageSummary=4, MessageAppend=5
+   - `MessageOperation` (MOP2a-c): clientId, description, metadata
+   - `UpdateDeleteResult` (UDR1, UDR2a): serial, versionSerial
+   - `AnnotationAction` enum (TAN2): AnnotationCreate=0, AnnotationDelete=1
+   - `Annotation` (TAN1): type, action, clientId, msgSerial, data, serial, version,
+     timestamp, encoding, id, extras
+
+3. **Extend Message** with action (TM2j), serial (TM2r), version (TM2s),
+   annotations (TM2u/TM8a) fields.
+
+4. **REST channel methods:**
+   - `getMessage(serial)` (RSL11): GET `/channels/{name}/messages/{serial}`
+   - `messageVersions(serial)` (RSL14): paginated GET `/channels/{name}/messages/{serial}/versions`
+   - `updateMessage/deleteMessage/appendMessage` (RSL15): PATCH with serial validation
+     (RSL15a), URL encoding (RSL15b), action in body (RSL15b1), version from
+     MessageOperation (RSL15b7), no mutation of original (RSL15c), encoding (RSL15d),
+     returns UpdateDeleteResult (RSL15e), query params (RSL15f)
+   - `RestAnnotations` (RSL10, RSAN1-3): publish (POST with ANNOTATION_CREATE,
+     validates type RSAN1a3), delete (POST with ANNOTATION_DELETE), get (paginated GET)
+
+5. **Realtime channel methods:**
+   - `getMessage/messageVersions` (RTL28, RTL31): delegate to REST
+   - `updateMessage/deleteMessage/appendMessage` (RTL32): MESSAGE ProtocolMessage
+     with MessageAction, serial validation (RTL32a), version from operation (RTL32b2),
+     no mutation (RTL32c), ACK/NACK (RTL32d), params (RTL32e)
+   - `RealtimeAnnotations` (RTL26, RTAN1-5): publish/delete send ANNOTATION
+     ProtocolMessage, get delegates to REST, subscribe with type filter (RTAN4c),
+     implicit attach (RTAN4d), mode warning (RTAN4e), unsubscribe
+
+6. **Route annotations** — handle Action::Annotation in channel message dispatch
+   and protocol message routing. Add deliver_annotations() for subscriber delivery.
+
+7. **Populate mutable fields** — extract action, serial, version, annotations
+   from message JSON in deliver_messages().
+
+### References
+- Spec: `RSL10–RSL15`, `RSAN1–RSAN3`, `RTL26`, `RTL28`, `RTL31–RTL32`,
+  `RTAN1–RTAN5`, `TM2j/r/s/u`, `TM5`, `TM8/8a`, `MOP2a–c`, `UDR1–2a`, `TAN1–2`
+- UTS: `rest/unit/channel/update_delete_message.md`, `rest/unit/channel/annotations.md`,
+  `rest/unit/channel/get_message.md`, `rest/unit/channel/message_versions.md`,
+  `rest/unit/types/mutable_message_types.md`,
+  `realtime/unit/channels/channel_annotations.md`,
+  `realtime/unit/channels/channel_update_delete_message.md`,
+  `realtime/integration/mutable_messages_test.md`
+
+### Findings
+
+- **Request body inspection needs JSON format.** The default mock client uses
+  msgpack. Tests that assert on request body content must use JSON format
+  (`.use_binary_protocol(false)`) so the body can be parsed with JSON deserializers.
+
+- **Request body not available in handler.** The mock HTTP client's handler may
+  receive a request where `body` is `None` (because `reqwest::Body::as_bytes()`
+  returns `None` for streamed bodies). Use `captured_requests()` after the call
+  for body inspection instead of checking body inside the handler.
+
+- **RealtimeAnnotations follows RealtimePresence pattern.** Subscribe with
+  type filter, implicit attach, mode warning (ANNOTATION_SUBSCRIBE flag),
+  unsubscribe by ID — all mirror the presence subscription infrastructure.
+
+- **Serial URL-encoding.** Message serials may contain special characters like
+  `@` and `:`. These must be URL-encoded in REST paths. Use a URL-encoding
+  library (e.g. `urlencoding` crate in Rust).
+
+---
+
+## Phase 13: LiveObjects
 
 ### Steps
 <!-- To be filled in during implementation -->
@@ -864,17 +943,6 @@ channel reattachment.
 ### References
 - Spec: `RTO1–RTO19`, `RTLM1–RTLM25`, `RTLC1–RTLC14`, `PO1–PO11`
 - UTS: `realtime/unit/objects/`
-
----
-
-## Phase 13: Mutable Messages & Annotations (Realtime)
-
-### Steps
-<!-- To be filled in during implementation -->
-
-### References
-- Spec: `RTL28`, `RTL31–RTL32`, `RTAN1–RTAN5`
-- UTS: `realtime/unit/channels/channel_annotations.md`, `realtime/integration/mutable_messages_test.md`
 
 ---
 

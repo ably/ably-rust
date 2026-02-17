@@ -161,8 +161,8 @@ Tasks:
 - [ ] Push admin — `RSH1`
 - [ ] Request endpoint — `RSC25`
 - [ ] Message encryption — `RSL5`, `RSE1`, `RSE2`
-- [ ] Mutable messages — `RSL11`, `RSL14`, `RSL15`
-- [ ] Annotations — `RSL10`, `RSAN1–RSAN3`
+- [x] Mutable messages — `RSL11`, `RSL14`, `RSL15` (implemented in Phase 12)
+- [x] Annotations — `RSL10`, `RSAN1–RSAN3` (implemented in Phase 12)
 
 **UTS test specs:**
 - `rest/unit/request.md`, `rest/unit/time.md`, `rest/unit/stats.md`
@@ -432,7 +432,50 @@ Tasks:
 
 ---
 
-### Phase 12: LiveObjects
+### Phase 12: Mutable Messages & Annotations
+
+**Goal:** REST and Realtime support for message mutation and annotations.
+
+Tasks:
+- [x] Message types — `TM2j`, `TM2r`, `TM2s`, `TM2u`, `TM5`, `TM8a`
+- [x] MessageOperation — `MOP2a–c`
+- [x] UpdateDeleteResult — `UDR1`, `UDR2a`
+- [x] Annotation / AnnotationAction — `TAN1–TAN2`
+- [x] REST getMessage — `RSL11`
+- [x] REST getMessageVersions — `RSL14`
+- [x] REST updateMessage/deleteMessage/appendMessage — `RSL15`
+- [x] REST Annotations (publish/delete/get) — `RSL10`, `RSAN1–RSAN3`
+- [x] Realtime getMessage/getMessageVersions — `RTL28`, `RTL31`
+- [x] Realtime updateMessage/deleteMessage/appendMessage — `RTL32`
+- [x] Realtime Annotations (publish/delete/get/subscribe/unsubscribe) — `RTL26`, `RTAN1–RTAN5`
+- [x] Route Action::Annotation in protocol dispatch
+- [x] Populate mutable message fields in deliver_messages()
+
+**UTS test specs:**
+- `rest/unit/channel/update_delete_message.md`
+- `rest/unit/channel/annotations.md`
+- `rest/unit/channel/get_message.md`
+- `rest/unit/channel/message_versions.md`
+- `rest/unit/types/mutable_message_types.md`
+- `realtime/unit/channels/channel_get_message.md`
+- `realtime/unit/channels/channel_message_versions.md`
+- `realtime/unit/channels/channel_update_delete_message.md`
+- `realtime/unit/channels/channel_annotations.md`
+- `realtime/integration/mutable_messages_test.md`
+
+**Implementation notes:**
+- Added `urlencoding` crate for serial URL-encoding in REST paths.
+- REST mutations use PATCH `/channels/{name}/messages/{serial}` with MessageAction
+  in body. Annotations use POST to `/channels/{name}/messages/{msgSerial}/annotations`.
+- Realtime mutations use MESSAGE ProtocolMessage with MessageAction in message body,
+  ACK/NACK via prepare_publish(). Annotations use ANNOTATION ProtocolMessage (action=18).
+- RealtimeAnnotations follows RealtimePresence pattern: subscribe with type filter,
+  implicit attach, mode warning (ANNOTATION_SUBSCRIBE flag 1<<20).
+- 45 new tests, 552 total (4 pre-existing crypto failures).
+
+---
+
+### Phase 13: LiveObjects
 
 **Goal:** LiveObjects (Maps, Counters, Path Objects) — if required.
 
@@ -450,24 +493,6 @@ Tasks:
 - `realtime/integration/objects_*.md` (3 files)
 
 **Note:** This is a large, relatively new feature area. May be deferred.
-
----
-
-### Phase 13: Mutable Messages & Annotations (Realtime)
-
-**Goal:** Realtime support for message mutation and annotations.
-
-Tasks:
-- [ ] GetMessage/GetMessageVersions — `RTL28`, `RTL31`
-- [ ] Update/Delete/Append — `RTL32`
-- [ ] Annotations — `RTL26`, `RTAN1–RTAN5`
-
-**UTS test specs:**
-- `realtime/unit/channels/channel_get_message.md`
-- `realtime/unit/channels/channel_message_versions.md`
-- `realtime/unit/channels/channel_update_delete_message.md`
-- `realtime/unit/channels/channel_annotations.md`
-- `realtime/integration/mutable_messages_test.md`
 
 ---
 
@@ -519,8 +544,8 @@ Phase 0: Test Infrastructure
     │                                                               │
     │                                                               ├── Phase 10: Presence
     │                                                               ├── Phase 11: VCDiff
-    │                                                               ├── Phase 12: LiveObjects
-    │                                                               └── Phase 13: Mutable Messages
+    │                                                               ├── Phase 12: Mutable Messages
+    │                                                               └── Phase 13: LiveObjects
     │                               │
     │                               └── Phase 9: RT Auth (+RTN22)
     │
