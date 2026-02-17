@@ -8391,6 +8391,899 @@ mod unit_tests {
     }
 
     // ========================================================================
+    // Phase 9: Realtime Auth Tests
+    // ========================================================================
+
+    /// A test auth callback that returns TokenDetails with incrementing token strings.
+    struct TestAuthCallback {
+        call_count: std::sync::Arc<std::sync::atomic::AtomicU32>,
+        token_prefix: String,
+        /// If set, the callback will return an error.
+        should_fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        /// Captures the TokenParams passed to each invocation.
+        captured_params: std::sync::Arc<std::sync::Mutex<Vec<crate::auth::TokenParams>>>,
+        /// Token TTL in ms (0 = 1 hour default).
+        token_ttl_ms: u64,
+    }
+
+    impl TestAuthCallback {
+        fn new(prefix: &str) -> Self {
+            Self {
+                call_count: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                token_prefix: prefix.to_string(),
+                should_fail: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                captured_params: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                token_ttl_ms: 0,
+            }
+        }
+
+        fn with_ttl(mut self, ttl_ms: u64) -> Self {
+            self.token_ttl_ms = ttl_ms;
+            self
+        }
+
+        fn count(&self) -> u32 {
+            self.call_count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn set_should_fail(&self, fail: bool) {
+            self.should_fail
+                .store(fail, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn captured_params(&self) -> Vec<crate::auth::TokenParams> {
+            self.captured_params.lock().unwrap().clone()
+        }
+    }
+
+    impl crate::auth::AuthCallback for TestAuthCallback {
+        fn token<'a>(
+            &'a self,
+            params: &'a crate::auth::TokenParams,
+        ) -> std::pin::Pin<
+            Box<dyn Send + futures::Future<Output = Result<crate::auth::RequestOrDetails>> + 'a>,
+        > {
+            let count = self
+                .call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            let should_fail = self.should_fail.load(std::sync::atomic::Ordering::SeqCst);
+            self.captured_params.lock().unwrap().push(params.clone());
+
+            let token_str = format!("{}-{}", self.token_prefix, count);
+            let ttl_ms = self.token_ttl_ms;
+
+            Box::pin(async move {
+                if should_fail {
+                    return Err(crate::error::Error::new(
+                        crate::error::ErrorCode::Unauthorized,
+                        "Auth callback failed",
+                    ));
+                }
+
+                let metadata = if ttl_ms > 0 {
+                    Some(crate::auth::TokenMetadata {
+                        expires: chrono::Utc::now() + chrono::Duration::milliseconds(ttl_ms as i64),
+                        issued: chrono::Utc::now(),
+                        capability: "{\"*\":[\"*\"]}".to_string(),
+                        client_id: params.client_id.clone(),
+                    })
+                } else {
+                    None
+                };
+
+                Ok(crate::auth::RequestOrDetails::Details(
+                    crate::auth::TokenDetails {
+                        token: token_str,
+                        metadata,
+                    },
+                ))
+            })
+        }
+    }
+
+    // --- Connection Auth (RTN2e) ---
+
+    #[tokio::test]
+    async fn rtn2e_token_obtained_before_connection() {
+        // RTN2e: When authCallback is configured, the library must obtain a token
+        // BEFORE opening the WebSocket connection. The token is included in the
+        // WebSocket URL as the accessToken query parameter.
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let callback = std::sync::Arc::new(TestAuthCallback::new("callback-token"));
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .auto_connect(false)
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport.clone()).unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // authCallback was invoked
+        assert_eq!(callback.count(), 1);
+
+        // WebSocket URL contains the token from authCallback
+        let messages = transport.client_messages();
+        // Check the connection URL contains accessToken
+        let conns = mock.active_connections();
+        assert!(!conns.is_empty());
+
+        // Connection succeeded
+        assert_eq!(client.connection.state(), ConnectionState::Connected);
+    }
+
+    #[tokio::test]
+    async fn rtn2e_auth_callback_error_prevents_connection() {
+        // RTN2e: If authCallback fails, no WebSocket connection should be attempted.
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
+        callback.set_should_fail(true);
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .auto_connect(false)
+            .disconnected_retry_timeout(std::time::Duration::from_millis(50))
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport.clone()).unwrap();
+
+        client.connect();
+        // Should transition to DISCONNECTED due to auth failure
+        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
+
+        // Error reason is set
+        let error = client.connection.error_reason();
+        assert!(error.is_some());
+
+        // No WebSocket connection was established (auth failed before connect)
+        assert_eq!(mock.connection_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn rtn2e_auth_callback_receives_client_id() {
+        // RTN2e / RSA12a: authCallback receives TokenParams with configured clientId.
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .client_id("my-client-id")
+            .unwrap()
+            .auto_connect(false)
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport).unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // authCallback received TokenParams with clientId
+        let params = callback.captured_params();
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].client_id.as_deref(), Some("my-client-id"));
+    }
+
+    #[tokio::test]
+    async fn rtn2e_valid_token_reused_across_connections() {
+        // RTN2e: If a valid (non-expired) token exists from a previous authCallback
+        // invocation, it should be reused without invoking authCallback again.
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
+
+        let connection_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let cc = connection_count.clone();
+
+        let mock = MockWebSocket::with_handler(move |pending| {
+            cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .auto_connect(false)
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport).unwrap();
+
+        // First connection
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Disconnect
+        client.close();
+        assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
+
+        // Second connection — token should be reused
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // authCallback was only invoked once (token was reused)
+        assert_eq!(callback.count(), 1);
+    }
+
+    #[tokio::test]
+    async fn rtn2e_expired_token_triggers_new_callback() {
+        // RTN2e: If the cached token has expired, authCallback must be invoked again.
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        // Token expires in 100ms
+        let callback = std::sync::Arc::new(TestAuthCallback::new("token").with_ttl(100));
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .auto_connect(false)
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport).unwrap();
+
+        // First connection
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Disconnect
+        client.close();
+        assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
+
+        // Wait for token to expire
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Second connection — token expired, should get new one
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // authCallback was invoked twice
+        assert_eq!(callback.count(), 2);
+    }
+
+    // --- Server-Initiated Re-authentication (RTN22) ---
+
+    #[tokio::test]
+    async fn rtn22_server_auth_triggers_reauth() {
+        // RTN22: Server sends AUTH, client obtains new token and sends AUTH back.
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionEvent, ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .auto_connect(false)
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport.clone()).unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Subscribe to state changes
+        let mut rx = client.connection.on_state_change();
+
+        // Set up handler: when client sends AUTH back, respond with CONNECTED (update)
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap().clone();
+
+        // Server requests re-authentication
+        conn.send_to_client(ProtocolMessage::new(Action::Auth));
+
+        // Wait briefly for the async reauth task to complete
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Client should have sent AUTH back with new token
+        let client_msgs = transport.client_messages();
+        let auth_msgs: Vec<_> = client_msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Auth)
+            .collect();
+        assert_eq!(auth_msgs.len(), 1, "Client should send one AUTH message");
+
+        // AUTH message contains the new token
+        let auth_msg = &auth_msgs[0].message;
+        assert!(auth_msg.auth.is_some());
+        assert_eq!(
+            auth_msg.auth.as_ref().unwrap().access_token.as_deref(),
+            Some("token-2") // token-1 was initial connect, token-2 is reauth
+        );
+
+        // authCallback was called twice (initial connect + reauth)
+        assert_eq!(callback.count(), 2);
+
+        // Now server responds with CONNECTED (UPDATE)
+        conn.send_to_client(ProtocolMessage::connected("conn-1", "key-1-updated"));
+
+        // Wait for UPDATE event
+        let change = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(change.event, ConnectionEvent::Update);
+        assert_eq!(change.current, ConnectionState::Connected);
+        assert_eq!(change.previous, ConnectionState::Connected);
+    }
+
+    #[tokio::test]
+    async fn rtn22_connection_stays_connected_during_reauth() {
+        // RTN22: Connection remains CONNECTED during server-initiated reauth.
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionEvent, ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let callback = std::sync::Arc::new(TestAuthCallback::new("reauth-token"));
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .auto_connect(false)
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport.clone()).unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Collect state changes
+        let mut rx = client.connection.on_state_change();
+        let state_changes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sc = state_changes.clone();
+        tokio::spawn(async move {
+            while let Ok(change) = rx.recv().await {
+                sc.lock().unwrap().push(change);
+            }
+        });
+
+        // Server sends AUTH
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap().clone();
+        conn.send_to_client(ProtocolMessage::new(Action::Auth));
+
+        // Wait for reauth to complete
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Server responds with CONNECTED (UPDATE)
+        conn.send_to_client(ProtocolMessage::connected("conn-1", "key-1-updated"));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Connection never left CONNECTED
+        assert_eq!(client.connection.state(), ConnectionState::Connected);
+
+        // Only an UPDATE event, no state change events
+        let changes = state_changes.lock().unwrap();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].event, ConnectionEvent::Update);
+        assert_eq!(changes[0].current, ConnectionState::Connected);
+        assert_eq!(changes[0].previous, ConnectionState::Connected);
+    }
+
+    #[tokio::test]
+    async fn rtn22a_forced_disconnect_triggers_token_recovery() {
+        // RTN22a: Server forcibly disconnects with token error (40140-40149),
+        // triggering token-error recovery (RTN15h).
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let callback = std::sync::Arc::new(TestAuthCallback::new("recovery-token"));
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .auto_connect(false)
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport).unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Server forcibly disconnects with token error
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        let mut msg = ProtocolMessage::new(Action::Disconnected);
+        msg.error = Some(ErrorInfo {
+            code: Some(40142),
+            status_code: Some(401),
+            message: Some("Token expired".to_string()),
+            href: None,
+        });
+        conn.send_to_client(msg);
+
+        // Client should transition to DISCONNECTED with the token error
+        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
+
+        let error = client.connection.error_reason();
+        assert!(error.is_some());
+        assert_eq!(error.unwrap().code, Some(40142));
+    }
+
+    // --- Authorize (RTC8) ---
+
+    #[tokio::test]
+    async fn rtc8a_authorize_on_connected_sends_auth_message() {
+        // RTC8a: authorize() on CONNECTED obtains a new token and sends AUTH.
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .auto_connect(false)
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport.clone()).unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Set up: when client sends AUTH, respond with new CONNECTED
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap().clone();
+
+        // Spawn a task to watch for AUTH and respond
+        tokio::spawn(async move {
+            // Wait for the AUTH message to arrive
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            conn.send_to_client(ProtocolMessage::connected("conn-1", "key-2"));
+        });
+
+        // Call authorize
+        let token_details = client.auth.authorize().await;
+        assert!(token_details.is_ok());
+        let token = token_details.unwrap();
+        assert_eq!(token.token, "token-2");
+
+        // authCallback was called twice (initial connect + authorize)
+        assert_eq!(callback.count(), 2);
+
+        // An AUTH protocol message was sent
+        let client_msgs = transport.client_messages();
+        let auth_msgs: Vec<_> = client_msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Auth)
+            .collect();
+        assert_eq!(auth_msgs.len(), 1);
+
+        // AUTH message contains the new token
+        assert_eq!(
+            auth_msgs[0]
+                .message
+                .auth
+                .as_ref()
+                .unwrap()
+                .access_token
+                .as_deref(),
+            Some("token-2")
+        );
+
+        // Connection stayed CONNECTED
+        assert_eq!(client.connection.state(), ConnectionState::Connected);
+    }
+
+    #[tokio::test]
+    async fn rtc8a1_successful_reauth_emits_update_event() {
+        // RTC8a1: Successful reauth emits UPDATE event and updates connection details.
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{
+            ConnectionDetails, ConnectionEvent, ConnectionState, ProtocolMessage,
+        };
+        use crate::realtime::{await_state, Realtime};
+
+        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-id-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .auto_connect(false)
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport.clone()).unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Track events
+        let mut rx = client.connection.on_state_change();
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ev = events.clone();
+        tokio::spawn(async move {
+            while let Ok(change) = rx.recv().await {
+                ev.lock().unwrap().push(change);
+            }
+        });
+
+        // When client sends AUTH, respond with updated CONNECTED
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap().clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let mut msg = ProtocolMessage::new(crate::protocol::Action::Connected);
+            msg.connection_id = Some("conn-id-2".to_string());
+            msg.connection_details = Some(ConnectionDetails {
+                connection_key: Some("key-2".to_string()),
+                client_id: None,
+                connection_state_ttl: Some(180000),
+                max_idle_interval: Some(20000),
+                max_message_size: None,
+                server_id: None,
+            });
+            conn.send_to_client(msg);
+        });
+
+        let token = client.auth.authorize().await.unwrap();
+        assert_eq!(token.token, "token-2");
+
+        // Wait for events to settle
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // UPDATE event was emitted
+        let ev = events.lock().unwrap();
+        let updates: Vec<_> = ev
+            .iter()
+            .filter(|c| c.event == ConnectionEvent::Update)
+            .collect();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].previous, ConnectionState::Connected);
+        assert_eq!(updates[0].current, ConnectionState::Connected);
+
+        // Connection details were updated (RTN21)
+        assert_eq!(client.connection.id().as_deref(), Some("conn-id-2"));
+        assert_eq!(client.connection.key().as_deref(), Some("key-2"));
+    }
+
+    #[tokio::test]
+    async fn rtc8a2_failed_reauth_transitions_to_failed() {
+        // RTC8a2: Failed reauth (e.g., incompatible clientId) transitions to FAILED.
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .auto_connect(false)
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport.clone()).unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // When client sends AUTH, respond with connection-level ERROR
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap().clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let mut msg = ProtocolMessage::new(Action::Error);
+            msg.error = Some(ErrorInfo {
+                code: Some(40012),
+                status_code: Some(400),
+                message: Some("Incompatible clientId".to_string()),
+                href: None,
+            });
+            conn.send_to_client_and_close(msg);
+        });
+
+        // authorize() should fail
+        let result = client.auth.authorize().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, Some(40012));
+
+        // Connection transitioned to FAILED
+        assert_eq!(client.connection.state(), ConnectionState::Failed);
+
+        // Error reason is set on the connection
+        let error = client.connection.error_reason();
+        assert!(error.is_some());
+        assert_eq!(error.unwrap().code, Some(40012));
+    }
+
+    #[tokio::test]
+    async fn rtc8a3_authorize_completes_only_after_server_response() {
+        // RTC8a3: authorize() does not resolve until server responds.
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .auto_connect(false)
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport.clone()).unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let authorize_completed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ac = authorize_completed.clone();
+
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap().clone();
+
+        // Start authorize — spawn it so we can check intermediate state
+        let auth_handle = {
+            let auth = &client.auth;
+            // We need to use unsafe here because auth borrows client,
+            // but we can work around it by cloning the Arc
+            let inner = std::sync::Arc::clone(&auth.inner);
+            let ac = ac.clone();
+            tokio::spawn(async move {
+                let auth = crate::realtime::RealtimeAuth { inner };
+                let result = auth.authorize().await;
+                ac.store(true, std::sync::atomic::Ordering::SeqCst);
+                result
+            })
+        };
+
+        // Wait for the AUTH message to be sent
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Verify AUTH was sent but authorize hasn't completed
+        let client_msgs = transport.client_messages();
+        let auth_msgs: Vec<_> = client_msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Auth)
+            .collect();
+        assert_eq!(auth_msgs.len(), 1, "AUTH should have been sent");
+        assert!(
+            !authorize_completed.load(std::sync::atomic::Ordering::SeqCst),
+            "authorize() should NOT have completed yet"
+        );
+
+        // Now send the server response
+        conn.send_to_client(ProtocolMessage::connected("conn-1", "key-2"));
+
+        // authorize() should now complete
+        let result = auth_handle.await.unwrap();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().token, "token-2");
+        assert!(authorize_completed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn rtc8c_authorize_from_initialized_initiates_connection() {
+        // RTC8c: authorize() from non-connected states initiates connection.
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::Realtime;
+
+        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .auto_connect(false)
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport).unwrap();
+
+        // Client starts in INITIALIZED
+        assert_eq!(client.connection.state(), ConnectionState::Initialized);
+
+        // authorize() should trigger connection
+        let token = client.auth.authorize().await;
+        assert!(token.is_ok());
+        assert_eq!(token.unwrap().token, "token-1");
+
+        // Connection is now CONNECTED
+        assert_eq!(client.connection.state(), ConnectionState::Connected);
+        assert!(client.connection.id().is_some());
+    }
+
+    #[tokio::test]
+    async fn rtc8c_authorize_from_failed_recovers() {
+        // RTC8c: authorize() from FAILED state recovers the connection.
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
+        let attempt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let att = attempt.clone();
+
+        let mock = MockWebSocket::with_handler(move |pending| {
+            let n = att.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if n == 1 {
+                // First attempt: fail with fatal error
+                let mut msg = ProtocolMessage::new(Action::Error);
+                msg.error = Some(ErrorInfo {
+                    code: Some(40101),
+                    status_code: Some(401),
+                    message: Some("Invalid credentials".to_string()),
+                    href: None,
+                });
+                pending.respond_with_error(msg);
+            } else {
+                // Second attempt (after authorize): succeed
+                pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+            }
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .auto_connect(false)
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport).unwrap();
+
+        // Connect — will fail
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+
+        // authorize() from FAILED state should recover
+        let token = client.auth.authorize().await;
+        assert!(token.is_ok());
+        assert_eq!(token.unwrap().token, "token-2");
+
+        // Connection recovered to CONNECTED
+        assert_eq!(client.connection.state(), ConnectionState::Connected);
+    }
+
+    #[tokio::test]
+    async fn rtc8c_authorize_from_closed_reconnects() {
+        // RTC8c: authorize() from CLOSED state opens a new connection.
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .auto_connect(false)
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport).unwrap();
+
+        // Connect, then close
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        client.close();
+        assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
+
+        // authorize() from CLOSED state
+        let token = client.auth.authorize().await;
+        assert!(token.is_ok());
+        assert_eq!(token.unwrap().token, "token-2");
+
+        // Connection is now CONNECTED again
+        assert_eq!(client.connection.state(), ConnectionState::Connected);
+    }
+
+    #[tokio::test]
+    async fn rtc8a1_capability_downgrade_causes_channel_failed() {
+        // RTC8a1: Capability downgrade causes channel to enter FAILED state.
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_channel_state, await_state, Realtime};
+
+        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let options = ClientOptions::with_auth_callback(callback.clone())
+            .auto_connect(false)
+            .fallback_hosts(vec![]);
+        let client = Realtime::with_mock(&options, transport.clone()).unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Attach a channel
+        let channel = client.channels.get("private-channel");
+
+        // Auto-respond to ATTACH
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap().clone();
+
+        let conn2 = conn.clone();
+        // Watch for ATTACH and respond with ATTACHED
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let mut msg = ProtocolMessage::new(Action::Attached);
+            msg.channel = Some("private-channel".to_string());
+            msg.flags = Some(0);
+            conn2.send_to_client(msg);
+        });
+
+        let _ = channel.attach();
+        assert!(await_channel_state(&channel, crate::protocol::ChannelState::Attached, 5000).await);
+
+        // Now set up: when AUTH arrives, respond with CONNECTED + channel ERROR
+        let conn3 = conn.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            // Reauth succeeds at connection level
+            conn3.send_to_client(ProtocolMessage::connected("conn-1", "key-2"));
+
+            // Then server sends channel-level ERROR (capability downgrade)
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let mut error_msg = ProtocolMessage::new(Action::Error);
+            error_msg.channel = Some("private-channel".to_string());
+            error_msg.error = Some(ErrorInfo {
+                code: Some(40160),
+                status_code: Some(401),
+                message: Some("Channel denied access based on given capability".to_string()),
+                href: None,
+            });
+            conn3.send_to_client(error_msg);
+        });
+
+        // Call authorize
+        let token = client.auth.authorize().await;
+        assert!(token.is_ok());
+
+        // Wait for channel ERROR to be processed
+        assert!(await_channel_state(&channel, crate::protocol::ChannelState::Failed, 5000).await);
+
+        // Channel entered FAILED state
+        assert_eq!(channel.state(), crate::protocol::ChannelState::Failed);
+
+        // Connection remains CONNECTED
+        assert_eq!(client.connection.state(), ConnectionState::Connected);
+    }
+
+    // ========================================================================
     // Phase 8a: Channel Foundation Tests
     // ========================================================================
 

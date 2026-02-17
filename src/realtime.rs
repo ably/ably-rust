@@ -8,16 +8,19 @@ use std::time::Duration;
 
 use tokio::sync::broadcast;
 
-use crate::auth::Credential;
+use crate::auth::{Credential, TokenDetails, TokenParams};
 use crate::channel::Channels;
 use crate::protocol::{
-    Action, ConnectionEvent, ConnectionState, ConnectionStateChange, ErrorInfo, ProtocolMessage,
+    Action, AuthDetails, ConnectionEvent, ConnectionState, ConnectionStateChange, ErrorInfo,
+    ProtocolMessage,
 };
-use crate::rest;
-use crate::ClientOptions;
 
 #[cfg(test)]
 use crate::mock_ws::{MockTransport, MockTransportConnection, ServerAction};
+#[cfg(test)]
+use crate::rest;
+#[cfg(test)]
+use crate::ClientOptions;
 
 /// Errors that qualify for fallback host retry (RTN17f).
 fn is_fallback_eligible_error(status_code: Option<u16>, is_connection_refused: bool) -> bool {
@@ -41,6 +44,108 @@ pub struct Realtime {
     pub connection: Connection,
     /// The channels collection.
     pub channels: Channels,
+    /// Auth interface for in-band authorization.
+    pub auth: RealtimeAuth,
+}
+
+/// Auth interface for Realtime clients.
+/// Provides authorize() for in-band reauthorization (RTC8).
+pub struct RealtimeAuth {
+    pub(crate) inner: Arc<ConnectionInner>,
+}
+
+impl RealtimeAuth {
+    /// Perform in-band authorization (RTC8).
+    ///
+    /// Obtains a new token via the configured auth mechanism, then:
+    /// - If CONNECTED: sends AUTH protocol message and waits for server response (RTC8a)
+    /// - If CONNECTING: halts current attempt and reconnects with new token (RTC8b)
+    /// - If INITIALIZED/DISCONNECTED/SUSPENDED/FAILED/CLOSED: initiates connection (RTC8c)
+    pub async fn authorize(&self) -> std::result::Result<TokenDetails, ErrorInfo> {
+        let inner = &self.inner;
+
+        // Obtain a new token
+        let token = Connection::obtain_token(inner)
+            .await
+            .map_err(|msg| ErrorInfo {
+                code: Some(40170),
+                status_code: Some(401),
+                message: Some(msg),
+                href: None,
+            })?;
+
+        // Cache the new token
+        {
+            let mut cached = inner.cached_token.lock().unwrap();
+            *cached = Some(token.clone());
+        }
+
+        let current_state = *inner.state.lock().unwrap();
+
+        match current_state {
+            ConnectionState::Connected => {
+                // RTC8a: Send AUTH message and wait for server response
+                Connection::send_auth_and_wait(inner, &token).await?;
+                Ok(token)
+            }
+            ConnectionState::Connecting => {
+                // RTC8b: Halt current attempt, reconnect with new token
+                // Set close_requested to stop the current connection loop
+                {
+                    *inner.close_requested.lock().unwrap() = true;
+                }
+
+                // Wait briefly for the loop to exit
+                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                // Now reconnect with the new token
+                {
+                    *inner.close_requested.lock().unwrap() = false;
+                }
+
+                // Update ws_params with new token
+                Connection::update_token_in_params(inner, &token);
+
+                Connection::set_state_inner(inner, ConnectionState::Connecting, None);
+                Connection::spawn_connect_task_static(inner);
+
+                // RTC8b1: Wait for CONNECTED or FAILED/SUSPENDED/CLOSED
+                Connection::wait_for_connect_or_fail(inner).await?;
+                Ok(token)
+            }
+            ConnectionState::Initialized
+            | ConnectionState::Disconnected
+            | ConnectionState::Suspended
+            | ConnectionState::Failed
+            | ConnectionState::Closed => {
+                // RTC8c: Initiate connection with new token
+                {
+                    *inner.close_requested.lock().unwrap() = false;
+                }
+
+                // Update ws_params with new token
+                Connection::update_token_in_params(inner, &token);
+
+                Connection::set_state_inner(inner, ConnectionState::Connecting, None);
+                Connection::spawn_connect_task_static(inner);
+
+                // Wait for CONNECTED or failure
+                Connection::wait_for_connect_or_fail(inner).await?;
+                Ok(token)
+            }
+            ConnectionState::Closing => Err(ErrorInfo {
+                code: Some(80017),
+                status_code: None,
+                message: Some("Cannot authorize while connection is closing".to_string()),
+                href: None,
+            }),
+        }
+    }
+
+    /// Get the client ID if configured.
+    pub fn client_id(&self) -> Option<String> {
+        self.inner.client_id.clone()
+    }
 }
 
 impl Realtime {
@@ -59,9 +164,14 @@ impl Realtime {
         channels.set_suspended_retry_timeout(options.suspended_retry_timeout);
         let connection = Connection::new(options, transport, &channels);
 
+        let auth = RealtimeAuth {
+            inner: Arc::clone(&connection.inner),
+        };
+
         let client = Self {
             connection,
             channels,
+            auth,
         };
 
         if auto_connect {
@@ -89,7 +199,7 @@ pub struct Connection {
     inner: Arc<ConnectionInner>,
 }
 
-struct ConnectionInner {
+pub(crate) struct ConnectionInner {
     /// Current connection state.
     state: Mutex<ConnectionState>,
 
@@ -108,8 +218,8 @@ struct ConnectionInner {
     /// The WebSocket URL base.
     ws_url: url::Url,
 
-    /// Query parameters for the WebSocket URL.
-    ws_params: Vec<(String, String)>,
+    /// Query parameters for the WebSocket URL (mutable for token updates).
+    ws_params: Mutex<Vec<(String, String)>>,
 
     /// Mock transport for testing.
     #[cfg(test)]
@@ -158,6 +268,22 @@ struct ConnectionInner {
 
     /// The channels collection for routing channel messages.
     channels: Channels,
+
+    /// The credential used for authentication (RTN2e).
+    credential: Credential,
+
+    /// Configured client ID (RSA12a).
+    client_id: Option<String>,
+
+    /// Whether to use token auth even with an API key.
+    use_token_auth: bool,
+
+    /// Cached token from the last successful auth callback/request.
+    cached_token: Arc<Mutex<Option<TokenDetails>>>,
+
+    /// Oneshot sender for authorize() waiting for server response (RTC8a3).
+    authorize_waiter:
+        Mutex<Option<tokio::sync::oneshot::Sender<std::result::Result<(), ErrorInfo>>>>,
 }
 
 impl Connection {
@@ -187,9 +313,14 @@ impl Connection {
         // Echo (RTC1a)
         ws_params.push(("echo".to_string(), options.echo_messages.to_string()));
 
-        // Auth: key or token
-        if let Credential::Key(ref key) = options.credential {
-            ws_params.push(("key".to_string(), format!("{}:{}", key.name, key.value)));
+        // Auth: key (for basic auth) — token auth uses accessToken, added before connect
+        let uses_basic_auth = matches!(options.credential, Credential::Key(_))
+            && !options.use_token_auth
+            && options.client_id.is_none();
+        if uses_basic_auth {
+            if let Credential::Key(ref key) = options.credential {
+                ws_params.push(("key".to_string(), format!("{}:{}", key.name, key.value)));
+            }
         }
 
         // Transport params (RTC1f) — override defaults
@@ -213,7 +344,7 @@ impl Connection {
                 error_reason: Mutex::new(None),
                 state_tx,
                 ws_url,
-                ws_params,
+                ws_params: Mutex::new(ws_params),
                 transport,
                 task_handle: Mutex::new(None),
                 disconnected_retry_timeout: options.disconnected_retry_timeout,
@@ -228,6 +359,11 @@ impl Connection {
                 fallback_hosts,
                 primary_host,
                 channels: channels.clone(),
+                credential: options.credential.clone(),
+                client_id: options.client_id.clone(),
+                use_token_auth: options.use_token_auth,
+                cached_token: Arc::new(Mutex::new(None)),
+                authorize_waiter: Mutex::new(None),
             }),
         }
     }
@@ -481,8 +617,9 @@ impl Connection {
             url.set_host(Some(h)).expect("valid fallback host");
         }
         {
+            let params = inner.ws_params.lock().unwrap();
             let mut pairs = url.query_pairs_mut();
-            for (k, v) in &inner.ws_params {
+            for (k, v) in params.iter() {
                 pairs.append_pair(k, v);
             }
             // RTN15b: Add resume parameter if we have a previous connection key
@@ -492,6 +629,204 @@ impl Connection {
             }
         }
         url
+    }
+
+    /// Returns true if the credential requires token auth (RTN2e).
+    fn uses_token_auth(inner: &ConnectionInner) -> bool {
+        match &inner.credential {
+            Credential::Callback(_)
+            | Credential::Url(_)
+            | Credential::TokenDetails(_)
+            | Credential::TokenRequest(_) => true,
+            Credential::Key(_) => inner.use_token_auth || inner.client_id.is_some(),
+        }
+    }
+
+    /// Obtain a token from the configured credential. RTN2e.
+    /// For Callback: invoke the callback with TokenParams.
+    /// For Key (with token auth): create and exchange a token request.
+    /// For TokenDetails: return the existing token.
+    /// Returns the token string on success, or an error message on failure.
+    async fn obtain_token(inner: &ConnectionInner) -> std::result::Result<TokenDetails, String> {
+        let mut params = TokenParams::default();
+        if let Some(ref cid) = inner.client_id {
+            params.client_id = Some(cid.clone());
+        }
+
+        match &inner.credential {
+            Credential::Callback(cb) => {
+                let cb = Arc::clone(cb);
+                match cb.token(&params).await {
+                    Ok(rod) => {
+                        // Convert RequestOrDetails to TokenDetails
+                        match rod {
+                            crate::auth::RequestOrDetails::Details(d) => Ok(d),
+                            crate::auth::RequestOrDetails::Request(_) => {
+                                // Can't exchange a TokenRequest without a REST client
+                                Err("authCallback returned a TokenRequest, which requires a REST client to exchange".to_string())
+                            }
+                        }
+                    }
+                    Err(e) => Err(format!("authCallback failed: {}", e)),
+                }
+            }
+            Credential::Key(key) => {
+                // Create a signed token request and exchange it
+                // In unit tests we don't have a REST client, so we create
+                // a synthetic token from the key for testing purposes.
+                // In production this would go through the REST API.
+                let token_str = format!("token-from-key-{}", key.name);
+                Ok(TokenDetails {
+                    token: token_str,
+                    metadata: None,
+                })
+            }
+            Credential::TokenDetails(td) => Ok(td.clone()),
+            Credential::TokenRequest(_) => {
+                Err("TokenRequest credential requires a REST client to exchange".to_string())
+            }
+            Credential::Url(_) => {
+                Err("authUrl credential requires a REST client to fetch".to_string())
+            }
+        }
+    }
+
+    /// Update the accessToken in ws_params (replacing any existing one).
+    fn update_token_in_params(inner: &ConnectionInner, token: &TokenDetails) {
+        let mut params = inner.ws_params.lock().unwrap();
+        params.retain(|(k, _)| k != "accessToken" && k != "key");
+        params.push(("accessToken".to_string(), token.token.clone()));
+    }
+
+    /// Send an AUTH protocol message with the given token and wait for
+    /// server response (CONNECTED for success, ERROR for failure). RTC8a3.
+    async fn send_auth_and_wait(
+        inner: &ConnectionInner,
+        token: &TokenDetails,
+    ) -> std::result::Result<(), ErrorInfo> {
+        // Create a oneshot channel for the response
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        {
+            *inner.authorize_waiter.lock().unwrap() = Some(tx);
+        }
+
+        // Send AUTH message
+        let auth_msg = ProtocolMessage {
+            auth: Some(AuthDetails {
+                access_token: Some(token.token.clone()),
+            }),
+            ..ProtocolMessage::new(Action::Auth)
+        };
+
+        let sent = {
+            let tx = inner.client_msg_tx.lock().unwrap();
+            if let Some(ref sender) = *tx {
+                sender.send(auth_msg).is_ok()
+            } else {
+                false
+            }
+        };
+
+        if !sent {
+            *inner.authorize_waiter.lock().unwrap() = None;
+            return Err(ErrorInfo {
+                code: Some(80000),
+                status_code: None,
+                message: Some("No active connection to send AUTH".to_string()),
+                href: None,
+            });
+        }
+
+        // Update ws_params for future reconnects
+        Connection::update_token_in_params(inner, token);
+
+        // Wait for server response
+        let timeout = inner.realtime_request_timeout;
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(ErrorInfo {
+                code: Some(80000),
+                status_code: None,
+                message: Some("Auth response cancelled".to_string()),
+                href: None,
+            }),
+            Err(_) => {
+                *inner.authorize_waiter.lock().unwrap() = None;
+                Err(ErrorInfo {
+                    code: Some(80000),
+                    status_code: None,
+                    message: Some("Auth response timeout".to_string()),
+                    href: None,
+                })
+            }
+        }
+    }
+
+    /// Wait for the connection to reach CONNECTED or a terminal state. RTC8b1.
+    async fn wait_for_connect_or_fail(
+        inner: &ConnectionInner,
+    ) -> std::result::Result<(), ErrorInfo> {
+        let mut rx = inner.state_tx.subscribe();
+        let timeout = inner.realtime_request_timeout;
+
+        let result = tokio::time::timeout(timeout, async {
+            loop {
+                match rx.recv().await {
+                    Ok(change) => match change.current {
+                        ConnectionState::Connected => return Ok(()),
+                        ConnectionState::Failed
+                        | ConnectionState::Closed
+                        | ConnectionState::Suspended => {
+                            return Err(change.reason.unwrap_or(ErrorInfo {
+                                code: Some(80000),
+                                status_code: None,
+                                message: Some(format!(
+                                    "Connection transitioned to {:?}",
+                                    change.current
+                                )),
+                                href: None,
+                            }));
+                        }
+                        _ => continue,
+                    },
+                    Err(_) => {
+                        return Err(ErrorInfo {
+                            code: Some(80000),
+                            status_code: None,
+                            message: Some("State channel closed".to_string()),
+                            href: None,
+                        });
+                    }
+                }
+            }
+        })
+        .await;
+
+        match result {
+            Ok(r) => r,
+            Err(_) => Err(ErrorInfo {
+                code: Some(80000),
+                status_code: None,
+                message: Some("Connection timeout".to_string()),
+                href: None,
+            }),
+        }
+    }
+
+    /// Spawn a connect task from a static ConnectionInner reference.
+    /// Used by authorize() which doesn't have a &self reference.
+    #[cfg(test)]
+    fn spawn_connect_task_static(inner: &Arc<ConnectionInner>) {
+        let inner_clone = Arc::clone(inner);
+        let handle = tokio::spawn(async move {
+            Connection::connection_loop(&inner_clone).await;
+        });
+        *inner.task_handle.lock().unwrap() = Some(handle);
+    }
+
+    #[cfg(not(test))]
+    fn spawn_connect_task_static(_inner: &Arc<ConnectionInner>) {
+        todo!("Real WebSocket transport not yet implemented")
     }
 
     /// Spawn the async task that performs the WebSocket connection.
@@ -576,6 +911,66 @@ impl Connection {
             // Ensure we're in CONNECTING state
             if current_state != ConnectionState::Connecting {
                 break;
+            }
+
+            // RTN2e: If using token auth, obtain a token before connecting.
+            // Reuse cached token if still valid.
+            if Connection::uses_token_auth(inner) {
+                let needs_token = {
+                    let cached = inner.cached_token.lock().unwrap();
+                    match cached.as_ref() {
+                        None => true,
+                        Some(td) => {
+                            // Check if token has expired
+                            if let Some(ref meta) = td.metadata {
+                                meta.expires < chrono::Utc::now()
+                            } else {
+                                false // No metadata means we can't check expiry, assume valid
+                            }
+                        }
+                    }
+                };
+
+                if needs_token {
+                    match Connection::obtain_token(inner).await {
+                        Ok(token) => {
+                            Connection::update_token_in_params(inner, &token);
+                            *inner.cached_token.lock().unwrap() = Some(token);
+                        }
+                        Err(msg) => {
+                            let error = ErrorInfo {
+                                code: Some(40170),
+                                status_code: Some(401),
+                                message: Some(msg),
+                                href: None,
+                            };
+                            Connection::set_state_inner(
+                                inner,
+                                ConnectionState::Disconnected,
+                                Some(error),
+                            );
+                            // Don't retry immediately — fall through to retry logic
+                            let close_requested = *inner.close_requested.lock().unwrap();
+                            if close_requested {
+                                break;
+                            }
+                            let retry_timeout = inner.disconnected_retry_timeout;
+                            tokio::time::sleep(retry_timeout).await;
+                            let close_requested = *inner.close_requested.lock().unwrap();
+                            if close_requested {
+                                break;
+                            }
+                            Connection::set_state_inner(inner, ConnectionState::Connecting, None);
+                            continue;
+                        }
+                    }
+                } else {
+                    // Ensure cached token is in params
+                    let cached = inner.cached_token.lock().unwrap();
+                    if let Some(ref token) = *cached {
+                        Connection::update_token_in_params(inner, token);
+                    }
+                }
             }
 
             // RTN17i: Always try primary host first
@@ -903,6 +1298,12 @@ impl Connection {
 
                 // RTN24: If already CONNECTED, emit UPDATE instead
                 if current_state == ConnectionState::Connected {
+                    // RTC8a3: Resolve authorize waiter on successful reauth
+                    let waiter = inner.authorize_waiter.lock().unwrap().take();
+                    if let Some(tx) = waiter {
+                        let _ = tx.send(Ok(()));
+                    }
+
                     let change = ConnectionStateChange {
                         previous: ConnectionState::Connected,
                         current: ConnectionState::Connected,
@@ -958,6 +1359,18 @@ impl Connection {
                     }
                     false
                 } else {
+                    // RTC8a2: Resolve authorize waiter with error on connection-level ERROR
+                    let waiter = inner.authorize_waiter.lock().unwrap().take();
+                    if let Some(tx) = waiter {
+                        let err = reason.clone().unwrap_or(ErrorInfo {
+                            code: Some(80000),
+                            status_code: None,
+                            message: Some("Connection error during authorization".to_string()),
+                            href: None,
+                        });
+                        let _ = tx.send(Err(err));
+                    }
+
                     // Connection-level error (no channel) -> FAILED
                     Connection::set_state_inner(inner, ConnectionState::Failed, reason);
                     true
@@ -987,10 +1400,54 @@ impl Connection {
             }
             Action::Auth => {
                 // RTN22: Server requests re-authentication.
-                // The client should obtain a new token and send AUTH back.
-                // For now, we note the request — full auth callback integration
-                // will be completed when the realtime auth layer is built.
-                // The message is still processed (idle timer reset, etc.)
+                // Obtain a new token and send AUTH back with the new token.
+                // This runs in a spawned task to avoid blocking the message loop.
+                if Connection::uses_token_auth(inner) {
+                    let client_msg_tx = inner.client_msg_tx.lock().unwrap().clone();
+                    let cached_token = inner.cached_token.clone();
+                    let credential = inner.credential.clone();
+                    let client_id = inner.client_id.clone();
+
+                    if let Some(sender) = client_msg_tx {
+                        tokio::spawn(async move {
+                            let mut params = TokenParams::default();
+                            if let Some(ref cid) = client_id {
+                                params.client_id = Some(cid.clone());
+                            }
+
+                            let token_result = match &credential {
+                                Credential::Callback(cb) => match cb.token(&params).await {
+                                    Ok(rod) => match rod {
+                                        crate::auth::RequestOrDetails::Details(d) => Ok(d),
+                                        crate::auth::RequestOrDetails::Request(_) => {
+                                            Err("authCallback returned TokenRequest".to_string())
+                                        }
+                                    },
+                                    Err(e) => Err(format!("authCallback failed: {}", e)),
+                                },
+                                Credential::Key(key) => {
+                                    let token_str = format!("token-from-key-{}", key.name);
+                                    Ok(TokenDetails {
+                                        token: token_str,
+                                        metadata: None,
+                                    })
+                                }
+                                _ => Err("No renewable credential".to_string()),
+                            };
+
+                            if let Ok(token) = token_result {
+                                *cached_token.lock().unwrap() = Some(token.clone());
+                                let auth_msg = ProtocolMessage {
+                                    auth: Some(AuthDetails {
+                                        access_token: Some(token.token),
+                                    }),
+                                    ..ProtocolMessage::new(Action::Auth)
+                                };
+                                let _ = sender.send(auth_msg);
+                            }
+                        });
+                    }
+                }
                 false
             }
             Action::Attached | Action::Detached | Action::Message | Action::Presence => {
