@@ -6,10 +6,11 @@ use serde_json;
 
 use crate::channel::ChannelsInner;
 use crate::protocol::{
-    self, flags, Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage,
+    self, flags, Action, ChannelState, ChannelStateChange, ConnectionState, ErrorInfo,
+    ProtocolMessage,
 };
-use crate::rest::{PresenceAction, PresenceMessage};
-use crate::{http, rest, Result};
+use crate::rest::{self, PresenceAction, PresenceMessage, Rest};
+use crate::{http, Result};
 
 // ---------------------------------------------------------------------------
 // Newness comparison (RTP2b)
@@ -435,8 +436,10 @@ pub(crate) struct PresenceInner {
     pub(crate) connection_state: Mutex<ConnectionState>,
 
     /// Broadcast sender for channel state events (for emitting UPDATE on re-entry failure).
-    pub(crate) channel_state_tx:
-        Mutex<Option<tokio::sync::broadcast::Sender<crate::protocol::ChannelStateChange>>>,
+    pub(crate) channel_state_tx: Mutex<Option<tokio::sync::broadcast::Sender<ChannelStateChange>>>,
+
+    /// REST client for history delegation. RTP12.
+    pub(crate) rest_client: Mutex<Option<Rest>>,
 }
 
 impl PresenceInner {
@@ -457,6 +460,7 @@ impl PresenceInner {
             channel_state: Mutex::new(ChannelState::Initialized),
             connection_state: Mutex::new(ConnectionState::Initialized),
             channel_state_tx: Mutex::new(None),
+            rest_client: Mutex::new(None),
         }
     }
 
@@ -496,9 +500,14 @@ impl PresenceInner {
     /// Set channel state broadcast sender.
     pub(crate) fn set_channel_state_tx(
         &self,
-        tx: tokio::sync::broadcast::Sender<crate::protocol::ChannelStateChange>,
+        tx: tokio::sync::broadcast::Sender<ChannelStateChange>,
     ) {
         *self.channel_state_tx.lock().unwrap() = Some(tx);
+    }
+
+    /// Set the REST client for history delegation. RTP12.
+    pub(crate) fn set_rest_client(&self, rest: Rest) {
+        *self.rest_client.lock().unwrap() = Some(rest);
     }
 
     /// Emit a presence message to matching subscribers.
@@ -526,10 +535,131 @@ impl PresenceInner {
     }
 }
 
+/// Options for presence get(). RTP11c.
+pub struct PresenceGetOptions {
+    /// Filter by clientId. RTP11c2.
+    pub client_id: Option<String>,
+    /// Filter by connectionId. RTP11c3.
+    pub connection_id: Option<String>,
+    /// Whether to wait for sync to complete (default true). RTP11c1.
+    pub wait_for_sync: bool,
+}
+
+impl Default for PresenceGetOptions {
+    fn default() -> Self {
+        Self {
+            client_id: None,
+            connection_id: None,
+            wait_for_sync: true,
+        }
+    }
+}
+
 impl RealtimePresence {
     /// Whether presence sync has completed. RTP13.
     pub fn sync_complete(&self) -> bool {
         *self.inner.sync_complete.lock().unwrap()
+    }
+
+    // -- Get (RTP11) --
+
+    /// Get current presence members. Waits for sync to complete. RTP11.
+    pub async fn get(&self) -> std::result::Result<Vec<PresenceMessage>, ErrorInfo> {
+        self.get_with_options(PresenceGetOptions::default()).await
+    }
+
+    /// Get current presence members with options. RTP11.
+    pub async fn get_with_options(
+        &self,
+        options: PresenceGetOptions,
+    ) -> std::result::Result<Vec<PresenceMessage>, ErrorInfo> {
+        let ch_state = *self.inner.channel_state.lock().unwrap();
+
+        // RTP11d: Error on SUSPENDED when waitForSync is true
+        if ch_state == ChannelState::Suspended && options.wait_for_sync {
+            return Err(ErrorInfo {
+                code: Some(91005),
+                status_code: None,
+                message: Some(
+                    "Cannot get presence: channel is SUSPENDED and waitForSync is true".to_string(),
+                ),
+                href: None,
+            });
+        }
+
+        // RTP11b: Error on FAILED/DETACHED
+        if ch_state == ChannelState::Failed || ch_state == ChannelState::Detached {
+            return Err(ErrorInfo {
+                code: Some(91005),
+                status_code: None,
+                message: Some(format!(
+                    "Cannot get presence: channel is in {:?} state",
+                    ch_state
+                )),
+                href: None,
+            });
+        }
+
+        // RTP11c1: Wait for sync unless wait_for_sync is false
+        if options.wait_for_sync {
+            let sync_done = *self.inner.sync_complete.lock().unwrap();
+            if !sync_done {
+                let rx = {
+                    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+                    self.inner.sync_waiters.lock().unwrap().push(tx);
+                    rx
+                };
+                let _ = rx.await;
+            }
+        }
+
+        // Get values and apply filters
+        let members = self.inner.presence_map.lock().unwrap().values();
+        let filtered: Vec<PresenceMessage> = members
+            .into_iter()
+            .filter(|m| {
+                if let Some(ref cid) = options.client_id {
+                    if m.client_id.as_deref() != Some(cid.as_str()) {
+                        return false;
+                    }
+                }
+                if let Some(ref conn_id) = options.connection_id {
+                    if m.connection_id.as_deref() != Some(conn_id.as_str()) {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+
+        Ok(filtered)
+    }
+
+    // -- History (RTP12) --
+
+    /// Get presence history. Delegates to REST. RTP12.
+    pub async fn history(&self) -> std::result::Result<PaginatedResult, ErrorInfo> {
+        let rest = {
+            let guard = self.inner.rest_client.lock().unwrap();
+            guard.clone().ok_or_else(|| ErrorInfo {
+                code: Some(91001),
+                status_code: None,
+                message: Some("No REST client available for presence history".to_string()),
+                href: None,
+            })?
+        };
+        let channel = rest.channels().get(&self.inner.channel_name);
+        channel
+            .presence
+            .history()
+            .send()
+            .await
+            .map_err(|e| ErrorInfo {
+                code: Some(40000),
+                status_code: None,
+                message: Some(format!("Presence history request failed: {}", e)),
+                href: None,
+            })
     }
 
     // -- Subscribe / Unsubscribe (RTP6, RTP7) --
@@ -955,7 +1085,7 @@ impl RealtimePresence {
         }
     }
 
-    /// Handle ATTACHED message effects on presence. RTP1.
+    /// Handle ATTACHED message effects on presence. RTP1, RTP17i.
     pub(crate) fn handle_attached(&self, flags_val: i64, resumed: bool) {
         let has_presence = (flags_val & flags::HAS_PRESENCE) != 0;
 
@@ -979,6 +1109,83 @@ impl RealtimePresence {
             let waiters: Vec<_> = self.inner.sync_waiters.lock().unwrap().drain(..).collect();
             for w in waiters {
                 let _ = w.send(());
+            }
+        }
+
+        // RTP17i: Auto re-entry on non-RESUMED ATTACHED
+        if !resumed {
+            let members = self.inner.local_presence_map.lock().unwrap().values();
+            if !members.is_empty() {
+                let current_conn_id = self.inner.connection_id.lock().unwrap().clone();
+                let inner = Arc::clone(&self.inner);
+                let reentry_members = members;
+                tokio::spawn(async move {
+                    let presence = RealtimePresence { inner };
+                    for member in reentry_members {
+                        // Build ENTER message for re-entry
+                        let mut presence_obj = serde_json::Map::new();
+                        presence_obj.insert(
+                            "action".to_string(),
+                            serde_json::Value::Number(serde_json::Number::from(
+                                PresenceAction::Enter as u8,
+                            )),
+                        );
+                        if let Some(ref cid) = member.client_id {
+                            presence_obj.insert(
+                                "clientId".to_string(),
+                                serde_json::Value::String(cid.clone()),
+                            );
+                        }
+                        if !matches!(member.data, rest::Data::None) {
+                            if let Ok(data_val) = serde_json::to_value(&member.data) {
+                                presence_obj.insert("data".to_string(), data_val);
+                            }
+                        }
+                        // RTP17g1: Omit id if connectionId changed
+                        let conn_changed =
+                            member.connection_id.as_ref() != current_conn_id.as_ref();
+                        if !conn_changed {
+                            if let Some(ref id) = member.id {
+                                presence_obj.insert(
+                                    "id".to_string(),
+                                    serde_json::Value::String(id.clone()),
+                                );
+                            }
+                        }
+
+                        let msg = ProtocolMessage {
+                            action: Action::Presence,
+                            channel: Some(presence.inner.channel_name.clone()),
+                            presence: Some(vec![serde_json::Value::Object(presence_obj)]),
+                            ..ProtocolMessage::new(Action::Presence)
+                        };
+
+                        let result = presence.send_presence_immediately(msg).await;
+                        if let Err(nack_err) = result {
+                            // RTP17e: Emit channel UPDATE with error code 91004
+                            let tx = presence.inner.channel_state_tx.lock().unwrap();
+                            if let Some(ref sender) = *tx {
+                                let ch_state = *presence.inner.channel_state.lock().unwrap();
+                                let _ = sender.send(ChannelStateChange {
+                                    previous: ch_state,
+                                    current: ch_state,
+                                    event: crate::protocol::ChannelEvent::Update,
+                                    reason: Some(ErrorInfo {
+                                        code: Some(91004),
+                                        status_code: None,
+                                        message: Some(format!(
+                                            "Presence re-entry failed: {}",
+                                            nack_err.message.as_deref().unwrap_or("unknown error")
+                                        )),
+                                        href: None,
+                                    }),
+                                    resumed: true,
+                                    has_backlog: false,
+                                });
+                            }
+                        }
+                    }
+                });
             }
         }
     }
