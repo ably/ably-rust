@@ -17105,4 +17105,1640 @@ mod unit_tests {
             "abc123".to_string()
         )));
     }
+
+    // =====================================================================
+    // Phase 10b: RealtimePresence + Channel Integration Tests
+    // =====================================================================
+
+    // -- Helper: Connect + Attach a channel, return (client, mock, conn, channel) --
+
+    async fn setup_attached_channel(
+        channel_name: &str,
+        client_id: Option<&str>,
+    ) -> (
+        crate::realtime::Realtime,
+        crate::mock_ws::MockWebSocket,
+        crate::mock_ws::MockConnection,
+        std::sync::Arc<crate::channel::RealtimeChannel>,
+    ) {
+        setup_attached_channel_with_flags(channel_name, client_id, None).await
+    }
+
+    async fn setup_attached_channel_with_flags(
+        channel_name: &str,
+        client_id: Option<&str>,
+        attached_flags: Option<i64>,
+    ) -> (
+        crate::realtime::Realtime,
+        crate::mock_ws::MockWebSocket,
+        crate::mock_ws::MockConnection,
+        std::sync::Arc<crate::channel::RealtimeChannel>,
+    ) {
+        use crate::mock_ws::{MockTransport, MockWebSocket};
+        use crate::protocol::{Action, ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let mut connected_msg = ProtocolMessage::connected("test-conn-id", "test-conn-key");
+        if let Some(cid) = client_id {
+            if let Some(ref mut details) = connected_msg.connection_details {
+                details.client_id = Some(cid.to_string());
+            }
+        }
+
+        let mock = MockWebSocket::with_handler({
+            let msg = connected_msg.clone();
+            move |pending| {
+                pending.respond_with_success(msg.clone());
+            }
+        });
+
+        let transport = std::sync::Arc::new(MockTransport::new(mock.inner()));
+        let mut opts = ClientOptions::new("appId.keyId:keySecret")
+            .auto_connect(false)
+            .fallback_hosts(vec![])
+            .use_binary_protocol(false);
+        if let Some(cid) = client_id {
+            opts = opts.client_id(cid).unwrap();
+        }
+        let client = Realtime::with_mock(&opts, transport).unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap().clone();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn),
+            flags: attached_flags,
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        (client, mock, conn, channel)
+    }
+
+    // -- RTL9/RTL9a: RealtimeChannel#presence attribute --
+
+    #[tokio::test]
+    async fn rtl9_channel_presence_attribute() {
+        let channel = crate::channel::RealtimeChannel::new(
+            "test".to_string(),
+            crate::channel::RealtimeChannelOptions::default(),
+        );
+        let p1 = channel.presence();
+        let p2 = channel.presence();
+        // Both return RealtimePresence (not null)
+        assert!(!p1.sync_complete()); // just verify it's a real object
+        assert!(!p2.sync_complete());
+    }
+
+    // -- RTP13: syncComplete attribute --
+
+    #[tokio::test]
+    async fn rtp13_sync_complete_after_sync() {
+        let (_, _, conn, channel) = setup_attached_channel_with_flags(
+            "test-rtp13",
+            None,
+            Some(crate::protocol::flags::HAS_PRESENCE),
+        )
+        .await;
+
+        let presence = channel.presence();
+        assert!(!presence.sync_complete(), "sync should not be complete yet");
+
+        // Send SYNC with cursor (more to come)
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Sync,
+            channel: Some("test-rtp13".to_string()),
+            channel_serial: Some("serial:cursor123".to_string()),
+            connection_id: Some("conn-1".to_string()),
+            timestamp: Some(1000),
+            presence: Some(vec![serde_json::json!({
+                "action": 1, // PRESENT
+                "clientId": "alice",
+                "connectionId": "conn-1",
+                "id": "conn-1:0:0"
+            })]),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Sync)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !presence.sync_complete(),
+            "sync not complete with non-empty cursor"
+        );
+
+        // Send final SYNC (empty cursor)
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Sync,
+            channel: Some("test-rtp13".to_string()),
+            channel_serial: Some("serial:".to_string()),
+            connection_id: Some("conn-1".to_string()),
+            timestamp: Some(1001),
+            presence: Some(vec![serde_json::json!({
+                "action": 1, // PRESENT
+                "clientId": "bob",
+                "connectionId": "conn-1",
+                "id": "conn-1:1:0"
+            })]),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Sync)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            presence.sync_complete(),
+            "sync should be complete after empty cursor"
+        );
+    }
+
+    // -- RTP1: HAS_PRESENCE flag triggers sync --
+
+    #[tokio::test]
+    async fn rtp1_has_presence_triggers_sync() {
+        let (_, _, conn, channel) = setup_attached_channel_with_flags(
+            "test-rtp1",
+            None,
+            Some(crate::protocol::flags::HAS_PRESENCE),
+        )
+        .await;
+
+        let presence = channel.presence();
+        assert!(
+            !presence.sync_complete(),
+            "sync incomplete when HAS_PRESENCE set"
+        );
+
+        // Send SYNC with members
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Sync,
+            channel: Some("test-rtp1".to_string()),
+            channel_serial: Some("serial:".to_string()),
+            connection_id: Some("conn-1".to_string()),
+            timestamp: Some(1000),
+            presence: Some(vec![
+                serde_json::json!({
+                    "action": 1,
+                    "clientId": "alice",
+                    "connectionId": "conn-1",
+                    "id": "conn-1:0:0"
+                }),
+                serde_json::json!({
+                    "action": 1,
+                    "clientId": "bob",
+                    "connectionId": "conn-1",
+                    "id": "conn-1:0:1"
+                }),
+            ]),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Sync)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(presence.sync_complete());
+        let members = channel
+            .presence()
+            .inner
+            .presence_map
+            .lock()
+            .unwrap()
+            .values();
+        assert_eq!(members.len(), 2);
+    }
+
+    // -- RTP19a: No HAS_PRESENCE clears existing members --
+
+    #[tokio::test]
+    async fn rtp19a_no_has_presence_clears_members() {
+        let (_, _, conn, channel) = setup_attached_channel_with_flags(
+            "test-rtp19a",
+            None,
+            Some(crate::protocol::flags::HAS_PRESENCE),
+        )
+        .await;
+
+        // Populate members via SYNC
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Sync,
+            channel: Some("test-rtp19a".to_string()),
+            channel_serial: Some("serial:".to_string()),
+            connection_id: Some("conn-1".to_string()),
+            timestamp: Some(1000),
+            presence: Some(vec![
+                serde_json::json!({
+                    "action": 1,
+                    "clientId": "alice",
+                    "connectionId": "conn-1",
+                    "id": "conn-1:0:0"
+                }),
+                serde_json::json!({
+                    "action": 1,
+                    "clientId": "bob",
+                    "connectionId": "conn-2",
+                    "id": "conn-2:0:0"
+                }),
+            ]),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Sync)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let members = channel
+            .presence()
+            .inner
+            .presence_map
+            .lock()
+            .unwrap()
+            .values();
+        assert_eq!(members.len(), 2);
+
+        // Subscribe to presence events to capture LEAVEs
+        let (_, mut rx) = channel.presence().subscribe();
+
+        // Send ATTACHED without HAS_PRESENCE → clears all members
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Attached,
+            channel: Some("test-rtp19a".to_string()),
+            flags: Some(0), // No HAS_PRESENCE
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Attached)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let members = channel
+            .presence()
+            .inner
+            .presence_map
+            .lock()
+            .unwrap()
+            .values();
+        assert_eq!(members.len(), 0, "all members should be cleared");
+        assert!(channel.presence().sync_complete());
+
+        // Verify LEAVE events were emitted
+        let mut leave_count = 0;
+        while let Ok(msg) = rx.try_recv() {
+            assert_eq!(msg.action, crate::rest::PresenceAction::Leave);
+            assert!(msg.id.is_none(), "synthesized leave should have id=None");
+            leave_count += 1;
+        }
+        assert_eq!(leave_count, 2, "should emit 2 LEAVE events");
+    }
+
+    // -- RTP1: No HAS_PRESENCE on initial attach → sync complete immediately --
+
+    #[tokio::test]
+    async fn rtp1_no_has_presence_sync_complete_immediately() {
+        let (_, _, _conn, channel) = setup_attached_channel("test-rtp1-nohp", None).await;
+
+        let presence = channel.presence();
+        assert!(
+            presence.sync_complete(),
+            "sync should be immediately complete without HAS_PRESENCE"
+        );
+        let members = presence.inner.presence_map.lock().unwrap().values();
+        assert_eq!(members.len(), 0, "no members without SYNC");
+    }
+
+    // -- RTP5a: DETACHED clears both presence maps --
+
+    #[tokio::test]
+    async fn rtp5a_detached_clears_presence() {
+        let (_, _, conn, channel) = setup_attached_channel_with_flags(
+            "test-rtp5a-det",
+            None,
+            Some(crate::protocol::flags::HAS_PRESENCE),
+        )
+        .await;
+
+        // Populate via SYNC
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Sync,
+            channel: Some("test-rtp5a-det".to_string()),
+            channel_serial: Some("serial:".to_string()),
+            connection_id: Some("conn-1".to_string()),
+            timestamp: Some(1000),
+            presence: Some(vec![serde_json::json!({
+                "action": 1,
+                "clientId": "alice",
+                "connectionId": "conn-1",
+                "id": "conn-1:0:0"
+            })]),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Sync)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            channel
+                .presence()
+                .inner
+                .presence_map
+                .lock()
+                .unwrap()
+                .values()
+                .len(),
+            1
+        );
+
+        // Subscribe to detect any spurious LEAVE events
+        let (_, mut rx) = channel.presence().subscribe();
+
+        // Detach
+        let ch = channel.clone();
+        let t = tokio::spawn(async move { ch.detach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Detached,
+            channel: Some("test-rtp5a-det".to_string()),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Detached)
+        });
+        t.await.unwrap().unwrap();
+
+        assert_eq!(
+            channel
+                .presence()
+                .inner
+                .presence_map
+                .lock()
+                .unwrap()
+                .values()
+                .len(),
+            0,
+            "presence map should be cleared after DETACHED"
+        );
+        // RTP5a: No LEAVE events emitted on DETACHED
+        assert!(rx.try_recv().is_err(), "no LEAVE events on DETACHED");
+    }
+
+    // -- RTP5a: FAILED clears both presence maps --
+
+    #[tokio::test]
+    async fn rtp5a_failed_clears_presence() {
+        let (_, _, conn, channel) = setup_attached_channel_with_flags(
+            "test-rtp5a-fail",
+            None,
+            Some(crate::protocol::flags::HAS_PRESENCE),
+        )
+        .await;
+
+        // Populate via SYNC
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Sync,
+            channel: Some("test-rtp5a-fail".to_string()),
+            channel_serial: Some("serial:".to_string()),
+            connection_id: Some("conn-1".to_string()),
+            timestamp: Some(1000),
+            presence: Some(vec![serde_json::json!({
+                "action": 1,
+                "clientId": "alice",
+                "connectionId": "conn-1",
+                "id": "conn-1:0:0"
+            })]),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Sync)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let (_, mut rx) = channel.presence().subscribe();
+
+        // Trigger FAILED via channel error
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Error,
+            channel: Some("test-rtp5a-fail".to_string()),
+            error: Some(crate::protocol::ErrorInfo {
+                code: Some(90000),
+                status_code: None,
+                message: Some("Test error".to_string()),
+                href: None,
+            }),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Error)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert_eq!(channel.state(), crate::protocol::ChannelState::Failed);
+        assert_eq!(
+            channel
+                .presence()
+                .inner
+                .presence_map
+                .lock()
+                .unwrap()
+                .values()
+                .len(),
+            0,
+            "presence map should be cleared after FAILED"
+        );
+        assert!(rx.try_recv().is_err(), "no LEAVE events on FAILED");
+    }
+
+    // -- RTP5b: ATTACHED sends queued presence messages --
+
+    #[tokio::test]
+    async fn rtp5b_attached_sends_queued_presence() {
+        use crate::mock_ws::{MockTransport, MockWebSocket};
+        use crate::protocol::{Action, ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+        let transport = std::sync::Arc::new(MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .fallback_hosts(vec![])
+                .use_binary_protocol(false)
+                .client_id("my-client")
+                .unwrap(),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get("test-rtp5b");
+
+        // Start attach (channel goes to ATTACHING)
+        let ch = channel.clone();
+        let attach_handle = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Queue a presence enter while ATTACHING
+        let ch = channel.clone();
+        let enter_handle =
+            tokio::spawn(
+                async move { ch.presence().enter(Some(serde_json::json!("hello"))).await },
+            );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Verify no PRESENCE message sent yet
+        let msgs = mock.client_messages();
+        let presence_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Presence)
+            .collect();
+        assert_eq!(
+            presence_msgs.len(),
+            0,
+            "no presence messages should be sent while ATTACHING"
+        );
+
+        // Send ATTACHED → should flush queued presence
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some("test-rtp5b".to_string()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        attach_handle.await.unwrap().unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Verify PRESENCE message now sent
+        let msgs = mock.client_messages();
+        let presence_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Presence)
+            .collect();
+        assert_eq!(
+            presence_msgs.len(),
+            1,
+            "queued presence should be sent after ATTACHED"
+        );
+
+        // ACK the presence message
+        let serial = presence_msgs[0].message.msg_serial.unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+        let result = enter_handle.await.unwrap();
+        assert!(result.is_ok(), "enter should succeed after ACK");
+    }
+
+    // -- RTL11: Queued presence fails on DETACHED --
+
+    #[tokio::test]
+    async fn rtl11_queued_presence_fails_on_detached() {
+        use crate::mock_ws::{MockTransport, MockWebSocket};
+        use crate::protocol::{Action, ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+        let transport = std::sync::Arc::new(MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .fallback_hosts(vec![])
+                .use_binary_protocol(false)
+                .client_id("my-client")
+                .unwrap(),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get("test-rtl11-det");
+
+        // Start attach
+        let ch = channel.clone();
+        tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Queue presence while ATTACHING
+        let ch = channel.clone();
+        let enter_handle = tokio::spawn(async move { ch.presence().enter(None).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Send DETACHED instead of ATTACHED
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Detached,
+            channel: Some("test-rtl11-det".to_string()),
+            ..ProtocolMessage::new(Action::Detached)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // The queued presence should fail
+        let result = enter_handle.await.unwrap();
+        assert!(result.is_err(), "queued presence should fail on DETACHED");
+    }
+
+    // -- RTL11: Queued presence fails on FAILED --
+
+    #[tokio::test]
+    async fn rtl11_queued_presence_fails_on_failed() {
+        use crate::mock_ws::{MockTransport, MockWebSocket};
+        use crate::protocol::{Action, ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+        let transport = std::sync::Arc::new(MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .fallback_hosts(vec![])
+                .use_binary_protocol(false)
+                .client_id("my-client")
+                .unwrap(),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get("test-rtl11-fail");
+
+        // Start attach
+        let ch = channel.clone();
+        tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Queue presence while ATTACHING
+        let ch = channel.clone();
+        let enter_handle = tokio::spawn(async move { ch.presence().enter(None).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Send ERROR (channel FAILED)
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Error,
+            channel: Some("test-rtl11-fail".to_string()),
+            error: Some(crate::protocol::ErrorInfo {
+                code: Some(90000),
+                status_code: None,
+                message: Some("Failed".to_string()),
+                href: None,
+            }),
+            ..ProtocolMessage::new(Action::Error)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let result = enter_handle.await.unwrap();
+        assert!(result.is_err(), "queued presence should fail on FAILED");
+    }
+
+    // -- RTP6a: Subscribe to all presence events --
+
+    #[tokio::test]
+    async fn rtp6a_subscribe_all_presence_events() {
+        let (_, _, conn, channel) = setup_attached_channel("test-rtp6a", None).await;
+
+        let (_, mut rx) = channel.presence().subscribe();
+
+        // Send PRESENCE with ENTER
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Presence,
+            channel: Some("test-rtp6a".to_string()),
+            connection_id: Some("conn-1".to_string()),
+            timestamp: Some(1000),
+            presence: Some(vec![serde_json::json!({
+                "action": 2, // ENTER
+                "clientId": "alice",
+                "connectionId": "conn-1",
+                "id": "conn-1:0:0"
+            })]),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Presence)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Send PRESENCE with UPDATE
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Presence,
+            channel: Some("test-rtp6a".to_string()),
+            connection_id: Some("conn-1".to_string()),
+            timestamp: Some(1001),
+            presence: Some(vec![serde_json::json!({
+                "action": 4, // UPDATE
+                "clientId": "alice",
+                "connectionId": "conn-1",
+                "id": "conn-1:1:0",
+                "data": "updated"
+            })]),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Presence)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Send PRESENCE with LEAVE
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Presence,
+            channel: Some("test-rtp6a".to_string()),
+            connection_id: Some("conn-1".to_string()),
+            timestamp: Some(1002),
+            presence: Some(vec![serde_json::json!({
+                "action": 3, // LEAVE
+                "clientId": "alice",
+                "connectionId": "conn-1",
+                "id": "conn-1:2:0"
+            })]),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Presence)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Should receive all three events
+        let enter = rx.try_recv().unwrap();
+        assert_eq!(enter.action, crate::rest::PresenceAction::Enter);
+        assert_eq!(enter.client_id.as_deref(), Some("alice"));
+
+        let update = rx.try_recv().unwrap();
+        assert_eq!(update.action, crate::rest::PresenceAction::Update);
+
+        let leave = rx.try_recv().unwrap();
+        assert_eq!(leave.action, crate::rest::PresenceAction::Leave);
+    }
+
+    // -- RTP6b: Subscribe filtered by single action --
+
+    #[tokio::test]
+    async fn rtp6b_subscribe_filtered_single_action() {
+        let (_, _, conn, channel) = setup_attached_channel("test-rtp6b-single", None).await;
+
+        let (_, mut enter_rx) = channel
+            .presence()
+            .subscribe_action(crate::rest::PresenceAction::Enter);
+        let (_, mut leave_rx) = channel
+            .presence()
+            .subscribe_action(crate::rest::PresenceAction::Leave);
+
+        // Send ENTER, UPDATE, LEAVE
+        for (action_num, id_serial) in [(2, 0), (4, 1), (3, 2)] {
+            conn.send_to_client(crate::protocol::ProtocolMessage {
+                action: crate::protocol::Action::Presence,
+                channel: Some("test-rtp6b-single".to_string()),
+                connection_id: Some("conn-1".to_string()),
+                timestamp: Some(1000 + id_serial as i64),
+                presence: Some(vec![serde_json::json!({
+                    "action": action_num,
+                    "clientId": "alice",
+                    "connectionId": "conn-1",
+                    "id": format!("conn-1:{}:0", id_serial)
+                })]),
+                ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Presence)
+            });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // ENTER listener receives only ENTER
+        let msg = enter_rx.try_recv().unwrap();
+        assert_eq!(msg.action, crate::rest::PresenceAction::Enter);
+        assert!(enter_rx.try_recv().is_err());
+
+        // LEAVE listener receives only LEAVE
+        let msg = leave_rx.try_recv().unwrap();
+        assert_eq!(msg.action, crate::rest::PresenceAction::Leave);
+        assert!(leave_rx.try_recv().is_err());
+    }
+
+    // -- RTP6b: Subscribe filtered by multiple actions --
+
+    #[tokio::test]
+    async fn rtp6b_subscribe_filtered_multiple_actions() {
+        let (_, _, conn, channel) = setup_attached_channel("test-rtp6b-multi", None).await;
+
+        let (_, mut rx) = channel.presence().subscribe_actions(vec![
+            crate::rest::PresenceAction::Enter,
+            crate::rest::PresenceAction::Leave,
+        ]);
+
+        // Send ENTER, UPDATE, LEAVE
+        for (action_num, id_serial) in [(2, 0), (4, 1), (3, 2)] {
+            conn.send_to_client(crate::protocol::ProtocolMessage {
+                action: crate::protocol::Action::Presence,
+                channel: Some("test-rtp6b-multi".to_string()),
+                connection_id: Some("conn-1".to_string()),
+                timestamp: Some(1000 + id_serial as i64),
+                presence: Some(vec![serde_json::json!({
+                    "action": action_num,
+                    "clientId": "alice",
+                    "connectionId": "conn-1",
+                    "id": format!("conn-1:{}:0", id_serial)
+                })]),
+                ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Presence)
+            });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Should receive ENTER and LEAVE only (not UPDATE)
+        let msg1 = rx.try_recv().unwrap();
+        assert_eq!(msg1.action, crate::rest::PresenceAction::Enter);
+        let msg2 = rx.try_recv().unwrap();
+        assert_eq!(msg2.action, crate::rest::PresenceAction::Leave);
+        assert!(rx.try_recv().is_err(), "UPDATE should be filtered out");
+    }
+
+    // -- RTP7a: Unsubscribe specific listener --
+
+    #[tokio::test]
+    async fn rtp7a_unsubscribe_specific_listener() {
+        let (_, _, conn, channel) = setup_attached_channel("test-rtp7a", None).await;
+
+        let presence = channel.presence();
+        let (id_a, mut rx_a) = presence.subscribe();
+        let (_id_b, mut rx_b) = presence.subscribe();
+
+        // Unsubscribe listener A
+        presence.unsubscribe(id_a);
+
+        // Send a presence event
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Presence,
+            channel: Some("test-rtp7a".to_string()),
+            connection_id: Some("conn-1".to_string()),
+            timestamp: Some(1000),
+            presence: Some(vec![serde_json::json!({
+                "action": 2,
+                "clientId": "alice",
+                "connectionId": "conn-1",
+                "id": "conn-1:0:0"
+            })]),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Presence)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(
+            rx_a.try_recv().is_err(),
+            "unsubscribed listener should not receive events"
+        );
+        assert!(
+            rx_b.try_recv().is_ok(),
+            "other listener should still receive events"
+        );
+    }
+
+    // -- RTP7c: Unsubscribe all listeners --
+
+    #[tokio::test]
+    async fn rtp7c_unsubscribe_all() {
+        let (_, _, conn, channel) = setup_attached_channel("test-rtp7c", None).await;
+
+        let presence = channel.presence();
+        let (_, mut rx_a) = presence.subscribe();
+        let (_, mut rx_b) = presence.subscribe();
+
+        // Send first event - both should receive
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Presence,
+            channel: Some("test-rtp7c".to_string()),
+            connection_id: Some("conn-1".to_string()),
+            timestamp: Some(1000),
+            presence: Some(vec![serde_json::json!({
+                "action": 2,
+                "clientId": "alice",
+                "connectionId": "conn-1",
+                "id": "conn-1:0:0"
+            })]),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Presence)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(rx_a.try_recv().is_ok());
+        assert!(rx_b.try_recv().is_ok());
+
+        // Unsubscribe all
+        presence.unsubscribe_all();
+
+        // Send second event - neither should receive
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Presence,
+            channel: Some("test-rtp7c".to_string()),
+            connection_id: Some("conn-1".to_string()),
+            timestamp: Some(1001),
+            presence: Some(vec![serde_json::json!({
+                "action": 2,
+                "clientId": "bob",
+                "connectionId": "conn-1",
+                "id": "conn-1:1:0"
+            })]),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Presence)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(rx_a.try_recv().is_err());
+        assert!(rx_b.try_recv().is_err());
+    }
+
+    // -- RTP6: Presence events update the PresenceMap --
+
+    #[tokio::test]
+    async fn rtp6_presence_events_update_map() {
+        let (_, _, conn, channel) = setup_attached_channel("test-rtp6-map", None).await;
+
+        // Send ENTER
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Presence,
+            channel: Some("test-rtp6-map".to_string()),
+            connection_id: Some("conn-1".to_string()),
+            timestamp: Some(1000),
+            presence: Some(vec![serde_json::json!({
+                "action": 2,
+                "clientId": "alice",
+                "connectionId": "conn-1",
+                "id": "conn-1:0:0",
+                "data": "alice-data"
+            })]),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Presence)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let members = channel
+            .presence()
+            .inner
+            .presence_map
+            .lock()
+            .unwrap()
+            .values();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].client_id.as_deref(), Some("alice"));
+        // RTP2d2: stored action should be PRESENT
+        assert_eq!(members[0].action, crate::rest::PresenceAction::Present);
+    }
+
+    // -- RTP6: Multiple presence messages in single ProtocolMessage --
+
+    #[tokio::test]
+    async fn rtp6_batch_presence_messages() {
+        let (_, _, conn, channel) = setup_attached_channel("test-rtp6-batch", None).await;
+
+        let (_, mut rx) = channel.presence().subscribe();
+
+        // Send 3 ENTER messages in one ProtocolMessage
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Presence,
+            channel: Some("test-rtp6-batch".to_string()),
+            connection_id: Some("conn-1".to_string()),
+            timestamp: Some(1000),
+            id: Some("conn-1:0".to_string()),
+            presence: Some(vec![
+                serde_json::json!({
+                    "action": 2,
+                    "clientId": "alice",
+                    "connectionId": "conn-1"
+                }),
+                serde_json::json!({
+                    "action": 2,
+                    "clientId": "bob",
+                    "connectionId": "conn-1"
+                }),
+                serde_json::json!({
+                    "action": 2,
+                    "clientId": "carol",
+                    "connectionId": "conn-1"
+                }),
+            ]),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Presence)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msg1 = rx.try_recv().unwrap();
+        assert_eq!(msg1.client_id.as_deref(), Some("alice"));
+        let msg2 = rx.try_recv().unwrap();
+        assert_eq!(msg2.client_id.as_deref(), Some("bob"));
+        let msg3 = rx.try_recv().unwrap();
+        assert_eq!(msg3.client_id.as_deref(), Some("carol"));
+
+        let members = channel
+            .presence()
+            .inner
+            .presence_map
+            .lock()
+            .unwrap()
+            .values();
+        assert_eq!(members.len(), 3);
+    }
+
+    // -- RTP8a/RTP8c: enter sends PRESENCE with ENTER action --
+
+    #[tokio::test]
+    async fn rtp8a_enter_sends_presence_enter() {
+        let (_, mock, conn, channel) =
+            setup_attached_channel("test-rtp8a", Some("my-client")).await;
+
+        let ch = channel.clone();
+        let enter_handle = tokio::spawn(async move { ch.presence().enter(None).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Verify PRESENCE message sent
+        let msgs = mock.client_messages();
+        let presence_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        assert_eq!(presence_msgs.len(), 1);
+
+        let pm = &presence_msgs[0].message;
+        assert_eq!(pm.channel.as_deref(), Some("test-rtp8a"));
+        let presence_arr = pm.presence.as_ref().unwrap();
+        assert_eq!(presence_arr.len(), 1);
+        assert_eq!(presence_arr[0]["action"], 2); // ENTER
+                                                  // RTP8c: clientId must NOT be in the presence message (uses connection's clientId)
+        assert!(
+            presence_arr[0].get("clientId").is_none(),
+            "clientId should NOT be in presence message for enter()"
+        );
+
+        // ACK
+        let serial = pm.msg_serial.unwrap();
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Ack)
+        });
+        let result = enter_handle.await.unwrap();
+        assert!(result.is_ok());
+    }
+
+    // -- RTP8e: enter with data --
+
+    #[tokio::test]
+    async fn rtp8e_enter_with_data() {
+        let (_, mock, conn, channel) =
+            setup_attached_channel("test-rtp8e", Some("my-client")).await;
+
+        let ch = channel.clone();
+        let enter_handle = tokio::spawn(async move {
+            ch.presence()
+                .enter(Some(serde_json::json!({"status": "online"})))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msgs = mock.client_messages();
+        let presence_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        assert_eq!(presence_msgs.len(), 1);
+        let presence_arr = presence_msgs[0].message.presence.as_ref().unwrap();
+        assert_eq!(
+            presence_arr[0]["data"],
+            serde_json::json!({"status": "online"})
+        );
+
+        // ACK
+        let serial = presence_msgs[0].message.msg_serial.unwrap();
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Ack)
+        });
+        enter_handle.await.unwrap().unwrap();
+    }
+
+    // -- RTP8g: enter on DETACHED or FAILED channel errors --
+
+    #[tokio::test]
+    async fn rtp8g_enter_on_detached_errors() {
+        let channel = crate::channel::RealtimeChannel::new(
+            "test-rtp8g".to_string(),
+            crate::channel::RealtimeChannelOptions::default(),
+        );
+        // Channel starts as INITIALIZED, then transition to simulate DETACHED
+        // We need a presence with channel_state set to DETACHED
+        channel
+            .inner
+            .presence
+            .set_channel_state(crate::protocol::ChannelState::Detached);
+        channel
+            .inner
+            .presence
+            .set_client_id(Some("test".to_string()));
+
+        let result = channel.presence().enter(None).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, Some(91001));
+    }
+
+    #[tokio::test]
+    async fn rtp8g_enter_on_failed_errors() {
+        let channel = crate::channel::RealtimeChannel::new(
+            "test-rtp8g-fail".to_string(),
+            crate::channel::RealtimeChannelOptions::default(),
+        );
+        channel
+            .inner
+            .presence
+            .set_channel_state(crate::protocol::ChannelState::Failed);
+        channel
+            .inner
+            .presence
+            .set_client_id(Some("test".to_string()));
+
+        let result = channel.presence().enter(None).await;
+        assert!(result.is_err());
+    }
+
+    // -- RTP8j: enter with wildcard or null clientId errors --
+
+    #[tokio::test]
+    async fn rtp8j_enter_no_client_id_errors() {
+        let channel = crate::channel::RealtimeChannel::new(
+            "test-rtp8j".to_string(),
+            crate::channel::RealtimeChannelOptions::default(),
+        );
+        // No client_id set → error
+        let result = channel.presence().enter(None).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, Some(91000));
+    }
+
+    #[tokio::test]
+    async fn rtp8j_enter_wildcard_client_id_errors() {
+        let channel = crate::channel::RealtimeChannel::new(
+            "test-rtp8j-wild".to_string(),
+            crate::channel::RealtimeChannelOptions::default(),
+        );
+        channel.inner.presence.set_client_id(Some("*".to_string()));
+
+        let result = channel.presence().enter(None).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, Some(91000));
+    }
+
+    // -- RTP8h: NACK for missing presence permission --
+
+    #[tokio::test]
+    async fn rtp8h_nack_presence_permission() {
+        let (_, mock, conn, channel) =
+            setup_attached_channel("test-rtp8h", Some("my-client")).await;
+
+        let ch = channel.clone();
+        let enter_handle = tokio::spawn(async move { ch.presence().enter(None).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // NACK the presence message
+        let msgs = mock.client_messages();
+        let presence_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        let serial = presence_msgs[0].message.msg_serial.unwrap();
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Nack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            error: Some(crate::protocol::ErrorInfo {
+                code: Some(40160),
+                status_code: Some(401),
+                message: Some("Not permitted: presence".to_string()),
+                href: None,
+            }),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Nack)
+        });
+
+        let result = enter_handle.await.unwrap();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, Some(40160));
+    }
+
+    // -- RTP9a/RTP9d: update sends PRESENCE with UPDATE action --
+
+    #[tokio::test]
+    async fn rtp9a_update_sends_presence_update() {
+        let (_, mock, conn, channel) =
+            setup_attached_channel("test-rtp9a", Some("my-client")).await;
+
+        let ch = channel.clone();
+        let handle = tokio::spawn(async move {
+            ch.presence()
+                .update(Some(serde_json::json!("new-status")))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msgs = mock.client_messages();
+        let presence_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        assert_eq!(presence_msgs.len(), 1);
+        let presence_arr = presence_msgs[0].message.presence.as_ref().unwrap();
+        assert_eq!(presence_arr[0]["action"], 4); // UPDATE
+        assert_eq!(presence_arr[0]["data"], "new-status");
+        // RTP9d: clientId must NOT be in message
+        assert!(presence_arr[0].get("clientId").is_none());
+
+        // ACK
+        let serial = presence_msgs[0].message.msg_serial.unwrap();
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Ack)
+        });
+        handle.await.unwrap().unwrap();
+    }
+
+    // -- RTP10a/RTP10c: leave sends PRESENCE with LEAVE action --
+
+    #[tokio::test]
+    async fn rtp10a_leave_sends_presence_leave() {
+        let (_, mock, conn, channel) =
+            setup_attached_channel("test-rtp10a", Some("my-client")).await;
+
+        let ch = channel.clone();
+        let handle = tokio::spawn(async move { ch.presence().leave(None).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msgs = mock.client_messages();
+        let presence_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        assert_eq!(presence_msgs.len(), 1);
+        let presence_arr = presence_msgs[0].message.presence.as_ref().unwrap();
+        assert_eq!(presence_arr[0]["action"], 3); // LEAVE
+                                                  // RTP10c: clientId must NOT be in message
+        assert!(presence_arr[0].get("clientId").is_none());
+
+        // ACK
+        let serial = presence_msgs[0].message.msg_serial.unwrap();
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Ack)
+        });
+        handle.await.unwrap().unwrap();
+    }
+
+    // -- RTP10a: leave with data --
+
+    #[tokio::test]
+    async fn rtp10a_leave_with_data() {
+        let (_, mock, conn, channel) =
+            setup_attached_channel("test-rtp10a-data", Some("my-client")).await;
+
+        let ch = channel.clone();
+        let handle = tokio::spawn(async move {
+            ch.presence()
+                .leave(Some(serde_json::json!("goodbye")))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msgs = mock.client_messages();
+        let presence_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        let presence_arr = presence_msgs[0].message.presence.as_ref().unwrap();
+        assert_eq!(presence_arr[0]["data"], "goodbye");
+
+        let serial = presence_msgs[0].message.msg_serial.unwrap();
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Ack)
+        });
+        handle.await.unwrap().unwrap();
+    }
+
+    // -- RTP14a: enterClient --
+
+    #[tokio::test]
+    async fn rtp14a_enter_client() {
+        let (_, mock, conn, channel) = setup_attached_channel("test-rtp14a", Some("admin")).await;
+
+        let ch = channel.clone();
+        let handle = tokio::spawn(async move {
+            ch.presence()
+                .enter_client("user-1", Some(serde_json::json!("data-1")))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msgs = mock.client_messages();
+        let presence_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        assert_eq!(presence_msgs.len(), 1);
+        let presence_arr = presence_msgs[0].message.presence.as_ref().unwrap();
+        assert_eq!(presence_arr[0]["action"], 2); // ENTER
+        assert_eq!(presence_arr[0]["clientId"], "user-1");
+        assert_eq!(presence_arr[0]["data"], "data-1");
+
+        let serial = presence_msgs[0].message.msg_serial.unwrap();
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Ack)
+        });
+        handle.await.unwrap().unwrap();
+    }
+
+    // -- RTP15a: updateClient and leaveClient --
+
+    #[tokio::test]
+    async fn rtp15a_update_client_and_leave_client() {
+        let (_, mock, conn, channel) = setup_attached_channel("test-rtp15a", Some("admin")).await;
+
+        // enterClient
+        let ch = channel.clone();
+        let h = tokio::spawn(async move {
+            ch.presence()
+                .enter_client("user-1", Some(serde_json::json!("initial")))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msgs = mock.client_messages();
+        let pm: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        let serial = pm.last().unwrap().message.msg_serial.unwrap();
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Ack)
+        });
+        h.await.unwrap().unwrap();
+
+        // updateClient
+        let ch = channel.clone();
+        let h = tokio::spawn(async move {
+            ch.presence()
+                .update_client("user-1", Some(serde_json::json!("updated")))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msgs = mock.client_messages();
+        let pm: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        let serial = pm.last().unwrap().message.msg_serial.unwrap();
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Ack)
+        });
+        h.await.unwrap().unwrap();
+
+        // leaveClient
+        let ch = channel.clone();
+        let h = tokio::spawn(async move {
+            ch.presence()
+                .leave_client("user-1", Some(serde_json::json!("bye")))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msgs = mock.client_messages();
+        let pm: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        let serial = pm.last().unwrap().message.msg_serial.unwrap();
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Ack)
+        });
+        h.await.unwrap().unwrap();
+
+        // Verify all 3 messages were sent
+        let msgs = mock.client_messages();
+        let pm: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        assert_eq!(pm.len(), 3);
+        let p0 = pm[0].message.presence.as_ref().unwrap();
+        assert_eq!(p0[0]["action"], 2); // ENTER
+        assert_eq!(p0[0]["clientId"], "user-1");
+        let p1 = pm[1].message.presence.as_ref().unwrap();
+        assert_eq!(p1[0]["action"], 4); // UPDATE
+        assert_eq!(p1[0]["clientId"], "user-1");
+        let p2 = pm[2].message.presence.as_ref().unwrap();
+        assert_eq!(p2[0]["action"], 3); // LEAVE
+        assert_eq!(p2[0]["clientId"], "user-1");
+    }
+
+    // -- RTP16a: Presence sent when ATTACHED --
+
+    #[tokio::test]
+    async fn rtp16a_presence_sent_when_attached() {
+        let (_, mock, conn, channel) =
+            setup_attached_channel("test-rtp16a", Some("my-client")).await;
+
+        let ch = channel.clone();
+        let handle = tokio::spawn(async move { ch.presence().enter(None).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msgs = mock.client_messages();
+        let presence_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        assert_eq!(
+            presence_msgs.len(),
+            1,
+            "presence should be sent immediately when ATTACHED"
+        );
+
+        let serial = presence_msgs[0].message.msg_serial.unwrap();
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Ack)
+        });
+        handle.await.unwrap().unwrap();
+    }
+
+    // -- RTP16b: Presence queued when ATTACHING --
+
+    #[tokio::test]
+    async fn rtp16b_presence_queued_when_attaching() {
+        use crate::mock_ws::{MockTransport, MockWebSocket};
+        use crate::protocol::{Action, ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+        });
+        let transport = std::sync::Arc::new(MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .fallback_hosts(vec![])
+                .use_binary_protocol(false)
+                .client_id("my-client")
+                .unwrap(),
+            transport,
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get("test-rtp16b");
+
+        // Start attach
+        let ch = channel.clone();
+        tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Queue enter while ATTACHING
+        let ch = channel.clone();
+        let enter_handle = tokio::spawn(async move { ch.presence().enter(None).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Verify no PRESENCE sent yet
+        let msgs = mock.client_messages();
+        let presence_count = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Presence)
+            .count();
+        assert_eq!(presence_count, 0, "no PRESENCE while ATTACHING");
+
+        // Complete the attach
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some("test-rtp16b".to_string()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Now PRESENCE should be sent
+        let msgs = mock.client_messages();
+        let presence_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Presence)
+            .collect();
+        assert_eq!(
+            presence_msgs.len(),
+            1,
+            "PRESENCE should be sent after ATTACHED"
+        );
+
+        // ACK
+        let serial = presence_msgs[0].message.msg_serial.unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+        enter_handle.await.unwrap().unwrap();
+    }
+
+    // -- RTP16c: Presence errors in other channel states --
+
+    #[tokio::test]
+    async fn rtp16c_presence_errors_in_detached() {
+        let channel = crate::channel::RealtimeChannel::new(
+            "test-rtp16c".to_string(),
+            crate::channel::RealtimeChannelOptions::default(),
+        );
+        channel
+            .inner
+            .presence
+            .set_channel_state(crate::protocol::ChannelState::Detached);
+        channel
+            .inner
+            .presence
+            .set_client_id(Some("test".to_string()));
+
+        let result = channel.presence().enter(None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn rtp16c_presence_errors_in_suspended() {
+        let channel = crate::channel::RealtimeChannel::new(
+            "test-rtp16c-sus".to_string(),
+            crate::channel::RealtimeChannelOptions::default(),
+        );
+        channel
+            .inner
+            .presence
+            .set_channel_state(crate::protocol::ChannelState::Suspended);
+        channel
+            .inner
+            .presence
+            .set_client_id(Some("test".to_string()));
+
+        let result = channel.presence().enter(None).await;
+        assert!(result.is_err());
+    }
+
+    // -- RTL11a: ACK/NACK unaffected by channel state changes --
+
+    #[tokio::test]
+    async fn rtl11a_ack_unaffected_by_channel_state() {
+        let (_, mock, conn, channel) =
+            setup_attached_channel("test-rtl11a", Some("my-client")).await;
+
+        // Send presence enter
+        let ch = channel.clone();
+        let enter_handle = tokio::spawn(async move { ch.presence().enter(None).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msgs = mock.client_messages();
+        let presence_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        let serial = presence_msgs[0].message.msg_serial.unwrap();
+
+        // Channel becomes DETACHED (server initiated) while awaiting ACK
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Detached,
+            channel: Some("test-rtl11a".to_string()),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Detached)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // ACK still comes through
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Ack)
+        });
+
+        let result = enter_handle.await.unwrap();
+        assert!(
+            result.is_ok(),
+            "ACK should still resolve even after channel state change"
+        );
+    }
+
+    // -- RTP15c: enterClient has no side effects on normal enter --
+
+    #[tokio::test]
+    async fn rtp15c_enter_client_no_side_effects() {
+        let (_, mock, conn, channel) = setup_attached_channel("test-rtp15c", Some("admin")).await;
+
+        // Regular enter (no clientId in message)
+        let ch = channel.clone();
+        let h = tokio::spawn(async move { ch.presence().enter(None).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msgs = mock.client_messages();
+        let pm: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        let serial = pm.last().unwrap().message.msg_serial.unwrap();
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Ack)
+        });
+        h.await.unwrap().unwrap();
+
+        // enterClient with explicit clientId
+        let ch = channel.clone();
+        let h = tokio::spawn(async move { ch.presence().enter_client("other-client", None).await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msgs = mock.client_messages();
+        let pm: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        let serial = pm.last().unwrap().message.msg_serial.unwrap();
+        conn.send_to_client(crate::protocol::ProtocolMessage {
+            action: crate::protocol::Action::Ack,
+            msg_serial: Some(serial),
+            count: Some(1),
+            ..crate::protocol::ProtocolMessage::new(crate::protocol::Action::Ack)
+        });
+        h.await.unwrap().unwrap();
+
+        // Verify messages
+        let msgs = mock.client_messages();
+        let pm: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == crate::protocol::Action::Presence)
+            .collect();
+        assert_eq!(pm.len(), 2);
+        // First: enter() — no clientId
+        let p0 = pm[0].message.presence.as_ref().unwrap();
+        assert!(p0[0].get("clientId").is_none());
+        // Second: enterClient() — explicit clientId
+        let p1 = pm[1].message.presence.as_ref().unwrap();
+        assert_eq!(p1[0]["clientId"], "other-client");
+    }
+
+    // -- RTP14a: enterClient with wildcard --
+
+    #[tokio::test]
+    async fn rtp14a_enter_client_wildcard_errors() {
+        let channel = crate::channel::RealtimeChannel::new(
+            "test-rtp14a-wild".to_string(),
+            crate::channel::RealtimeChannelOptions::default(),
+        );
+        channel
+            .inner
+            .presence
+            .set_channel_state(crate::protocol::ChannelState::Attached);
+
+        let result = channel.presence().enter_client("*", None).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, Some(91000));
+    }
 }

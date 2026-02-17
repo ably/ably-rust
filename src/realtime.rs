@@ -1333,6 +1333,16 @@ impl Connection {
                     .channels
                     .set_self_connection_id(msg.connection_id.clone());
 
+                // RTP1: Propagate clientId to channels' presence
+                {
+                    let client_id = msg
+                        .connection_details
+                        .as_ref()
+                        .and_then(|d| d.client_id.clone())
+                        .or_else(|| inner.client_id.clone());
+                    inner.channels.set_presence_client_id(client_id);
+                }
+
                 // RTL4i: Send queued ATTACH messages for channels in ATTACHING state
                 inner.channels.send_pending_attaches();
 
@@ -1450,7 +1460,11 @@ impl Connection {
                 }
                 false
             }
-            Action::Attached | Action::Detached | Action::Message | Action::Presence => {
+            Action::Attached
+            | Action::Detached
+            | Action::Message
+            | Action::Presence
+            | Action::Sync => {
                 // Route channel-scoped messages to the appropriate channel
                 if let Some(ref channel_name) = msg.channel {
                     if let Some(channel) = inner.channels.get_if_exists(channel_name) {

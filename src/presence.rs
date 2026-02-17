@@ -1,7 +1,13 @@
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use futures::stream::Stream;
+use serde_json;
 
+use crate::channel::ChannelsInner;
+use crate::protocol::{
+    self, flags, Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage,
+};
 use crate::rest::{PresenceAction, PresenceMessage};
 use crate::{http, rest, Result};
 
@@ -355,6 +361,674 @@ pub fn is_sync_complete(channel_serial: &Option<String>) -> bool {
                 // No colon — single-message sync, complete
                 true
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RealtimePresence (RTP1)
+// ---------------------------------------------------------------------------
+
+/// Unique ID for a presence subscription listener.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PresenceSubscriptionId(u64);
+
+/// A subscription entry for presence events.
+struct PresenceSubscription {
+    id: PresenceSubscriptionId,
+    action_filter: Option<Vec<PresenceAction>>,
+    tx: tokio::sync::mpsc::UnboundedSender<PresenceMessage>,
+}
+
+/// The public Realtime presence API on a channel. RTP1.
+pub struct RealtimePresence {
+    pub(crate) inner: Arc<PresenceInner>,
+}
+
+/// Internal state for Realtime presence. Shared via Arc.
+pub(crate) struct PresenceInner {
+    /// The presence map (server's view of all members). RTP2.
+    pub(crate) presence_map: Mutex<PresenceMap>,
+
+    /// Local members entered by this connection. RTP17.
+    pub(crate) local_presence_map: Mutex<LocalPresenceMap>,
+
+    /// Presence subscriptions. RTP6.
+    subscriptions: Mutex<Vec<PresenceSubscription>>,
+
+    /// Next subscription ID counter.
+    next_sub_id: Mutex<u64>,
+
+    /// Whether sync has completed at least once. RTP13.
+    pub(crate) sync_complete: Mutex<bool>,
+
+    /// Waiters for sync completion (for get()). RTP11.
+    pub(crate) sync_waiters: Mutex<Vec<tokio::sync::oneshot::Sender<()>>>,
+
+    /// Queued presence messages to send after attach. RTP16b.
+    pub(crate) queued_presence: Mutex<
+        Vec<(
+            ProtocolMessage,
+            tokio::sync::oneshot::Sender<std::result::Result<protocol::PublishResult, ErrorInfo>>,
+        )>,
+    >,
+
+    /// Channel name.
+    pub(crate) channel_name: String,
+
+    /// The client's own client_id. RTP8, RTP9, RTP10.
+    pub(crate) client_id: Mutex<Option<String>>,
+
+    /// The client's connection_id (set after CONNECTED).
+    pub(crate) connection_id: Mutex<Option<String>>,
+
+    /// Back-reference to ChannelsInner for ACK/NACK coordination.
+    pub(crate) channels_inner: Mutex<Option<Arc<ChannelsInner>>>,
+
+    /// Client message sender (for sending PRESENCE protocol messages).
+    pub(crate) client_msg_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<ProtocolMessage>>>,
+
+    /// Channel state (updated by channel).
+    pub(crate) channel_state: Mutex<ChannelState>,
+
+    /// Connection state (updated by channel).
+    pub(crate) connection_state: Mutex<ConnectionState>,
+
+    /// Broadcast sender for channel state events (for emitting UPDATE on re-entry failure).
+    pub(crate) channel_state_tx:
+        Mutex<Option<tokio::sync::broadcast::Sender<crate::protocol::ChannelStateChange>>>,
+}
+
+impl PresenceInner {
+    pub(crate) fn new(channel_name: String) -> Self {
+        Self {
+            presence_map: Mutex::new(PresenceMap::new()),
+            local_presence_map: Mutex::new(LocalPresenceMap::new()),
+            subscriptions: Mutex::new(Vec::new()),
+            next_sub_id: Mutex::new(0),
+            sync_complete: Mutex::new(false),
+            sync_waiters: Mutex::new(Vec::new()),
+            queued_presence: Mutex::new(Vec::new()),
+            channel_name,
+            client_id: Mutex::new(None),
+            connection_id: Mutex::new(None),
+            channels_inner: Mutex::new(None),
+            client_msg_tx: Mutex::new(None),
+            channel_state: Mutex::new(ChannelState::Initialized),
+            connection_state: Mutex::new(ConnectionState::Initialized),
+            channel_state_tx: Mutex::new(None),
+        }
+    }
+
+    /// Set client_id.
+    pub(crate) fn set_client_id(&self, id: Option<String>) {
+        *self.client_id.lock().unwrap() = id;
+    }
+
+    /// Set connection_id.
+    pub(crate) fn set_connection_id(&self, id: Option<String>) {
+        *self.connection_id.lock().unwrap() = id;
+    }
+
+    /// Set the client message sender.
+    pub(crate) fn set_client_msg_tx(
+        &self,
+        tx: Option<tokio::sync::mpsc::UnboundedSender<ProtocolMessage>>,
+    ) {
+        *self.client_msg_tx.lock().unwrap() = tx;
+    }
+
+    /// Set channels_inner for ACK/NACK.
+    pub(crate) fn set_channels_inner(&self, ci: Arc<ChannelsInner>) {
+        *self.channels_inner.lock().unwrap() = Some(ci);
+    }
+
+    /// Set channel state.
+    pub(crate) fn set_channel_state(&self, state: ChannelState) {
+        *self.channel_state.lock().unwrap() = state;
+    }
+
+    /// Set connection state.
+    pub(crate) fn set_connection_state(&self, state: ConnectionState) {
+        *self.connection_state.lock().unwrap() = state;
+    }
+
+    /// Set channel state broadcast sender.
+    pub(crate) fn set_channel_state_tx(
+        &self,
+        tx: tokio::sync::broadcast::Sender<crate::protocol::ChannelStateChange>,
+    ) {
+        *self.channel_state_tx.lock().unwrap() = Some(tx);
+    }
+
+    /// Emit a presence message to matching subscribers.
+    fn emit_to_subscribers(&self, msg: &PresenceMessage) {
+        let subs = self.subscriptions.lock().unwrap();
+        for sub in subs.iter() {
+            let matches = match &sub.action_filter {
+                None => true,
+                Some(actions) => actions.contains(&msg.action),
+            };
+            if matches {
+                let _ = sub.tx.send(msg.clone());
+            }
+        }
+    }
+
+    /// Send a protocol message via client_msg_tx. Returns true if sent.
+    fn send_message(&self, msg: ProtocolMessage) -> bool {
+        let tx = self.client_msg_tx.lock().unwrap();
+        if let Some(ref sender) = *tx {
+            sender.send(msg).is_ok()
+        } else {
+            false
+        }
+    }
+}
+
+impl RealtimePresence {
+    /// Whether presence sync has completed. RTP13.
+    pub fn sync_complete(&self) -> bool {
+        *self.inner.sync_complete.lock().unwrap()
+    }
+
+    // -- Subscribe / Unsubscribe (RTP6, RTP7) --
+
+    /// Subscribe to all presence events. RTP6a.
+    /// Triggers implicit attach if attachOnSubscribe is true.
+    pub fn subscribe(
+        &self,
+    ) -> (
+        PresenceSubscriptionId,
+        tokio::sync::mpsc::UnboundedReceiver<PresenceMessage>,
+    ) {
+        self.subscribe_internal(None)
+    }
+
+    /// Subscribe to presence events with a single action filter. RTP6b.
+    pub fn subscribe_action(
+        &self,
+        action: PresenceAction,
+    ) -> (
+        PresenceSubscriptionId,
+        tokio::sync::mpsc::UnboundedReceiver<PresenceMessage>,
+    ) {
+        self.subscribe_internal(Some(vec![action]))
+    }
+
+    /// Subscribe to presence events with multiple action filters. RTP6b.
+    pub fn subscribe_actions(
+        &self,
+        actions: Vec<PresenceAction>,
+    ) -> (
+        PresenceSubscriptionId,
+        tokio::sync::mpsc::UnboundedReceiver<PresenceMessage>,
+    ) {
+        self.subscribe_internal(Some(actions))
+    }
+
+    fn subscribe_internal(
+        &self,
+        action_filter: Option<Vec<PresenceAction>>,
+    ) -> (
+        PresenceSubscriptionId,
+        tokio::sync::mpsc::UnboundedReceiver<PresenceMessage>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let id = {
+            let mut counter = self.inner.next_sub_id.lock().unwrap();
+            let id = PresenceSubscriptionId(*counter);
+            *counter += 1;
+            id
+        };
+        self.inner
+            .subscriptions
+            .lock()
+            .unwrap()
+            .push(PresenceSubscription {
+                id,
+                action_filter,
+                tx,
+            });
+        (id, rx)
+    }
+
+    /// Unsubscribe a specific listener. RTP7a.
+    pub fn unsubscribe(&self, id: PresenceSubscriptionId) {
+        self.inner
+            .subscriptions
+            .lock()
+            .unwrap()
+            .retain(|s| s.id != id);
+    }
+
+    /// Unsubscribe all listeners. RTP7c.
+    pub fn unsubscribe_all(&self) {
+        self.inner.subscriptions.lock().unwrap().clear();
+    }
+
+    // -- Enter / Update / Leave (RTP8-10, RTP14-16) --
+
+    /// Enter presence using the client's own clientId. RTP8.
+    pub async fn enter(
+        &self,
+        data: Option<serde_json::Value>,
+    ) -> std::result::Result<(), ErrorInfo> {
+        let client_id = self.inner.client_id.lock().unwrap().clone();
+        let client_id = client_id.ok_or_else(|| ErrorInfo {
+            code: Some(91000),
+            status_code: None,
+            message: Some("Cannot enter presence: no clientId configured".to_string()),
+            href: None,
+        })?;
+        if client_id == "*" {
+            return Err(ErrorInfo {
+                code: Some(91000),
+                status_code: None,
+                message: Some("Cannot enter presence with wildcard clientId".to_string()),
+                href: None,
+            });
+        }
+        // RTP8c: clientId must NOT be included in the PresenceMessage
+        self.send_presence(PresenceAction::Enter, None, data).await
+    }
+
+    /// Update presence data using the client's own clientId. RTP9.
+    pub async fn update(
+        &self,
+        data: Option<serde_json::Value>,
+    ) -> std::result::Result<(), ErrorInfo> {
+        let client_id = self.inner.client_id.lock().unwrap().clone();
+        client_id.ok_or_else(|| ErrorInfo {
+            code: Some(91000),
+            status_code: None,
+            message: Some("Cannot update presence: no clientId configured".to_string()),
+            href: None,
+        })?;
+        self.send_presence(PresenceAction::Update, None, data).await
+    }
+
+    /// Leave presence using the client's own clientId. RTP10.
+    pub async fn leave(
+        &self,
+        data: Option<serde_json::Value>,
+    ) -> std::result::Result<(), ErrorInfo> {
+        let client_id = self.inner.client_id.lock().unwrap().clone();
+        client_id.ok_or_else(|| ErrorInfo {
+            code: Some(91000),
+            status_code: None,
+            message: Some("Cannot leave presence: no clientId configured".to_string()),
+            href: None,
+        })?;
+        self.send_presence(PresenceAction::Leave, None, data).await
+    }
+
+    /// Enter presence on behalf of a specific clientId. RTP14.
+    pub async fn enter_client(
+        &self,
+        client_id: &str,
+        data: Option<serde_json::Value>,
+    ) -> std::result::Result<(), ErrorInfo> {
+        if client_id == "*" {
+            return Err(ErrorInfo {
+                code: Some(91000),
+                status_code: None,
+                message: Some("Cannot enter presence with wildcard clientId".to_string()),
+                href: None,
+            });
+        }
+        self.send_presence(PresenceAction::Enter, Some(client_id), data)
+            .await
+    }
+
+    /// Update presence on behalf of a specific clientId. RTP15.
+    pub async fn update_client(
+        &self,
+        client_id: &str,
+        data: Option<serde_json::Value>,
+    ) -> std::result::Result<(), ErrorInfo> {
+        self.send_presence(PresenceAction::Update, Some(client_id), data)
+            .await
+    }
+
+    /// Leave presence on behalf of a specific clientId. RTP15.
+    pub async fn leave_client(
+        &self,
+        client_id: &str,
+        data: Option<serde_json::Value>,
+    ) -> std::result::Result<(), ErrorInfo> {
+        self.send_presence(PresenceAction::Leave, Some(client_id), data)
+            .await
+    }
+
+    /// Send a presence message. Handles state validation, implicit attach,
+    /// message queuing, and ACK/NACK coordination. RTP16.
+    async fn send_presence(
+        &self,
+        action: PresenceAction,
+        client_id: Option<&str>,
+        data: Option<serde_json::Value>,
+    ) -> std::result::Result<(), ErrorInfo> {
+        let ch_state = *self.inner.channel_state.lock().unwrap();
+
+        // RTP8g/RTP16c: Error on DETACHED, FAILED, SUSPENDED
+        match ch_state {
+            ChannelState::Failed | ChannelState::Detached | ChannelState::Suspended => {
+                return Err(ErrorInfo {
+                    code: Some(91001),
+                    status_code: None,
+                    message: Some(format!(
+                        "Cannot send presence: channel is in {:?} state",
+                        ch_state
+                    )),
+                    href: None,
+                });
+            }
+            _ => {}
+        }
+
+        // Build the presence message
+        let mut presence_obj = serde_json::Map::new();
+        presence_obj.insert(
+            "action".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(action.clone() as u8)),
+        );
+        if let Some(cid) = client_id {
+            presence_obj.insert(
+                "clientId".to_string(),
+                serde_json::Value::String(cid.to_string()),
+            );
+        }
+        if let Some(d) = data {
+            presence_obj.insert("data".to_string(), d);
+        }
+
+        let msg = ProtocolMessage {
+            action: Action::Presence,
+            channel: Some(self.inner.channel_name.clone()),
+            presence: Some(vec![serde_json::Value::Object(presence_obj)]),
+            ..ProtocolMessage::new(Action::Presence)
+        };
+
+        // RTP8d/RTP15e: Implicit attach if INITIALIZED
+        if ch_state == ChannelState::Initialized {
+            // TODO: trigger implicit attach and queue message
+            // For now, queue the message — it will be sent after ATTACHED
+            let (tx, rx) = tokio::sync::oneshot::channel::<
+                std::result::Result<protocol::PublishResult, ErrorInfo>,
+            >();
+            self.inner.queued_presence.lock().unwrap().push((msg, tx));
+            return match rx.await {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(ErrorInfo {
+                    code: Some(91001),
+                    status_code: None,
+                    message: Some("Presence waiter dropped".to_string()),
+                    href: None,
+                }),
+            };
+        }
+
+        // RTP16b: Queue during ATTACHING
+        if ch_state == ChannelState::Attaching {
+            let (tx, rx) = tokio::sync::oneshot::channel::<
+                std::result::Result<protocol::PublishResult, ErrorInfo>,
+            >();
+            self.inner.queued_presence.lock().unwrap().push((msg, tx));
+            return match rx.await {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(ErrorInfo {
+                    code: Some(91001),
+                    status_code: None,
+                    message: Some("Presence waiter dropped".to_string()),
+                    href: None,
+                }),
+            };
+        }
+
+        // RTP16a: Channel is ATTACHED — send immediately
+        self.send_presence_immediately(msg).await
+    }
+
+    /// Send a presence message immediately (channel is ATTACHED).
+    async fn send_presence_immediately(
+        &self,
+        msg: ProtocolMessage,
+    ) -> std::result::Result<(), ErrorInfo> {
+        let (tx, rx) = tokio::sync::oneshot::channel::<
+            std::result::Result<protocol::PublishResult, ErrorInfo>,
+        >();
+
+        // Use ChannelsInner to assign msgSerial and register ACK waiter
+        let prepared = {
+            let ci = self.inner.channels_inner.lock().unwrap();
+            if let Some(ref ci) = *ci {
+                ci.prepare_publish(msg, tx)
+            } else {
+                return Err(ErrorInfo {
+                    code: Some(91001),
+                    status_code: None,
+                    message: Some("Internal error: no channels reference".to_string()),
+                    href: None,
+                });
+            }
+        };
+
+        let sent = self.inner.send_message(prepared);
+        if !sent {
+            return Err(ErrorInfo {
+                code: Some(91001),
+                status_code: None,
+                message: Some("Failed to send presence message".to_string()),
+                href: None,
+            });
+        }
+
+        // Wait for ACK/NACK (map PublishResult → ())
+        match rx.await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(ErrorInfo {
+                code: Some(91001),
+                status_code: None,
+                message: Some("Presence ACK waiter dropped".to_string()),
+                href: None,
+            }),
+        }
+    }
+
+    // -- Protocol message handlers (called by channel) --
+
+    /// Handle incoming PRESENCE protocol message. Deserialize, update map, emit.
+    pub(crate) fn handle_presence_message(&self, msg: &ProtocolMessage) {
+        if let Some(ref presence_array) = msg.presence {
+            for (index, presence_val) in presence_array.iter().enumerate() {
+                if let Ok(mut pm) = serde_json::from_value::<PresenceMessage>(presence_val.clone())
+                {
+                    // Populate connectionId from ProtocolMessage if not set
+                    if pm.connection_id.is_none() {
+                        pm.connection_id = msg.connection_id.clone();
+                    }
+                    // Populate timestamp from ProtocolMessage if not set
+                    if pm.timestamp.is_none() {
+                        pm.timestamp = msg.timestamp.map(|t| t as u64);
+                    }
+                    // Populate id from ProtocolMessage id + index
+                    if pm.id.is_none() {
+                        if let Some(ref proto_id) = msg.id {
+                            pm.id = Some(format!("{}:{}", proto_id, index));
+                        }
+                    }
+
+                    self.process_presence_message(pm);
+                }
+            }
+        }
+    }
+
+    /// Handle incoming SYNC protocol message.
+    pub(crate) fn handle_sync_message(&self, msg: &ProtocolMessage) {
+        // Check if this is the first SYNC message (start sync)
+        {
+            let map = self.inner.presence_map.lock().unwrap();
+            if !map.sync_in_progress() {
+                drop(map);
+                self.inner.presence_map.lock().unwrap().start_sync();
+            }
+        }
+
+        // Process presence entries in the SYNC message
+        if let Some(ref presence_array) = msg.presence {
+            for (index, presence_val) in presence_array.iter().enumerate() {
+                if let Ok(mut pm) = serde_json::from_value::<PresenceMessage>(presence_val.clone())
+                {
+                    if pm.connection_id.is_none() {
+                        pm.connection_id = msg.connection_id.clone();
+                    }
+                    if pm.timestamp.is_none() {
+                        pm.timestamp = msg.timestamp.map(|t| t as u64);
+                    }
+                    if pm.id.is_none() {
+                        if let Some(ref proto_id) = msg.id {
+                            pm.id = Some(format!("{}:{}", proto_id, index));
+                        }
+                    }
+
+                    self.process_presence_message(pm);
+                }
+            }
+        }
+
+        // Check if sync is complete (RTP18c)
+        if is_sync_complete(&msg.channel_serial) {
+            let leave_events = self.inner.presence_map.lock().unwrap().end_sync();
+
+            // Emit synthesized LEAVE events
+            for leave in &leave_events {
+                self.inner.emit_to_subscribers(leave);
+            }
+
+            // Mark sync complete and notify waiters
+            *self.inner.sync_complete.lock().unwrap() = true;
+            let waiters: Vec<_> = self.inner.sync_waiters.lock().unwrap().drain(..).collect();
+            for w in waiters {
+                let _ = w.send(());
+            }
+        }
+    }
+
+    /// Process a single deserialized PresenceMessage through the map and subscribers.
+    fn process_presence_message(&self, pm: PresenceMessage) {
+        match pm.action {
+            PresenceAction::Leave => {
+                let emitted = self.inner.presence_map.lock().unwrap().remove(pm.clone());
+                // Update local presence map
+                self.inner.local_presence_map.lock().unwrap().remove(&pm);
+                if let Some(leave_msg) = emitted {
+                    self.inner.emit_to_subscribers(&leave_msg);
+                }
+            }
+            PresenceAction::Enter
+            | PresenceAction::Update
+            | PresenceAction::Present
+            | PresenceAction::Absent => {
+                let emitted = self.inner.presence_map.lock().unwrap().put(pm.clone());
+                // Update local presence map for ENTER/UPDATE from our connection
+                if pm.action == PresenceAction::Enter || pm.action == PresenceAction::Update {
+                    let our_conn_id = self.inner.connection_id.lock().unwrap().clone();
+                    if let Some(ref our_id) = our_conn_id {
+                        if pm.connection_id.as_deref() == Some(our_id) {
+                            self.inner
+                                .local_presence_map
+                                .lock()
+                                .unwrap()
+                                .put(pm.clone());
+                        }
+                    }
+                }
+                if let Some(emitted_msg) = emitted {
+                    self.inner.emit_to_subscribers(&emitted_msg);
+                }
+            }
+        }
+    }
+
+    /// Handle ATTACHED message effects on presence. RTP1.
+    pub(crate) fn handle_attached(&self, flags_val: i64, resumed: bool) {
+        let has_presence = (flags_val & flags::HAS_PRESENCE) != 0;
+
+        if has_presence {
+            if !resumed {
+                // Start sync — server will send SYNC messages
+                self.inner.presence_map.lock().unwrap().start_sync();
+                *self.inner.sync_complete.lock().unwrap() = false;
+            }
+        } else {
+            // RTP19a: No HAS_PRESENCE — clear all members
+            let leave_events = {
+                let mut map = self.inner.presence_map.lock().unwrap();
+                map.start_sync();
+                map.end_sync()
+            };
+            for leave in &leave_events {
+                self.inner.emit_to_subscribers(leave);
+            }
+            *self.inner.sync_complete.lock().unwrap() = true;
+            let waiters: Vec<_> = self.inner.sync_waiters.lock().unwrap().drain(..).collect();
+            for w in waiters {
+                let _ = w.send(());
+            }
+        }
+    }
+
+    /// Handle DETACHED or FAILED channel state. RTP5a.
+    /// Clears both maps, fails queued presence, resets sync state.
+    pub(crate) fn handle_detached_or_failed(&self) {
+        self.inner.presence_map.lock().unwrap().clear();
+        self.inner.local_presence_map.lock().unwrap().clear();
+        *self.inner.sync_complete.lock().unwrap() = false;
+
+        // Fail queued presence messages. RTL11.
+        let queued: Vec<_> = self
+            .inner
+            .queued_presence
+            .lock()
+            .unwrap()
+            .drain(..)
+            .collect();
+        let err = ErrorInfo {
+            code: Some(91001),
+            status_code: None,
+            message: Some("Channel state prevents presence operation".to_string()),
+            href: None,
+        };
+        for (_, waiter) in queued {
+            let _ = waiter.send(Err(err.clone()));
+        }
+    }
+
+    /// Send queued presence messages after ATTACHED. RTP5b.
+    pub(crate) fn send_queued_presence(&self) {
+        let queued: Vec<_> = self
+            .inner
+            .queued_presence
+            .lock()
+            .unwrap()
+            .drain(..)
+            .collect();
+        for (msg, waiter) in queued {
+            // Assign msgSerial and send
+            let prepared = {
+                let ci = self.inner.channels_inner.lock().unwrap();
+                if let Some(ref ci) = *ci {
+                    ci.prepare_publish(msg, waiter)
+                } else {
+                    continue;
+                }
+            };
+            self.inner.send_message(prepared);
         }
     }
 }

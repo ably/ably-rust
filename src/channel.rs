@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use tokio::sync::broadcast;
 
+use crate::presence::{PresenceInner, RealtimePresence};
 use crate::protocol::{
     flags, Action, ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionState,
     ErrorInfo, ProtocolMessage, PublishResult,
@@ -98,12 +99,15 @@ fn flags_to_modes(f: i64) -> Vec<ChannelMode> {
 
 /// A Realtime channel with state machine and event system.
 pub struct RealtimeChannel {
-    inner: Arc<ChannelInner>,
+    pub(crate) inner: Arc<ChannelInner>,
 }
 
-struct ChannelInner {
+pub(crate) struct ChannelInner {
     /// The channel name.
     name: String,
+
+    /// Realtime presence for this channel. RTP1.
+    pub(crate) presence: Arc<PresenceInner>,
 
     /// Current channel state.
     state: Mutex<ChannelState>,
@@ -193,9 +197,12 @@ impl RealtimeChannel {
     /// Create a new channel with the given name and options.
     pub(crate) fn new(name: String, options: RealtimeChannelOptions) -> Self {
         let (state_tx, _) = broadcast::channel(64);
+        let presence = Arc::new(PresenceInner::new(name.clone()));
+        presence.set_channel_state_tx(state_tx.clone());
         Self {
             inner: Arc::new(ChannelInner {
                 name,
+                presence,
                 state: Mutex::new(ChannelState::Initialized),
                 error_reason: Mutex::new(None),
                 options: Mutex::new(options),
@@ -227,6 +234,13 @@ impl RealtimeChannel {
     /// Get the channel name.
     pub fn name(&self) -> &str {
         &self.inner.name
+    }
+
+    /// Get the Realtime presence object for this channel. RTL9.
+    pub fn presence(&self) -> RealtimePresence {
+        RealtimePresence {
+            inner: Arc::clone(&self.inner.presence),
+        }
     }
 
     /// Get the current channel state.
@@ -1218,6 +1232,14 @@ impl RealtimeChannel {
                     self.set_state(ChannelState::Attached, None, resumed, has_backlog);
                 }
 
+                // RTP1: Handle presence effects on ATTACHED
+                {
+                    let presence = RealtimePresence {
+                        inner: Arc::clone(&self.inner.presence),
+                    };
+                    presence.handle_attached(flags_val, resumed);
+                }
+
                 // Resolve attach waiters
                 let waiters: Vec<_> = self
                     .inner
@@ -1228,6 +1250,14 @@ impl RealtimeChannel {
                     .collect();
                 for waiter in waiters {
                     let _ = waiter.send(Ok(()));
+                }
+
+                // RTP5b: Send queued presence messages after ATTACHED
+                {
+                    let presence = RealtimePresence {
+                        inner: Arc::clone(&self.inner.presence),
+                    };
+                    presence.send_queued_presence();
                 }
 
                 // RTL4h/RTL5i: Execute pending operation
@@ -1309,6 +1339,13 @@ impl RealtimeChannel {
                     self.set_state(ChannelState::Suspended, Some(err), false, false);
                     // RTL15b1: Clear channelSerial on SUSPENDED
                     *self.inner.channel_serial.lock().unwrap() = None;
+                    // RTP5a: Handle presence effects on SUSPENDED
+                    {
+                        let presence = RealtimePresence {
+                            inner: Arc::clone(&self.inner.presence),
+                        };
+                        presence.handle_detached_or_failed();
+                    }
                     // Start retry timer
                     let suspended_retry_timeout =
                         *self.inner.suspended_retry_timeout.lock().unwrap();
@@ -1324,6 +1361,14 @@ impl RealtimeChannel {
                 *self.inner.error_reason.lock().unwrap() = None;
 
                 self.set_state(ChannelState::Detached, msg.error.clone(), false, false);
+
+                // RTP5a: Handle presence effects on DETACHED
+                {
+                    let presence = RealtimePresence {
+                        inner: Arc::clone(&self.inner.presence),
+                    };
+                    presence.handle_detached_or_failed();
+                }
 
                 // Resolve detach waiters
                 let waiters: Vec<_> = self
@@ -1351,6 +1396,14 @@ impl RealtimeChannel {
                 *self.inner.channel_serial.lock().unwrap() = None;
 
                 self.set_state(ChannelState::Failed, reason.clone(), false, false);
+
+                // RTP5a: Handle presence effects on FAILED
+                {
+                    let presence = RealtimePresence {
+                        inner: Arc::clone(&self.inner.presence),
+                    };
+                    presence.handle_detached_or_failed();
+                }
 
                 // Fail attach waiters
                 let waiters: Vec<_> = self
@@ -1391,11 +1444,25 @@ impl RealtimeChannel {
                 if msg.action == Action::Message {
                     // Deliver messages to subscribers (RTL7, RTL17, TM2)
                     self.deliver_messages(msg);
+                } else {
+                    // Action::Presence — update presence map and emit to subscribers
+                    let presence = RealtimePresence {
+                        inner: Arc::clone(&self.inner.presence),
+                    };
+                    presence.handle_presence_message(msg);
                 }
             }
-            _ => {
-                // Other channel messages (SYNC, etc.)
+            Action::Sync => {
+                // RTP18: Update channelSerial from SYNC message
+                if let Some(ref serial) = msg.channel_serial {
+                    *self.inner.channel_serial.lock().unwrap() = Some(serial.clone());
+                }
+                let presence = RealtimePresence {
+                    inner: Arc::clone(&self.inner.presence),
+                };
+                presence.handle_sync_message(msg);
             }
+            _ => {}
         }
     }
 
@@ -1504,6 +1571,9 @@ impl RealtimeChannel {
             *self.inner.error_reason.lock().unwrap() = reason.clone();
         }
 
+        // Propagate channel state to presence
+        self.inner.presence.set_channel_state(new_state);
+
         let event = ChannelEvent::from(new_state);
         let change = ChannelStateChange {
             previous,
@@ -1546,6 +1616,8 @@ pub(crate) struct ChannelsInner {
         Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Result<PublishResult, ErrorInfo>>>>,
     /// Suspended retry timeout (from ClientOptions). RTL13b.
     suspended_retry_timeout: Mutex<Duration>,
+    /// Client ID for presence operations (set on CONNECTED). RTP1.
+    presence_client_id: Mutex<Option<String>>,
 }
 
 impl Channels {
@@ -1562,6 +1634,7 @@ impl Channels {
                 next_msg_serial: Mutex::new(0),
                 pending_acks: Mutex::new(HashMap::new()),
                 suspended_retry_timeout: Mutex::new(Duration::from_secs(30)),
+                presence_client_id: Mutex::new(None),
             }),
         }
     }
@@ -1664,6 +1737,8 @@ impl Channels {
         let channels = self.inner.channels.lock().unwrap();
         for channel in channels.values() {
             channel.set_client_msg_tx(tx.clone());
+            // Propagate to presence
+            channel.inner.presence.set_client_msg_tx(tx.clone());
         }
     }
 
@@ -1673,6 +1748,8 @@ impl Channels {
         let channels = self.inner.channels.lock().unwrap();
         for channel in channels.values() {
             channel.set_connection_state(state);
+            // Propagate to presence
+            channel.inner.presence.set_connection_state(state);
         }
     }
 
@@ -1719,7 +1796,7 @@ impl Channels {
     /// Configure a newly created channel with current settings.
     fn configure_new_channel(&self, ch: &RealtimeChannel) {
         let tx = self.inner.current_tx.lock().unwrap().clone();
-        ch.set_client_msg_tx(tx);
+        ch.set_client_msg_tx(tx.clone());
         let timeout = *self.inner.attach_timeout.lock().unwrap();
         ch.set_attach_timeout(timeout);
         let conn_state = *self.inner.connection_state.lock().unwrap();
@@ -1727,12 +1804,23 @@ impl Channels {
         let echo = *self.inner.echo_messages.lock().unwrap();
         ch.set_echo_messages(echo);
         let conn_id = self.inner.self_connection_id.lock().unwrap().clone();
-        ch.set_self_connection_id(conn_id);
+        ch.set_self_connection_id(conn_id.clone());
         let queue = *self.inner.queue_messages.lock().unwrap();
         ch.set_queue_messages(queue);
         let suspended_retry = *self.inner.suspended_retry_timeout.lock().unwrap();
         ch.set_suspended_retry_timeout(suspended_retry);
         ch.set_channels_inner(Arc::clone(&self.inner));
+
+        // Wire presence with back-references
+        ch.inner.presence.set_client_msg_tx(tx);
+        ch.inner.presence.set_connection_id(conn_id);
+        ch.inner
+            .presence
+            .set_channels_inner(Arc::clone(&self.inner));
+        ch.inner.presence.set_connection_state(conn_state);
+        ch.inner.presence.set_channel_state(ch.state());
+        let presence_client_id = self.inner.presence_client_id.lock().unwrap().clone();
+        ch.inner.presence.set_client_id(presence_client_id);
     }
 
     /// Set echo_messages on all channels and store for future channels. RTL7f.
@@ -1750,6 +1838,17 @@ impl Channels {
         let channels = self.inner.channels.lock().unwrap();
         for channel in channels.values() {
             channel.set_self_connection_id(id.clone());
+            // Propagate to presence
+            channel.inner.presence.set_connection_id(id.clone());
+        }
+    }
+
+    /// Set client_id on all channels' presence. Called when CONNECTED provides clientId.
+    pub(crate) fn set_presence_client_id(&self, id: Option<String>) {
+        *self.inner.presence_client_id.lock().unwrap() = id.clone();
+        let channels = self.inner.channels.lock().unwrap();
+        for channel in channels.values() {
+            channel.inner.presence.set_client_id(id.clone());
         }
     }
 
