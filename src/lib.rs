@@ -15680,4 +15680,1429 @@ mod unit_tests {
         let unpacked: crate::rest::Data = serde_json::from_str(&json_str).unwrap();
         assert_eq!(unpacked, crate::rest::Data::String("test".to_string()));
     }
+
+    // -----------------------------------------------------------------------
+    // PresenceMap tests (RTP2)
+    // -----------------------------------------------------------------------
+
+    fn pm(
+        action: crate::rest::PresenceAction,
+        client_id: &str,
+        connection_id: &str,
+        id: &str,
+        timestamp: u64,
+        data: Option<&str>,
+    ) -> crate::rest::PresenceMessage {
+        crate::rest::PresenceMessage {
+            action,
+            client_id: Some(client_id.to_string()),
+            connection_id: Some(connection_id.to_string()),
+            id: Some(id.to_string()),
+            timestamp: Some(timestamp),
+            data: data
+                .map(|d| crate::rest::Data::String(d.to_string()))
+                .unwrap_or(crate::rest::Data::None),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn rtp2_basic_put_and_get() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        let msg = pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            1000,
+            None,
+        );
+        let result = map.put(msg);
+        assert!(result.is_some());
+        let stored = map.get("conn-1:client-1");
+        assert!(stored.is_some());
+        let s = stored.unwrap();
+        assert_eq!(s.client_id.as_deref(), Some("client-1"));
+        assert_eq!(s.connection_id.as_deref(), Some("conn-1"));
+    }
+
+    #[test]
+    fn rtp2d2_enter_stored_as_present() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        let msg = pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            1000,
+            Some("entered"),
+        );
+        map.put(msg);
+        let stored = map.get("conn-1:client-1").unwrap();
+        assert_eq!(stored.action, PresenceAction::Present);
+        assert_eq!(
+            stored.data,
+            crate::rest::Data::String("entered".to_string())
+        );
+    }
+
+    #[test]
+    fn rtp2d2_update_stored_as_present() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            1000,
+            Some("initial"),
+        ));
+        map.put(pm(
+            PresenceAction::Update,
+            "client-1",
+            "conn-1",
+            "conn-1:1:0",
+            2000,
+            Some("updated"),
+        ));
+        let stored = map.get("conn-1:client-1").unwrap();
+        assert_eq!(stored.action, PresenceAction::Present);
+        assert_eq!(
+            stored.data,
+            crate::rest::Data::String("updated".to_string())
+        );
+    }
+
+    #[test]
+    fn rtp2d2_present_stored_as_present() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Present,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            1000,
+            None,
+        ));
+        let stored = map.get("conn-1:client-1").unwrap();
+        assert_eq!(stored.action, PresenceAction::Present);
+    }
+
+    #[test]
+    fn rtp2d1_put_returns_message_with_original_action() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        let emitted_enter = map.put(pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            1000,
+            None,
+        ));
+        assert!(emitted_enter.is_some());
+        assert_eq!(emitted_enter.unwrap().action, PresenceAction::Enter);
+
+        let emitted_update = map.put(pm(
+            PresenceAction::Update,
+            "client-1",
+            "conn-1",
+            "conn-1:1:0",
+            2000,
+            Some("updated"),
+        ));
+        assert!(emitted_update.is_some());
+        assert_eq!(emitted_update.unwrap().action, PresenceAction::Update);
+    }
+
+    #[test]
+    fn rtp2h1_leave_outside_sync_removes_member() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            1000,
+            None,
+        ));
+        let emitted = map.remove(pm(
+            PresenceAction::Leave,
+            "client-1",
+            "conn-1",
+            "conn-1:1:0",
+            2000,
+            None,
+        ));
+        assert!(emitted.is_some());
+        assert_eq!(emitted.unwrap().action, PresenceAction::Leave);
+        assert!(map.get("conn-1:client-1").is_none());
+        assert_eq!(map.values().len(), 0);
+    }
+
+    #[test]
+    fn rtp2h1_leave_for_nonexistent_returns_none() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        let emitted = map.remove(pm(
+            PresenceAction::Leave,
+            "unknown",
+            "conn-x",
+            "conn-x:0:0",
+            1000,
+            None,
+        ));
+        assert!(emitted.is_none());
+    }
+
+    #[test]
+    fn rtp2h2a_leave_during_sync_stores_as_absent() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            1000,
+            None,
+        ));
+        map.start_sync();
+        let emitted = map.remove(pm(
+            PresenceAction::Leave,
+            "client-1",
+            "conn-1",
+            "conn-1:1:0",
+            2000,
+            None,
+        ));
+        assert!(emitted.is_none());
+        let stored = map.get("conn-1:client-1").unwrap();
+        assert_eq!(stored.action, PresenceAction::Absent);
+    }
+
+    #[test]
+    fn rtp2h2b_absent_members_deleted_on_end_sync() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "c1",
+            "c1:0:0",
+            100,
+            None,
+        ));
+        map.put(pm(PresenceAction::Enter, "bob", "c2", "c2:0:0", 100, None));
+        map.start_sync();
+        map.put(pm(
+            PresenceAction::Present,
+            "alice",
+            "c1",
+            "c1:1:0",
+            200,
+            None,
+        ));
+        map.remove(pm(PresenceAction::Leave, "bob", "c2", "c2:1:0", 200, None));
+        let _leave_events = map.end_sync();
+        assert!(map.get("c2:bob").is_none());
+        assert!(map.get("c1:alice").is_some());
+        assert_eq!(map.get("c1:alice").unwrap().action, PresenceAction::Present);
+        assert_eq!(map.values().len(), 1);
+    }
+
+    #[test]
+    fn rtp2b2_newness_by_msg_serial() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:5:0",
+            1000,
+            Some("first"),
+        ));
+
+        // Older serial → rejected
+        let stale = map.put(pm(
+            PresenceAction::Update,
+            "client-1",
+            "conn-1",
+            "conn-1:3:0",
+            2000,
+            Some("stale"),
+        ));
+        assert!(stale.is_none());
+        assert_eq!(
+            map.get("conn-1:client-1").unwrap().data,
+            crate::rest::Data::String("first".to_string())
+        );
+
+        // Newer serial → accepted (even though timestamp is older)
+        let newer = map.put(pm(
+            PresenceAction::Update,
+            "client-1",
+            "conn-1",
+            "conn-1:7:0",
+            500,
+            Some("newer"),
+        ));
+        assert!(newer.is_some());
+        assert_eq!(
+            map.get("conn-1:client-1").unwrap().data,
+            crate::rest::Data::String("newer".to_string())
+        );
+    }
+
+    #[test]
+    fn rtp2b2_newness_by_index_when_serial_equal() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:5:2",
+            1000,
+            Some("index-2"),
+        ));
+
+        // Same serial, lower index → stale
+        let stale = map.put(pm(
+            PresenceAction::Update,
+            "client-1",
+            "conn-1",
+            "conn-1:5:1",
+            2000,
+            Some("index-1"),
+        ));
+        assert!(stale.is_none());
+
+        // Same serial, higher index → newer
+        let newer = map.put(pm(
+            PresenceAction::Update,
+            "client-1",
+            "conn-1",
+            "conn-1:5:5",
+            500,
+            Some("index-5"),
+        ));
+        assert!(newer.is_some());
+        assert_eq!(
+            map.get("conn-1:client-1").unwrap().data,
+            crate::rest::Data::String("index-5".to_string())
+        );
+    }
+
+    #[test]
+    fn rtp2b1_synthesized_leave_newer_by_timestamp() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            1000,
+            Some("entered"),
+        ));
+
+        // Synthesized leave (id doesn't start with connectionId), newer timestamp
+        let leave = map.remove(pm(
+            PresenceAction::Leave,
+            "client-1",
+            "conn-1",
+            "synthesized-leave-id",
+            2000,
+            None,
+        ));
+        assert!(leave.is_some());
+        assert_eq!(leave.unwrap().action, PresenceAction::Leave);
+        assert!(map.get("conn-1:client-1").is_none());
+    }
+
+    #[test]
+    fn rtp2b1_synthesized_leave_rejected_when_older() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            5000,
+            Some("entered"),
+        ));
+
+        // Synthesized leave with older timestamp → rejected
+        let result = map.remove(pm(
+            PresenceAction::Leave,
+            "client-1",
+            "conn-1",
+            "synthesized-leave-id",
+            3000,
+            None,
+        ));
+        assert!(result.is_none());
+        assert!(map.get("conn-1:client-1").is_some());
+        assert_eq!(
+            map.get("conn-1:client-1").unwrap().data,
+            crate::rest::Data::String("entered".to_string())
+        );
+    }
+
+    #[test]
+    fn rtp2b1a_equal_timestamps_incoming_wins() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "synthesized-id-1",
+            1000,
+            Some("first"),
+        ));
+        let result = map.put(pm(
+            PresenceAction::Update,
+            "client-1",
+            "conn-1",
+            "synthesized-id-2",
+            1000,
+            Some("second"),
+        ));
+        assert!(result.is_some());
+        assert_eq!(
+            map.get("conn-1:client-1").unwrap().data,
+            crate::rest::Data::String("second".to_string())
+        );
+    }
+
+    #[test]
+    fn rtp2c_sync_messages_use_same_newness() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.start_sync();
+        map.put(pm(
+            PresenceAction::Present,
+            "client-1",
+            "conn-1",
+            "conn-1:5:0",
+            1000,
+            Some("sync-first"),
+        ));
+
+        // Older serial → rejected
+        let stale = map.put(pm(
+            PresenceAction::Present,
+            "client-1",
+            "conn-1",
+            "conn-1:3:0",
+            2000,
+            Some("sync-stale"),
+        ));
+        assert!(stale.is_none());
+
+        // Newer serial → accepted
+        let newer = map.put(pm(
+            PresenceAction::Present,
+            "client-1",
+            "conn-1",
+            "conn-1:8:0",
+            500,
+            Some("sync-newer"),
+        ));
+        assert!(newer.is_some());
+        assert_eq!(
+            map.get("conn-1:client-1").unwrap().data,
+            crate::rest::Data::String("sync-newer".to_string())
+        );
+    }
+
+    #[test]
+    fn rtp2_multiple_members_coexist() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "c1",
+            "c1:0:0",
+            100,
+            None,
+        ));
+        map.put(pm(PresenceAction::Enter, "bob", "c2", "c2:0:0", 100, None));
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "c3",
+            "c3:0:0",
+            100,
+            None,
+        ));
+        assert_eq!(map.values().len(), 3);
+        assert!(map.get("c1:alice").is_some());
+        assert!(map.get("c2:bob").is_some());
+        assert!(map.get("c3:alice").is_some());
+    }
+
+    #[test]
+    fn rtp2_values_excludes_absent() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "c1",
+            "c1:0:0",
+            100,
+            None,
+        ));
+        map.put(pm(PresenceAction::Enter, "bob", "c2", "c2:0:0", 100, None));
+        map.start_sync();
+        map.remove(pm(PresenceAction::Leave, "bob", "c2", "c2:1:0", 200, None));
+        // Bob stored as ABSENT
+        assert!(map.get("c2:bob").is_some());
+        assert_eq!(map.get("c2:bob").unwrap().action, PresenceAction::Absent);
+        let members = map.values();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].client_id.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn rtp2_clear_resets_all_state() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "c1",
+            "c1:0:0",
+            100,
+            None,
+        ));
+        map.start_sync();
+        map.clear();
+        assert_eq!(map.values().len(), 0);
+        assert!(map.get("c1:alice").is_none());
+        assert!(!map.sync_in_progress());
+    }
+
+    // -----------------------------------------------------------------------
+    // LocalPresenceMap tests (RTP17)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rtp17h_keyed_by_client_id_not_member_key() {
+        use crate::presence::LocalPresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = LocalPresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "user-1",
+            "conn-A",
+            "conn-A:0:0",
+            1000,
+            Some("first"),
+        ));
+        map.put(pm(
+            PresenceAction::Enter,
+            "user-1",
+            "conn-B",
+            "conn-B:0:0",
+            2000,
+            Some("second"),
+        ));
+        assert_eq!(map.values().len(), 1);
+        let stored = map.get("user-1").unwrap();
+        assert_eq!(stored.data, crate::rest::Data::String("second".to_string()));
+        assert_eq!(stored.connection_id.as_deref(), Some("conn-B"));
+    }
+
+    #[test]
+    fn rtp17b_enter_adds_to_map() {
+        use crate::presence::LocalPresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = LocalPresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            1000,
+            Some("hello"),
+        ));
+        let stored = map.get("client-1").unwrap();
+        assert_eq!(stored.action, PresenceAction::Enter);
+        assert_eq!(stored.data, crate::rest::Data::String("hello".to_string()));
+        assert_eq!(map.values().len(), 1);
+    }
+
+    #[test]
+    fn rtp17b_update_with_no_prior_adds_to_map() {
+        use crate::presence::LocalPresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = LocalPresenceMap::new();
+        map.put(pm(
+            PresenceAction::Update,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            1000,
+            Some("from-update"),
+        ));
+        let stored = map.get("client-1").unwrap();
+        assert_eq!(stored.action, PresenceAction::Update);
+        assert_eq!(
+            stored.data,
+            crate::rest::Data::String("from-update".to_string())
+        );
+        assert_eq!(map.values().len(), 1);
+    }
+
+    #[test]
+    fn rtp17b_enter_after_enter_overwrites() {
+        use crate::presence::LocalPresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = LocalPresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            1000,
+            Some("first"),
+        ));
+        map.put(pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:1:0",
+            2000,
+            Some("second"),
+        ));
+        assert_eq!(map.values().len(), 1);
+        assert_eq!(map.get("client-1").unwrap().action, PresenceAction::Enter);
+        assert_eq!(
+            map.get("client-1").unwrap().data,
+            crate::rest::Data::String("second".to_string())
+        );
+    }
+
+    #[test]
+    fn rtp17b_update_after_enter_overwrites() {
+        use crate::presence::LocalPresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = LocalPresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            1000,
+            Some("initial"),
+        ));
+        map.put(pm(
+            PresenceAction::Update,
+            "client-1",
+            "conn-1",
+            "conn-1:1:0",
+            2000,
+            Some("updated"),
+        ));
+        assert_eq!(map.values().len(), 1);
+        assert_eq!(map.get("client-1").unwrap().action, PresenceAction::Update);
+        assert_eq!(
+            map.get("client-1").unwrap().data,
+            crate::rest::Data::String("updated".to_string())
+        );
+    }
+
+    #[test]
+    fn rtp17b_present_adds_to_map() {
+        use crate::presence::LocalPresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = LocalPresenceMap::new();
+        map.put(pm(
+            PresenceAction::Present,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            1000,
+            Some("present"),
+        ));
+        let stored = map.get("client-1").unwrap();
+        assert_eq!(stored.action, PresenceAction::Present);
+        assert_eq!(
+            stored.data,
+            crate::rest::Data::String("present".to_string())
+        );
+    }
+
+    #[test]
+    fn rtp17b_nonsynthesized_leave_removes() {
+        use crate::presence::LocalPresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = LocalPresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            1000,
+            None,
+        ));
+        assert!(map.get("client-1").is_some());
+        let result = map.remove(&pm(
+            PresenceAction::Leave,
+            "client-1",
+            "conn-1",
+            "conn-1:1:0",
+            2000,
+            None,
+        ));
+        assert!(result); // non-synthesized → removed
+        assert!(map.get("client-1").is_none());
+        assert_eq!(map.values().len(), 0);
+    }
+
+    #[test]
+    fn rtp17b_synthesized_leave_ignored() {
+        use crate::presence::LocalPresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = LocalPresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "client-1",
+            "conn-1",
+            "conn-1:0:0",
+            1000,
+            Some("entered"),
+        ));
+        // Synthesized leave: id doesn't start with connectionId
+        let result = map.remove(&pm(
+            PresenceAction::Leave,
+            "client-1",
+            "conn-1",
+            "synthesized-leave-id",
+            2000,
+            None,
+        ));
+        assert!(!result); // synthesized → ignored
+        assert!(map.get("client-1").is_some());
+        assert_eq!(
+            map.get("client-1").unwrap().data,
+            crate::rest::Data::String("entered".to_string())
+        );
+        assert_eq!(map.values().len(), 1);
+    }
+
+    #[test]
+    fn rtp17_multiple_client_ids_coexist() {
+        use crate::presence::LocalPresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = LocalPresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "conn-1",
+            "conn-1:0:0",
+            100,
+            Some("alice-data"),
+        ));
+        map.put(pm(
+            PresenceAction::Enter,
+            "bob",
+            "conn-1",
+            "conn-1:0:1",
+            100,
+            Some("bob-data"),
+        ));
+        map.put(pm(
+            PresenceAction::Enter,
+            "carol",
+            "conn-1",
+            "conn-1:0:2",
+            100,
+            Some("carol-data"),
+        ));
+        assert_eq!(map.values().len(), 3);
+        assert_eq!(
+            map.get("alice").unwrap().data,
+            crate::rest::Data::String("alice-data".to_string())
+        );
+        assert_eq!(
+            map.get("bob").unwrap().data,
+            crate::rest::Data::String("bob-data".to_string())
+        );
+        assert_eq!(
+            map.get("carol").unwrap().data,
+            crate::rest::Data::String("carol-data".to_string())
+        );
+    }
+
+    #[test]
+    fn rtp17_remove_one_of_multiple() {
+        use crate::presence::LocalPresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = LocalPresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "conn-1",
+            "conn-1:0:0",
+            100,
+            None,
+        ));
+        map.put(pm(
+            PresenceAction::Enter,
+            "bob",
+            "conn-1",
+            "conn-1:0:1",
+            100,
+            None,
+        ));
+        map.remove(&pm(
+            PresenceAction::Leave,
+            "alice",
+            "conn-1",
+            "conn-1:1:0",
+            200,
+            None,
+        ));
+        assert!(map.get("alice").is_none());
+        assert!(map.get("bob").is_some());
+        assert_eq!(map.values().len(), 1);
+    }
+
+    #[test]
+    fn rtp17_clear_resets_all() {
+        use crate::presence::LocalPresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = LocalPresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "conn-1",
+            "conn-1:0:0",
+            100,
+            None,
+        ));
+        map.put(pm(
+            PresenceAction::Enter,
+            "bob",
+            "conn-1",
+            "conn-1:0:1",
+            100,
+            None,
+        ));
+        assert_eq!(map.values().len(), 2);
+        map.clear();
+        assert_eq!(map.values().len(), 0);
+        assert!(map.get("alice").is_none());
+        assert!(map.get("bob").is_none());
+    }
+
+    #[test]
+    fn rtp17_get_unknown_returns_none() {
+        use crate::presence::LocalPresenceMap;
+        let map = LocalPresenceMap::new();
+        assert!(map.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn rtp17_remove_unknown_is_noop() {
+        use crate::presence::LocalPresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = LocalPresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "conn-1",
+            "conn-1:0:0",
+            100,
+            None,
+        ));
+        // Remove a clientId that was never added
+        map.remove(&pm(
+            PresenceAction::Leave,
+            "nonexistent",
+            "conn-1",
+            "conn-1:1:0",
+            200,
+            None,
+        ));
+        assert!(map.get("alice").is_some());
+        assert_eq!(map.values().len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Presence Sync tests (RTP18/RTP19)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rtp18a_start_sync_sets_in_progress() {
+        use crate::presence::PresenceMap;
+        let mut map = PresenceMap::new();
+        assert!(!map.sync_in_progress());
+        map.start_sync();
+        assert!(map.sync_in_progress());
+    }
+
+    #[test]
+    fn rtp18b_end_sync_clears_in_progress() {
+        use crate::presence::PresenceMap;
+        let mut map = PresenceMap::new();
+        map.start_sync();
+        assert!(map.sync_in_progress());
+        map.end_sync();
+        assert!(!map.sync_in_progress());
+    }
+
+    #[test]
+    fn rtp19_stale_members_get_leave_events() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "c1",
+            "c1:0:0",
+            100,
+            None,
+        ));
+        map.put(pm(PresenceAction::Enter, "bob", "c2", "c2:0:0", 100, None));
+        assert_eq!(map.values().len(), 2);
+
+        map.start_sync();
+        map.put(pm(
+            PresenceAction::Present,
+            "alice",
+            "c1",
+            "c1:1:0",
+            200,
+            None,
+        ));
+        let leave_events = map.end_sync();
+
+        assert_eq!(leave_events.len(), 1);
+        assert_eq!(leave_events[0].client_id.as_deref(), Some("bob"));
+        assert_eq!(leave_events[0].action, PresenceAction::Leave);
+        assert_eq!(map.values().len(), 1);
+        assert!(map.get("c1:alice").is_some());
+        assert!(map.get("c2:bob").is_none());
+    }
+
+    #[test]
+    fn rtp19_synthesized_leave_has_null_id_and_current_timestamp() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "bob",
+            "c2",
+            "c2:0:0",
+            100,
+            Some("bob-data"),
+        ));
+
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        map.start_sync();
+        let leave_events = map.end_sync();
+
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        assert_eq!(leave_events.len(), 1);
+        let leave = &leave_events[0];
+        assert_eq!(leave.action, PresenceAction::Leave);
+        assert_eq!(leave.client_id.as_deref(), Some("bob"));
+        assert_eq!(leave.connection_id.as_deref(), Some("c2"));
+        assert_eq!(
+            leave.data,
+            crate::rest::Data::String("bob-data".to_string())
+        );
+        assert!(leave.id.is_none()); // RTP19: id set to null
+        assert!(leave.timestamp.unwrap() >= before);
+        assert!(leave.timestamp.unwrap() <= after);
+    }
+
+    #[test]
+    fn rtp19_members_updated_during_sync_survive() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "c1",
+            "c1:0:0",
+            100,
+            None,
+        ));
+        map.put(pm(PresenceAction::Enter, "bob", "c2", "c2:0:0", 100, None));
+        map.put(pm(
+            PresenceAction::Enter,
+            "carol",
+            "c3",
+            "c3:0:0",
+            100,
+            None,
+        ));
+
+        map.start_sync();
+        // Alice via SYNC (PRESENT)
+        map.put(pm(
+            PresenceAction::Present,
+            "alice",
+            "c1",
+            "c1:1:0",
+            200,
+            None,
+        ));
+        // Bob via PRESENCE during sync (UPDATE)
+        map.put(pm(
+            PresenceAction::Update,
+            "bob",
+            "c2",
+            "c2:1:0",
+            200,
+            Some("new-data"),
+        ));
+        // Carol not seen
+
+        let leave_events = map.end_sync();
+        assert_eq!(leave_events.len(), 1);
+        assert_eq!(leave_events[0].client_id.as_deref(), Some("carol"));
+        assert_eq!(map.values().len(), 2);
+        assert!(map.get("c1:alice").is_some());
+        assert!(map.get("c2:bob").is_some());
+        assert_eq!(
+            map.get("c2:bob").unwrap().data,
+            crate::rest::Data::String("new-data".to_string())
+        );
+    }
+
+    #[test]
+    fn rtp18a_new_sync_discards_previous() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "c1",
+            "c1:0:0",
+            100,
+            None,
+        ));
+        map.put(pm(PresenceAction::Enter, "bob", "c2", "c2:0:0", 100, None));
+
+        // First sync: only alice seen
+        map.start_sync();
+        map.put(pm(
+            PresenceAction::Present,
+            "alice",
+            "c1",
+            "c1:1:0",
+            200,
+            None,
+        ));
+
+        // New sync starts before first ends → discards first sync's residuals
+        map.start_sync();
+        map.put(pm(
+            PresenceAction::Present,
+            "alice",
+            "c1",
+            "c1:2:0",
+            300,
+            None,
+        ));
+        map.put(pm(
+            PresenceAction::Present,
+            "bob",
+            "c2",
+            "c2:1:0",
+            300,
+            None,
+        ));
+
+        let leave_events = map.end_sync();
+        assert_eq!(leave_events.len(), 0);
+        assert_eq!(map.values().len(), 2);
+    }
+
+    #[test]
+    fn rtp18c_single_message_sync() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "c1",
+            "c1:0:0",
+            100,
+            None,
+        ));
+        map.put(pm(PresenceAction::Enter, "bob", "c2", "c2:0:0", 100, None));
+
+        // Single-message sync: start, put, end immediately
+        map.start_sync();
+        map.put(pm(
+            PresenceAction::Present,
+            "alice",
+            "c1",
+            "c1:1:0",
+            200,
+            None,
+        ));
+        let leave_events = map.end_sync();
+
+        assert_eq!(leave_events.len(), 1);
+        assert_eq!(leave_events[0].client_id.as_deref(), Some("bob"));
+        assert_eq!(leave_events[0].action, PresenceAction::Leave);
+        assert_eq!(map.values().len(), 1);
+        assert!(map.get("c1:alice").is_some());
+        assert!(!map.sync_in_progress());
+    }
+
+    #[test]
+    fn rtp19a_no_has_presence_clears_all() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "c1",
+            "c1:0:0",
+            100,
+            Some("a"),
+        ));
+        map.put(pm(
+            PresenceAction::Enter,
+            "bob",
+            "c2",
+            "c2:0:0",
+            100,
+            Some("b"),
+        ));
+        map.put(pm(
+            PresenceAction::Enter,
+            "carol",
+            "c3",
+            "c3:0:0",
+            100,
+            Some("c"),
+        ));
+
+        // No HAS_PRESENCE: immediate sync with no members
+        map.start_sync();
+        let leave_events = map.end_sync();
+
+        assert_eq!(leave_events.len(), 3);
+        // All leaves preserve original data and have null id
+        for leave in &leave_events {
+            assert_eq!(leave.action, PresenceAction::Leave);
+            assert!(leave.id.is_none());
+        }
+        let alice_leave = leave_events
+            .iter()
+            .find(|e| e.client_id.as_deref() == Some("alice"))
+            .unwrap();
+        assert_eq!(alice_leave.data, crate::rest::Data::String("a".to_string()));
+        let bob_leave = leave_events
+            .iter()
+            .find(|e| e.client_id.as_deref() == Some("bob"))
+            .unwrap();
+        assert_eq!(bob_leave.data, crate::rest::Data::String("b".to_string()));
+        let carol_leave = leave_events
+            .iter()
+            .find(|e| e.client_id.as_deref() == Some("carol"))
+            .unwrap();
+        assert_eq!(carol_leave.data, crate::rest::Data::String("c".to_string()));
+
+        assert_eq!(map.values().len(), 0);
+    }
+
+    #[test]
+    fn rtp2h2a_leave_during_sync_interaction_with_end_sync() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "c1",
+            "c1:0:0",
+            100,
+            None,
+        ));
+        map.put(pm(PresenceAction::Enter, "bob", "c2", "c2:0:0", 100, None));
+        map.start_sync();
+        map.put(pm(
+            PresenceAction::Present,
+            "alice",
+            "c1",
+            "c1:1:0",
+            200,
+            None,
+        ));
+        // Bob LEAVE during sync → ABSENT
+        let leave_result = map.remove(pm(PresenceAction::Leave, "bob", "c2", "c2:1:0", 200, None));
+        assert!(leave_result.is_none());
+        assert!(map.get("c2:bob").is_some());
+        assert_eq!(map.get("c2:bob").unwrap().action, PresenceAction::Absent);
+
+        let leave_events = map.end_sync();
+        // Bob's ABSENT entry cleaned up — no additional LEAVE emitted for it
+        // (ABSENT members are deleted, not emitted as stale residuals)
+        assert!(map.get("c2:bob").is_none());
+        assert_eq!(map.values().len(), 1);
+        assert!(map.get("c1:alice").is_some());
+    }
+
+    #[test]
+    fn rtp19_empty_map_sync_no_leave_events() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.start_sync();
+        map.put(pm(
+            PresenceAction::Present,
+            "alice",
+            "c1",
+            "c1:0:0",
+            100,
+            None,
+        ));
+        let leave_events = map.end_sync();
+        assert_eq!(leave_events.len(), 0);
+        assert_eq!(map.values().len(), 1);
+    }
+
+    #[test]
+    fn rtp18_end_sync_without_start_is_noop() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "c1",
+            "c1:0:0",
+            100,
+            None,
+        ));
+        let leave_events = map.end_sync();
+        assert_eq!(leave_events.len(), 0);
+        assert_eq!(map.values().len(), 1);
+        assert!(map.get("c1:alice").is_some());
+        assert!(!map.sync_in_progress());
+    }
+
+    #[test]
+    fn rtp19_stale_sync_message_still_removes_from_residuals() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        // Populate with a newer message
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "c1",
+            "c1:5:0",
+            500,
+            Some("original"),
+        ));
+        map.start_sync();
+        // SYNC message with OLDER serial (stale — rejected by newness)
+        let result = map.put(pm(
+            PresenceAction::Present,
+            "alice",
+            "c1",
+            "c1:3:0",
+            300,
+            Some("stale"),
+        ));
+        assert!(result.is_none()); // Rejected
+
+        let leave_events = map.end_sync();
+        // Alice must NOT be evicted — she was "seen" during sync
+        assert_eq!(leave_events.len(), 0);
+        assert_eq!(map.values().len(), 1);
+        assert!(map.get("c1:alice").is_some());
+        assert_eq!(
+            map.get("c1:alice").unwrap().data,
+            crate::rest::Data::String("original".to_string())
+        );
+    }
+
+    #[test]
+    fn rtp19_presence_echoes_followed_by_sync_preserves_all() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        // PRESENCE echoes populate the map
+        map.put(pm(
+            PresenceAction::Enter,
+            "user-0",
+            "c1",
+            "c1:0:0",
+            100,
+            Some("data-0"),
+        ));
+        map.put(pm(
+            PresenceAction::Enter,
+            "user-1",
+            "c1",
+            "c1:1:0",
+            100,
+            Some("data-1"),
+        ));
+        map.put(pm(
+            PresenceAction::Enter,
+            "user-2",
+            "c1",
+            "c1:2:0",
+            100,
+            Some("data-2"),
+        ));
+        assert_eq!(map.values().len(), 3);
+
+        // Server starts SYNC with same ids (stale by newness)
+        map.start_sync();
+        map.put(pm(
+            PresenceAction::Present,
+            "user-0",
+            "c1",
+            "c1:0:0",
+            100,
+            Some("data-0"),
+        ));
+        map.put(pm(
+            PresenceAction::Present,
+            "user-1",
+            "c1",
+            "c1:1:0",
+            100,
+            Some("data-1"),
+        ));
+        map.put(pm(
+            PresenceAction::Present,
+            "user-2",
+            "c1",
+            "c1:2:0",
+            100,
+            Some("data-2"),
+        ));
+
+        let leave_events = map.end_sync();
+        // No members evicted — all were seen
+        assert_eq!(leave_events.len(), 0);
+        assert_eq!(map.values().len(), 3);
+        for i in 0..3 {
+            let key = format!("c1:user-{}", i);
+            assert!(map.get(&key).is_some());
+            assert_eq!(
+                map.get(&key).unwrap().data,
+                crate::rest::Data::String(format!("data-{}", i))
+            );
+        }
+    }
+
+    #[test]
+    fn rtp19_new_member_during_sync_is_not_stale() {
+        use crate::presence::PresenceMap;
+        use crate::rest::PresenceAction;
+        let mut map = PresenceMap::new();
+        map.put(pm(
+            PresenceAction::Enter,
+            "alice",
+            "c1",
+            "c1:0:0",
+            100,
+            None,
+        ));
+        map.start_sync();
+        map.put(pm(
+            PresenceAction::Present,
+            "alice",
+            "c1",
+            "c1:1:0",
+            200,
+            None,
+        ));
+        // Bob is NEW — enters during sync
+        map.put(pm(PresenceAction::Enter, "bob", "c2", "c2:0:0", 200, None));
+        let leave_events = map.end_sync();
+        assert_eq!(leave_events.len(), 0);
+        assert_eq!(map.values().len(), 2);
+        assert!(map.get("c1:alice").is_some());
+        assert!(map.get("c2:bob").is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // Sync cursor parsing tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sync_cursor_complete_when_no_serial() {
+        assert!(crate::presence::is_sync_complete(&None));
+    }
+
+    #[test]
+    fn sync_cursor_complete_when_empty_cursor() {
+        assert!(crate::presence::is_sync_complete(&Some(
+            "abc123:".to_string()
+        )));
+    }
+
+    #[test]
+    fn sync_cursor_incomplete_when_cursor_present() {
+        assert!(!crate::presence::is_sync_complete(&Some(
+            "abc123:cursor_value".to_string()
+        )));
+    }
+
+    #[test]
+    fn sync_cursor_complete_when_no_colon() {
+        assert!(crate::presence::is_sync_complete(&Some(
+            "abc123".to_string()
+        )));
+    }
 }
