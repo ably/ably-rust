@@ -152,6 +152,17 @@ impl MockWebSocket {
         self.inner.active_connections.lock().unwrap().clone()
     }
 
+    /// Wait for the next connection attempt (await pattern).
+    /// Returns the PendingConnection so the test can respond.
+    pub async fn await_connection(&self) -> PendingConnection {
+        // Take the receiver out of the mutex (no guard held across await)
+        let mut rx = self.inner.connection_rx.lock().unwrap().take().unwrap();
+        let pending = rx.recv().await.unwrap();
+        // Put it back
+        *self.inner.connection_rx.lock().unwrap() = Some(rx);
+        pending
+    }
+
     /// Get the inner Arc for sharing with the transport.
     pub(crate) fn inner(&self) -> Arc<MockWebSocketInner> {
         Arc::clone(&self.inner)

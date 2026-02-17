@@ -53,6 +53,7 @@ impl Realtime {
     ) -> crate::Result<Self> {
         let auto_connect = options.auto_connect;
         let channels = Channels::new();
+        channels.set_attach_timeout(options.realtime_request_timeout);
         let connection = Connection::new(options, transport, &channels);
 
         let client = Self {
@@ -922,6 +923,10 @@ impl Connection {
                 }
 
                 Connection::set_state_inner(inner, ConnectionState::Connected, None);
+
+                // RTL4i: Send queued ATTACH messages for channels in ATTACHING state
+                inner.channels.send_pending_attaches();
+
                 false
             }
             Action::Disconnected => {
@@ -1028,6 +1033,9 @@ impl Connection {
             }
             _ => {}
         }
+
+        // Update connection state on all channels
+        inner.channels.set_connection_state(new_state);
 
         let event = ConnectionEvent::from(new_state);
         let change = ConnectionStateChange {

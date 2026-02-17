@@ -3,6 +3,8 @@
 //! Defines the wire protocol used over WebSocket connections between
 //! the Ably client and server.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
@@ -74,6 +76,14 @@ pub struct ProtocolMessage {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthDetails>,
+
+    /// Channel parameters (e.g., rewind, delta). RTL4k.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<HashMap<String, String>>,
+
+    /// Channel serial for resume. RTL4c1, RTL15b.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_serial: Option<String>,
 }
 
 impl ProtocolMessage {
@@ -94,6 +104,8 @@ impl ProtocolMessage {
             messages: None,
             presence: None,
             auth: None,
+            params: None,
+            channel_serial: None,
         }
     }
 
