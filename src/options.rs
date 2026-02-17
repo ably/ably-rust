@@ -69,6 +69,10 @@ pub struct ClientOptions {
     /// subscriptions. Defaults to true. RTC1a.
     pub(crate) echo_messages: bool,
 
+    /// Whether messages are queued when the connection is not in the
+    /// CONNECTED state. Defaults to true. RTO6a.
+    pub(crate) queue_messages: bool,
+
     /// Custom query parameters to add to the WebSocket connection URL. RTC1f.
     pub(crate) transport_params: Option<Vec<(String, String)>>,
 
@@ -340,6 +344,13 @@ impl ClientOptions {
         self
     }
 
+    /// Sets whether messages are queued when the connection is not CONNECTED.
+    /// Defaults to true. RTO6a.
+    pub fn queue_messages(mut self, v: bool) -> Self {
+        self.queue_messages = v;
+        self
+    }
+
     /// Sets custom query parameters to add to the WebSocket connection URL. RTC1f.
     pub fn transport_params(mut self, params: Vec<(String, String)>) -> Self {
         self.transport_params = Some(params);
@@ -493,6 +504,7 @@ impl ClientOptions {
             default_token_params: None,
             auto_connect: true,
             echo_messages: true,
+            queue_messages: true,
             transport_params: None,
             realtime_request_timeout: Duration::from_secs(10),
             rest_host: REST_HOST.to_string(),

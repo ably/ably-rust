@@ -84,6 +84,21 @@ pub struct ProtocolMessage {
     /// Channel serial for resume. RTL4c1, RTL15b.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_serial: Option<String>,
+
+    /// Timestamp of the message (milliseconds since epoch).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<i64>,
+
+    /// ACK results containing publish serials. TR4s.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub res: Option<Vec<PublishResult>>,
+}
+
+/// Result of a publish operation, returned via ACK. PBR1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishResult {
+    /// Array of message serials corresponding 1:1 to published messages. PBR2a.
+    pub serials: Vec<Option<String>>,
 }
 
 impl ProtocolMessage {
@@ -106,6 +121,8 @@ impl ProtocolMessage {
             auth: None,
             params: None,
             channel_serial: None,
+            timestamp: None,
+            res: None,
         }
     }
 

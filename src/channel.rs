@@ -11,8 +11,31 @@ use tokio::sync::broadcast;
 
 use crate::protocol::{
     flags, Action, ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionState,
-    ErrorInfo, ProtocolMessage,
+    ErrorInfo, ProtocolMessage, PublishResult,
 };
+
+/// A message received from a Realtime channel subscription.
+#[derive(Debug, Clone)]
+pub struct Message {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub data: Option<serde_json::Value>,
+    pub connection_id: Option<String>,
+    pub timestamp: Option<i64>,
+    pub client_id: Option<String>,
+    pub extras: Option<serde_json::Value>,
+}
+
+/// Unique ID for a subscription listener.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SubscriptionId(u64);
+
+/// A subscription entry (optional name filter + sender).
+struct Subscription {
+    id: SubscriptionId,
+    name_filter: Option<String>,
+    tx: tokio::sync::mpsc::UnboundedSender<Message>,
+}
 
 /// Options for a Realtime channel.
 #[derive(Debug, Clone)]
@@ -120,6 +143,32 @@ struct ChannelInner {
 
     /// Current connection state (updated by Channels collection). RTL4b.
     connection_state: Mutex<ConnectionState>,
+
+    /// Message subscriptions (RTL7/RTL8).
+    subscriptions: Mutex<Vec<Subscription>>,
+
+    /// Next subscription ID counter.
+    next_sub_id: Mutex<u64>,
+
+    /// Whether to echo messages from this client (RTL7f).
+    echo_messages: Mutex<bool>,
+
+    /// This client's connection ID (for echo filtering).
+    self_connection_id: Mutex<Option<String>>,
+
+    /// Queued messages waiting for connection (RTL6c2).
+    queued_messages: Mutex<
+        Vec<(
+            ProtocolMessage,
+            tokio::sync::oneshot::Sender<Result<PublishResult, ErrorInfo>>,
+        )>,
+    >,
+
+    /// Whether to queue messages when not connected (from ClientOptions). RTO6a.
+    queue_messages: Mutex<bool>,
+
+    /// Back-reference to ChannelsInner for msgSerial/ACK coordination.
+    channels_inner: Mutex<Option<Arc<ChannelsInner>>>,
 }
 
 /// A queued operation to perform after a pending attach/detach completes.
@@ -148,6 +197,13 @@ impl RealtimeChannel {
                 attach_timeout: Mutex::new(Duration::from_secs(10)),
                 pending_op: Mutex::new(None),
                 connection_state: Mutex::new(ConnectionState::Initialized),
+                subscriptions: Mutex::new(Vec::new()),
+                next_sub_id: Mutex::new(0),
+                echo_messages: Mutex::new(true),
+                self_connection_id: Mutex::new(None),
+                queued_messages: Mutex::new(Vec::new()),
+                queue_messages: Mutex::new(true),
+                channels_inner: Mutex::new(None),
             }),
         }
     }
@@ -203,6 +259,26 @@ impl RealtimeChannel {
     /// Set the realtime request timeout (from ClientOptions).
     pub(crate) fn set_attach_timeout(&self, timeout: Duration) {
         *self.inner.attach_timeout.lock().unwrap() = timeout;
+    }
+
+    /// Set echo_messages preference (from ClientOptions). RTL7f.
+    pub(crate) fn set_echo_messages(&self, echo: bool) {
+        *self.inner.echo_messages.lock().unwrap() = echo;
+    }
+
+    /// Set this client's connection ID (for echo filtering). RTL7f.
+    pub(crate) fn set_self_connection_id(&self, id: Option<String>) {
+        *self.inner.self_connection_id.lock().unwrap() = id;
+    }
+
+    /// Set queue_messages preference (from ClientOptions). RTO6a.
+    pub(crate) fn set_queue_messages(&self, queue: bool) {
+        *self.inner.queue_messages.lock().unwrap() = queue;
+    }
+
+    /// Set back-reference to ChannelsInner for publish coordination.
+    pub(crate) fn set_channels_inner(&self, ci: Arc<ChannelsInner>) {
+        *self.inner.channels_inner.lock().unwrap() = Some(ci);
     }
 
     /// Build the ATTACH protocol message with params, modes, channelSerial, flags.
@@ -584,6 +660,329 @@ impl RealtimeChannel {
         Ok(())
     }
 
+    /// Publish a message on this channel. RTL6.
+    /// Returns a PublishResult with message serials from the ACK.
+    pub async fn publish(
+        &self,
+        name: Option<&str>,
+        data: Option<serde_json::Value>,
+    ) -> Result<PublishResult, ErrorInfo> {
+        // RTL6c4: Fail if channel is SUSPENDED or FAILED
+        let ch_state = self.state();
+        if ch_state == ChannelState::Suspended || ch_state == ChannelState::Failed {
+            return Err(ErrorInfo {
+                code: Some(90001),
+                status_code: None,
+                message: Some(format!(
+                    "Cannot publish: channel is in {:?} state",
+                    ch_state
+                )),
+                href: None,
+            });
+        }
+
+        // Build the message object
+        let mut msg_obj = serde_json::Map::new();
+        if let Some(n) = name {
+            msg_obj.insert("name".to_string(), serde_json::Value::String(n.to_string()));
+        }
+        if let Some(d) = data {
+            msg_obj.insert("data".to_string(), d);
+        }
+
+        self.publish_messages(vec![serde_json::Value::Object(msg_obj)])
+            .await
+    }
+
+    /// Publish an array of messages. RTL6i2.
+    pub async fn publish_messages(
+        &self,
+        messages: Vec<serde_json::Value>,
+    ) -> Result<PublishResult, ErrorInfo> {
+        // RTL6c4: Fail if channel is SUSPENDED or FAILED
+        let ch_state = self.state();
+        if ch_state == ChannelState::Suspended || ch_state == ChannelState::Failed {
+            return Err(ErrorInfo {
+                code: Some(90001),
+                status_code: None,
+                message: Some(format!(
+                    "Cannot publish: channel is in {:?} state",
+                    ch_state
+                )),
+                href: None,
+            });
+        }
+
+        let msg = ProtocolMessage {
+            action: Action::Message,
+            channel: Some(self.inner.name.clone()),
+            messages: Some(messages),
+            ..ProtocolMessage::new(Action::Message)
+        };
+
+        // RTL6c1: Send immediately if connected and channel not SUSPENDED/FAILED
+        // RTL6c5: Publish does NOT trigger implicit attach
+        let conn_state = *self.inner.connection_state.lock().unwrap();
+        let is_connected = conn_state == ConnectionState::Connected;
+
+        if is_connected {
+            // Assign msgSerial and register ACK waiter via ChannelsInner
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let prepared = {
+                let ci = self.inner.channels_inner.lock().unwrap();
+                if let Some(ref ci) = *ci {
+                    ci.prepare_publish(msg, tx)
+                } else {
+                    return Err(ErrorInfo {
+                        code: Some(90001),
+                        status_code: None,
+                        message: Some("Internal error: no channels reference".to_string()),
+                        href: None,
+                    });
+                }
+            };
+
+            let sent = self.send_message(prepared);
+            if !sent {
+                return Err(ErrorInfo {
+                    code: Some(90001),
+                    status_code: None,
+                    message: Some("Failed to send message".to_string()),
+                    href: None,
+                });
+            }
+
+            match rx.await {
+                Ok(result) => result,
+                Err(_) => Err(ErrorInfo {
+                    code: Some(90001),
+                    status_code: None,
+                    message: Some("Publish waiter dropped".to_string()),
+                    href: None,
+                }),
+            }
+        } else {
+            // RTL6c2: Queue if connection INITIALIZED/CONNECTING/DISCONNECTED and queueMessages=true
+            // RTL6c4: Fail otherwise
+            let queue_messages = *self.inner.queue_messages.lock().unwrap();
+
+            let can_queue = queue_messages
+                && matches!(
+                    conn_state,
+                    ConnectionState::Initialized
+                        | ConnectionState::Connecting
+                        | ConnectionState::Disconnected
+                );
+
+            if can_queue {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                self.inner.queued_messages.lock().unwrap().push((msg, tx));
+                match rx.await {
+                    Ok(result) => result,
+                    Err(_) => Err(ErrorInfo {
+                        code: Some(90001),
+                        status_code: None,
+                        message: Some("Queued publish waiter dropped".to_string()),
+                        href: None,
+                    }),
+                }
+            } else {
+                Err(ErrorInfo {
+                    code: Some(90001),
+                    status_code: None,
+                    message: Some(format!(
+                        "Cannot publish: connection is in {:?} state",
+                        conn_state
+                    )),
+                    href: None,
+                })
+            }
+        }
+    }
+
+    /// Subscribe to all messages on this channel. RTL7a.
+    /// Returns a (SubscriptionId, receiver) pair.
+    pub fn subscribe(
+        &self,
+    ) -> (
+        SubscriptionId,
+        tokio::sync::mpsc::UnboundedReceiver<Message>,
+    ) {
+        self.subscribe_internal(None)
+    }
+
+    /// Subscribe to messages with a specific name. RTL7b.
+    pub fn subscribe_with_name(
+        &self,
+        name: &str,
+    ) -> (
+        SubscriptionId,
+        tokio::sync::mpsc::UnboundedReceiver<Message>,
+    ) {
+        self.subscribe_internal(Some(name.to_string()))
+    }
+
+    /// Internal subscribe implementation.
+    fn subscribe_internal(
+        &self,
+        name_filter: Option<String>,
+    ) -> (
+        SubscriptionId,
+        tokio::sync::mpsc::UnboundedReceiver<Message>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let id = {
+            let mut counter = self.inner.next_sub_id.lock().unwrap();
+            let id = SubscriptionId(*counter);
+            *counter += 1;
+            id
+        };
+        self.inner.subscriptions.lock().unwrap().push(Subscription {
+            id,
+            name_filter,
+            tx,
+        });
+
+        // RTL7g: Implicit attach if attachOnSubscribe is true
+        let options = self.inner.options.lock().unwrap().clone();
+        if options.attach_on_subscribe {
+            let state = self.state();
+            if state == ChannelState::Initialized
+                || state == ChannelState::Detaching
+                || state == ChannelState::Detached
+            {
+                let inner = Arc::clone(&self.inner);
+                let channel = RealtimeChannel {
+                    inner: Arc::clone(&inner),
+                };
+                tokio::spawn(async move {
+                    let _ = channel.attach().await;
+                });
+            }
+        }
+
+        (id, rx)
+    }
+
+    /// Unsubscribe a specific listener. RTL8a.
+    pub fn unsubscribe(&self, id: SubscriptionId) {
+        self.inner
+            .subscriptions
+            .lock()
+            .unwrap()
+            .retain(|s| s.id != id);
+    }
+
+    /// Unsubscribe a specific listener from a specific name. RTL8b.
+    pub fn unsubscribe_with_name(&self, name: &str, id: SubscriptionId) {
+        self.inner
+            .subscriptions
+            .lock()
+            .unwrap()
+            .retain(|s| !(s.id == id && s.name_filter.as_deref() == Some(name)));
+    }
+
+    /// Unsubscribe all listeners. RTL8c.
+    pub fn unsubscribe_all(&self) {
+        self.inner.subscriptions.lock().unwrap().clear();
+    }
+
+    /// Deliver messages to subscribers. Called when MESSAGE is received.
+    fn deliver_messages(&self, protocol_msg: &ProtocolMessage) {
+        // RTL17: Only deliver when channel is ATTACHED
+        if self.state() != ChannelState::Attached {
+            return;
+        }
+
+        // RTL7f: Filter echo messages
+        let echo = *self.inner.echo_messages.lock().unwrap();
+        if !echo {
+            let self_conn_id = self.inner.self_connection_id.lock().unwrap().clone();
+            if let Some(ref self_id) = self_conn_id {
+                if let Some(ref msg_conn_id) = protocol_msg.connection_id {
+                    if self_id == msg_conn_id {
+                        return; // Skip — this message is from us
+                    }
+                }
+            }
+        }
+
+        if let Some(ref messages) = protocol_msg.messages {
+            let subs = self.inner.subscriptions.lock().unwrap();
+
+            for (index, msg_val) in messages.iter().enumerate() {
+                let msg_obj = msg_val.as_object();
+
+                // TM2a: Populate id from ProtocolMessage id + index
+                let id = if let Some(obj) = msg_obj {
+                    if let Some(existing_id) = obj.get("id").and_then(|v| v.as_str()) {
+                        Some(existing_id.to_string())
+                    } else if let Some(ref proto_id) = protocol_msg.id {
+                        Some(format!("{}:{}", proto_id, index))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // TM2c: Populate connectionId from ProtocolMessage
+                let connection_id = if let Some(obj) = msg_obj {
+                    if let Some(existing) = obj.get("connectionId").and_then(|v| v.as_str()) {
+                        Some(existing.to_string())
+                    } else {
+                        protocol_msg.connection_id.clone()
+                    }
+                } else {
+                    protocol_msg.connection_id.clone()
+                };
+
+                // TM2f: Populate timestamp from ProtocolMessage
+                let timestamp = if let Some(obj) = msg_obj {
+                    if let Some(existing) = obj.get("timestamp").and_then(|v| v.as_i64()) {
+                        Some(existing)
+                    } else {
+                        protocol_msg.timestamp
+                    }
+                } else {
+                    protocol_msg.timestamp
+                };
+
+                let name = msg_obj
+                    .and_then(|o| o.get("name"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let data = msg_obj.and_then(|o| o.get("data")).cloned();
+                let client_id = msg_obj
+                    .and_then(|o| o.get("clientId"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let extras = msg_obj.and_then(|o| o.get("extras")).cloned();
+
+                let message = Message {
+                    id,
+                    name: name.clone(),
+                    data,
+                    connection_id,
+                    timestamp,
+                    client_id,
+                    extras,
+                };
+
+                // Deliver to matching subscribers
+                for sub in subs.iter() {
+                    let matches = match &sub.name_filter {
+                        None => true,                                             // RTL7a: All messages
+                        Some(filter) => name.as_deref() == Some(filter.as_str()), // RTL7b
+                    };
+                    if matches {
+                        let _ = sub.tx.send(message.clone());
+                    }
+                }
+            }
+        }
+    }
+
     /// Handle a protocol message directed at this channel.
     /// Called by Connection when it receives a channel-scoped message.
     pub(crate) fn handle_message(&self, msg: &ProtocolMessage) {
@@ -719,8 +1118,12 @@ impl RealtimeChannel {
                     let _ = waiter.send(Err(err.clone()));
                 }
             }
+            Action::Message => {
+                // Deliver messages to subscribers (RTL7, RTL17, TM2)
+                self.deliver_messages(msg);
+            }
             _ => {
-                // Other channel messages (MESSAGE, PRESENCE, etc.) — Phase 8c
+                // Other channel messages (PRESENCE, SYNC, etc.)
             }
         }
     }
@@ -789,7 +1192,7 @@ pub struct Channels {
     inner: Arc<ChannelsInner>,
 }
 
-struct ChannelsInner {
+pub(crate) struct ChannelsInner {
     channels: Mutex<HashMap<String, Arc<RealtimeChannel>>>,
     /// Current client message sender (shared with new channels on creation).
     current_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<ProtocolMessage>>>,
@@ -797,6 +1200,17 @@ struct ChannelsInner {
     attach_timeout: Mutex<Duration>,
     /// Current connection state (shared with new channels on creation).
     connection_state: Mutex<ConnectionState>,
+    /// Whether to echo messages (from ClientOptions). RTL7f.
+    echo_messages: Mutex<bool>,
+    /// This client's connection ID (for echo filtering). RTL7f.
+    self_connection_id: Mutex<Option<String>>,
+    /// Whether to queue messages when not connected. RTO6a.
+    queue_messages: Mutex<bool>,
+    /// Next msgSerial for outgoing MESSAGE protocol messages. RTN7b.
+    next_msg_serial: Mutex<i64>,
+    /// Pending ACK waiters keyed by msgSerial. RTL6j.
+    pending_acks:
+        Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Result<PublishResult, ErrorInfo>>>>,
 }
 
 impl Channels {
@@ -807,6 +1221,11 @@ impl Channels {
                 current_tx: Mutex::new(None),
                 attach_timeout: Mutex::new(Duration::from_secs(10)),
                 connection_state: Mutex::new(ConnectionState::Initialized),
+                echo_messages: Mutex::new(true),
+                self_connection_id: Mutex::new(None),
+                queue_messages: Mutex::new(true),
+                next_msg_serial: Mutex::new(0),
+                pending_acks: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -826,13 +1245,7 @@ impl Channels {
                     name.to_string(),
                     RealtimeChannelOptions::default(),
                 ));
-                // Assign current client_msg_tx if connection is active
-                let tx = self.inner.current_tx.lock().unwrap().clone();
-                ch.set_client_msg_tx(tx);
-                let timeout = *self.inner.attach_timeout.lock().unwrap();
-                ch.set_attach_timeout(timeout);
-                let conn_state = *self.inner.connection_state.lock().unwrap();
-                ch.set_connection_state(conn_state);
+                self.configure_new_channel(&ch);
                 ch
             })
             .clone()
@@ -872,13 +1285,7 @@ impl Channels {
             Ok(existing.clone())
         } else {
             let channel = Arc::new(RealtimeChannel::new(name.to_string(), options));
-            // Assign current client_msg_tx if connection is active
-            let tx = self.inner.current_tx.lock().unwrap().clone();
-            channel.set_client_msg_tx(tx);
-            let timeout = *self.inner.attach_timeout.lock().unwrap();
-            channel.set_attach_timeout(timeout);
-            let conn_state = *self.inner.connection_state.lock().unwrap();
-            channel.set_connection_state(conn_state);
+            self.configure_new_channel(&channel);
             channels.insert(name.to_string(), channel.clone());
             Ok(channel)
         }
@@ -943,5 +1350,160 @@ impl Channels {
                 channel.send_message(msg);
             }
         }
+    }
+
+    /// Configure a newly created channel with current settings.
+    fn configure_new_channel(&self, ch: &RealtimeChannel) {
+        let tx = self.inner.current_tx.lock().unwrap().clone();
+        ch.set_client_msg_tx(tx);
+        let timeout = *self.inner.attach_timeout.lock().unwrap();
+        ch.set_attach_timeout(timeout);
+        let conn_state = *self.inner.connection_state.lock().unwrap();
+        ch.set_connection_state(conn_state);
+        let echo = *self.inner.echo_messages.lock().unwrap();
+        ch.set_echo_messages(echo);
+        let conn_id = self.inner.self_connection_id.lock().unwrap().clone();
+        ch.set_self_connection_id(conn_id);
+        let queue = *self.inner.queue_messages.lock().unwrap();
+        ch.set_queue_messages(queue);
+        ch.set_channels_inner(Arc::clone(&self.inner));
+    }
+
+    /// Set echo_messages on all channels and store for future channels. RTL7f.
+    pub(crate) fn set_echo_messages(&self, echo: bool) {
+        *self.inner.echo_messages.lock().unwrap() = echo;
+        let channels = self.inner.channels.lock().unwrap();
+        for channel in channels.values() {
+            channel.set_echo_messages(echo);
+        }
+    }
+
+    /// Set this client's connection ID on all channels. RTL7f.
+    pub(crate) fn set_self_connection_id(&self, id: Option<String>) {
+        *self.inner.self_connection_id.lock().unwrap() = id.clone();
+        let channels = self.inner.channels.lock().unwrap();
+        for channel in channels.values() {
+            channel.set_self_connection_id(id.clone());
+        }
+    }
+
+    /// Set queue_messages on all channels and store for future channels. RTO6a.
+    pub(crate) fn set_queue_messages(&self, queue: bool) {
+        *self.inner.queue_messages.lock().unwrap() = queue;
+        let channels = self.inner.channels.lock().unwrap();
+        for channel in channels.values() {
+            channel.set_queue_messages(queue);
+        }
+    }
+
+    /// Send all queued messages from all channels. Called when CONNECTED. RTL6c2.
+    pub(crate) fn send_queued_messages(&self) {
+        let channels = self.inner.channels.lock().unwrap();
+        for channel in channels.values() {
+            let queued: Vec<_> = channel
+                .inner
+                .queued_messages
+                .lock()
+                .unwrap()
+                .drain(..)
+                .collect();
+            for (mut msg, waiter) in queued {
+                // Assign msgSerial (RTN7b)
+                let serial = {
+                    let mut s = self.inner.next_msg_serial.lock().unwrap();
+                    let val = *s;
+                    *s += 1;
+                    val
+                };
+                msg.msg_serial = Some(serial);
+
+                // Register ACK waiter
+                self.inner
+                    .pending_acks
+                    .lock()
+                    .unwrap()
+                    .insert(serial, waiter);
+
+                // Send the message
+                let tx = self.inner.current_tx.lock().unwrap();
+                if let Some(ref sender) = *tx {
+                    let _ = sender.send(msg);
+                }
+            }
+        }
+    }
+
+    /// Handle ACK protocol message. RTL6j, TR4s.
+    pub(crate) fn handle_ack(&self, msg: &ProtocolMessage) {
+        if let Some(serial) = msg.msg_serial {
+            let count = msg.count.unwrap_or(1) as i64;
+            for i in 0..count {
+                let target_serial = serial + i;
+                if let Some(waiter) = self
+                    .inner
+                    .pending_acks
+                    .lock()
+                    .unwrap()
+                    .remove(&target_serial)
+                {
+                    // Extract PublishResult from res array if available
+                    let result = if let Some(ref res) = msg.res {
+                        if let Some(pr) = res.get(i as usize) {
+                            pr.clone()
+                        } else {
+                            PublishResult { serials: vec![] }
+                        }
+                    } else {
+                        PublishResult { serials: vec![] }
+                    };
+                    let _ = waiter.send(Ok(result));
+                }
+            }
+        }
+    }
+
+    /// Handle NACK protocol message.
+    pub(crate) fn handle_nack(&self, msg: &ProtocolMessage) {
+        if let Some(serial) = msg.msg_serial {
+            let count = msg.count.unwrap_or(1) as i64;
+            let err = msg.error.clone().unwrap_or(ErrorInfo {
+                code: Some(50000),
+                status_code: None,
+                message: Some("Message rejected".to_string()),
+                href: None,
+            });
+            for i in 0..count {
+                let target_serial = serial + i;
+                if let Some(waiter) = self
+                    .inner
+                    .pending_acks
+                    .lock()
+                    .unwrap()
+                    .remove(&target_serial)
+                {
+                    let _ = waiter.send(Err(err.clone()));
+                }
+            }
+        }
+    }
+}
+
+impl ChannelsInner {
+    /// Assign msgSerial and register ACK waiter when a channel sends a MESSAGE.
+    /// Returns the modified ProtocolMessage with msgSerial set.
+    pub(crate) fn prepare_publish(
+        &self,
+        mut msg: ProtocolMessage,
+        waiter: tokio::sync::oneshot::Sender<Result<PublishResult, ErrorInfo>>,
+    ) -> ProtocolMessage {
+        let serial = {
+            let mut s = self.next_msg_serial.lock().unwrap();
+            let val = *s;
+            *s += 1;
+            val
+        };
+        msg.msg_serial = Some(serial);
+        self.pending_acks.lock().unwrap().insert(serial, waiter);
+        msg
     }
 }

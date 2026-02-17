@@ -54,6 +54,8 @@ impl Realtime {
         let auto_connect = options.auto_connect;
         let channels = Channels::new();
         channels.set_attach_timeout(options.realtime_request_timeout);
+        channels.set_echo_messages(options.echo_messages);
+        channels.set_queue_messages(options.queue_messages);
         let connection = Connection::new(options, transport, &channels);
 
         let client = Self {
@@ -924,8 +926,16 @@ impl Connection {
 
                 Connection::set_state_inner(inner, ConnectionState::Connected, None);
 
+                // Set connection ID on channels for echo filtering (RTL7f)
+                inner
+                    .channels
+                    .set_self_connection_id(msg.connection_id.clone());
+
                 // RTL4i: Send queued ATTACH messages for channels in ATTACHING state
                 inner.channels.send_pending_attaches();
+
+                // RTL6c2: Send queued publish messages
+                inner.channels.send_queued_messages();
 
                 false
             }
@@ -962,6 +972,16 @@ impl Connection {
                     }
                 }
                 // Heartbeats without matching ID are ignored (server-initiated)
+                false
+            }
+            Action::Ack => {
+                // RTL6j: Resolve publish waiters with PublishResult
+                inner.channels.handle_ack(&msg);
+                false
+            }
+            Action::Nack => {
+                // Reject publish waiters with error
+                inner.channels.handle_nack(&msg);
                 false
             }
             Action::Auth => {

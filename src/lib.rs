@@ -11085,4 +11085,2346 @@ mod unit_tests {
         assert_eq!(channel.state(), ChannelState::Attached); // Back to previous
         assert!(elapsed.as_millis() < 2000);
     }
+
+    // ===== Phase 8c: Messages =====
+
+    // --- RTL6i1: Publish single message by name and data ---
+    #[tokio::test]
+    async fn rtl6i1_publish_single_message() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl6i1";
+        let mock = MockWebSocket::with_handler({
+            let cn = channel_name.to_string();
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        // Attach
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        // Publish
+        let ch = channel.clone();
+        let publish_handle = tokio::spawn(async move {
+            ch.publish(Some("greeting"), Some(serde_json::json!("hello")))
+                .await
+        });
+
+        // Wait for the MESSAGE to be captured
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msgs = mock.client_messages();
+        let message_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Message)
+            .collect();
+        assert_eq!(message_msgs.len(), 1);
+        assert_eq!(
+            message_msgs[0].message.channel.as_deref(),
+            Some(channel_name)
+        );
+        let messages = message_msgs[0].message.messages.as_ref().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["name"], "greeting");
+        assert_eq!(messages[0]["data"], "hello");
+
+        // Send ACK to resolve publish
+        let msg_serial = message_msgs[0].message.msg_serial.unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(msg_serial),
+            count: Some(1),
+            res: Some(vec![crate::protocol::PublishResult {
+                serials: vec![Some("serial-1".to_string())],
+            }]),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+
+        let result = publish_handle.await.unwrap().unwrap();
+        assert_eq!(result.serials.len(), 1);
+        assert_eq!(result.serials[0].as_deref(), Some("serial-1"));
+    }
+
+    // --- RTL6i2: Publish array of Message objects ---
+    #[tokio::test]
+    async fn rtl6i2_publish_array_of_messages() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl6i2";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        // Attach
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        // Publish array
+        let ch = channel.clone();
+        let publish_handle = tokio::spawn(async move {
+            ch.publish_messages(vec![
+                serde_json::json!({"name": "event1", "data": "data1"}),
+                serde_json::json!({"name": "event2", "data": "data2"}),
+                serde_json::json!({"name": "event3", "data": "data3"}),
+            ])
+            .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msgs = mock.client_messages();
+        let message_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Message)
+            .collect();
+        assert_eq!(message_msgs.len(), 1); // Single ProtocolMessage
+        let messages = message_msgs[0].message.messages.as_ref().unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["name"], "event1");
+        assert_eq!(messages[1]["name"], "event2");
+        assert_eq!(messages[2]["name"], "event3");
+
+        // Send ACK
+        let msg_serial = message_msgs[0].message.msg_serial.unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(msg_serial),
+            count: Some(1),
+            res: Some(vec![crate::protocol::PublishResult {
+                serials: vec![
+                    Some("s1".to_string()),
+                    Some("s2".to_string()),
+                    Some("s3".to_string()),
+                ],
+            }]),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+
+        let result = publish_handle.await.unwrap().unwrap();
+        assert_eq!(result.serials.len(), 3);
+    }
+
+    // --- RTL6c1: Publish immediately when CONNECTED and channel ATTACHED ---
+    #[tokio::test]
+    async fn rtl6c1_publish_immediately_when_attached() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl6c1-attached";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Attach
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+        assert_eq!(channel.state(), ChannelState::Attached);
+
+        // Publish — should be sent immediately (synchronously captured by mock)
+        let ch = channel.clone();
+        let _publish_handle = tokio::spawn(async move {
+            ch.publish(Some("test"), Some(serde_json::json!("immediate")))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msgs = mock.client_messages();
+        let message_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Message)
+            .collect();
+        assert_eq!(message_msgs.len(), 1);
+        assert_eq!(
+            message_msgs[0].message.messages.as_ref().unwrap()[0]["name"],
+            "test"
+        );
+        assert_eq!(
+            message_msgs[0].message.messages.as_ref().unwrap()[0]["data"],
+            "immediate"
+        );
+    }
+
+    // --- RTL6c1: Publish immediately when CONNECTED and channel INITIALIZED ---
+    #[tokio::test]
+    async fn rtl6c1_publish_immediately_when_initialized() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl6c1-init";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(channel.state(), ChannelState::Initialized);
+
+        // Publish on initialized channel — should send immediately (RTL6c1)
+        let ch = channel.clone();
+        let _publish_handle = tokio::spawn(async move {
+            ch.publish(Some("before-attach"), Some(serde_json::json!("data")))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msgs = mock.client_messages();
+        let message_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Message)
+            .collect();
+        assert_eq!(message_msgs.len(), 1);
+        assert_eq!(
+            message_msgs[0].message.messages.as_ref().unwrap()[0]["name"],
+            "before-attach"
+        );
+    }
+
+    // --- RTL6c5: Publish does not trigger implicit attach ---
+    #[tokio::test]
+    async fn rtl6c5_publish_does_not_attach() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl6c5";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(channel.state(), ChannelState::Initialized);
+
+        let ch = channel.clone();
+        let _publish_handle = tokio::spawn(async move {
+            ch.publish(Some("no-attach"), Some(serde_json::json!("test")))
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Channel should remain INITIALIZED — no implicit attach
+        assert_eq!(channel.state(), ChannelState::Initialized);
+        let msgs = mock.client_messages();
+        let attach_count = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Attach)
+            .count();
+        assert_eq!(attach_count, 0);
+        // Message should have been sent
+        let message_count = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Message)
+            .count();
+        assert_eq!(message_count, 1);
+    }
+
+    // --- RTL6c2: Publish queued when connection CONNECTING ---
+    #[tokio::test]
+    async fn rtl6c2_publish_queued_when_connecting() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl6c2-connecting";
+        let mock = MockWebSocket::new();
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connecting, 5000).await);
+
+        // Publish while CONNECTING — should be queued
+        let ch = channel.clone();
+        let publish_handle = tokio::spawn(async move {
+            ch.publish(Some("queued"), Some(serde_json::json!("waiting")))
+                .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Message should NOT have been sent yet
+        let msgs = mock.client_messages();
+        let message_count = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Message)
+            .count();
+        assert_eq!(message_count, 0);
+
+        // Complete the connection
+        let pending = mock.await_connection().await;
+        pending.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Queued message should now have been sent
+        let msgs = mock.client_messages();
+        let message_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Message)
+            .collect();
+        assert_eq!(message_msgs.len(), 1);
+        assert_eq!(
+            message_msgs[0].message.messages.as_ref().unwrap()[0]["name"],
+            "queued"
+        );
+
+        // ACK to resolve
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        let msg_serial = message_msgs[0].message.msg_serial.unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(msg_serial),
+            count: Some(1),
+            res: Some(vec![crate::protocol::PublishResult { serials: vec![] }]),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+
+        let result = publish_handle.await.unwrap();
+        assert!(result.is_ok());
+    }
+
+    // --- RTL6c2: Publish queued when connection INITIALIZED ---
+    #[tokio::test]
+    async fn rtl6c2_publish_queued_when_initialized() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl6c2-init";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(client.connection.state(), ConnectionState::Initialized);
+
+        // Publish before connecting — should be queued
+        let ch = channel.clone();
+        let publish_handle = tokio::spawn(async move {
+            ch.publish(Some("pre-connect"), Some(serde_json::json!("early")))
+                .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msgs = mock.client_messages();
+        let message_count = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Message)
+            .count();
+        assert_eq!(message_count, 0);
+
+        // Now connect
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msgs = mock.client_messages();
+        let message_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Message)
+            .collect();
+        assert_eq!(message_msgs.len(), 1);
+        assert_eq!(
+            message_msgs[0].message.messages.as_ref().unwrap()[0]["name"],
+            "pre-connect"
+        );
+
+        // ACK
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        let msg_serial = message_msgs[0].message.msg_serial.unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(msg_serial),
+            count: Some(1),
+            res: Some(vec![crate::protocol::PublishResult { serials: vec![] }]),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+
+        let result = publish_handle.await.unwrap();
+        assert!(result.is_ok());
+    }
+
+    // --- RTL6c2: Multiple queued messages sent in order ---
+    #[tokio::test]
+    async fn rtl6c2_multiple_queued_messages_order() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl6c2-order";
+        let mock = MockWebSocket::new();
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connecting, 5000).await);
+
+        // Queue multiple messages
+        let ch1 = channel.clone();
+        let ch2 = channel.clone();
+        let ch3 = channel.clone();
+        let _h1 = tokio::spawn(async move {
+            ch1.publish(Some("first"), Some(serde_json::json!("1")))
+                .await
+        });
+        let _h2 = tokio::spawn(async move {
+            ch2.publish(Some("second"), Some(serde_json::json!("2")))
+                .await
+        });
+        let _h3 = tokio::spawn(async move {
+            ch3.publish(Some("third"), Some(serde_json::json!("3")))
+                .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            mock.client_messages()
+                .iter()
+                .filter(|m| m.message.action == Action::Message)
+                .count(),
+            0
+        );
+
+        // Complete connection
+        let pending = mock.await_connection().await;
+        pending.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msgs = mock.client_messages();
+        let message_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Message)
+            .collect();
+        assert_eq!(message_msgs.len(), 3);
+        assert_eq!(
+            message_msgs[0].message.messages.as_ref().unwrap()[0]["name"],
+            "first"
+        );
+        assert_eq!(
+            message_msgs[1].message.messages.as_ref().unwrap()[0]["name"],
+            "second"
+        );
+        assert_eq!(
+            message_msgs[2].message.messages.as_ref().unwrap()[0]["name"],
+            "third"
+        );
+    }
+
+    // --- RTL6c4: Publish fails when connection CLOSED ---
+    #[tokio::test]
+    async fn rtl6c4_publish_fails_when_connection_closed() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl6c4-closed";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+        client.close();
+        assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let result = channel
+            .publish(Some("fail"), Some(serde_json::json!("should-error")))
+            .await;
+        assert!(result.is_err());
+    }
+
+    // --- RTL6c4: Publish fails when connection FAILED ---
+    #[tokio::test]
+    async fn rtl6c4_publish_fails_when_connection_failed() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl6c4-failed";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_error(ProtocolMessage {
+                    action: Action::Error,
+                    error: Some(ErrorInfo {
+                        code: Some(80000),
+                        status_code: None,
+                        message: Some("Fatal error".to_string()),
+                        href: None,
+                    }),
+                    ..ProtocolMessage::new(Action::Error)
+                });
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let result = channel
+            .publish(Some("fail"), Some(serde_json::json!("should-error")))
+            .await;
+        assert!(result.is_err());
+    }
+
+    // --- RTL6c4: Publish fails when channel is FAILED ---
+    #[tokio::test]
+    async fn rtl6c4_publish_fails_when_channel_failed() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl6c4-ch-failed";
+        let mock = MockWebSocket::with_handler({
+            let cn = channel_name.to_string();
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Attach fails → channel enters FAILED
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Error,
+            channel: Some(cn),
+            error: Some(ErrorInfo {
+                code: Some(40160),
+                status_code: Some(401),
+                message: Some("Not permitted".to_string()),
+                href: None,
+            }),
+            ..ProtocolMessage::new(Action::Error)
+        });
+        let _ = t.await.unwrap();
+        assert_eq!(channel.state(), ChannelState::Failed);
+
+        let result = channel
+            .publish(Some("fail"), Some(serde_json::json!("should-error")))
+            .await;
+        assert!(result.is_err());
+    }
+
+    // --- RTL6c2: Publish fails when queueMessages is false ---
+    #[tokio::test]
+    async fn rtl6c2_publish_fails_when_queue_disabled() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl6c2-noqueue";
+        let mock = MockWebSocket::new();
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .queue_messages(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connecting, 5000).await);
+
+        let result = channel
+            .publish(Some("fail"), Some(serde_json::json!("should-error")))
+            .await;
+        assert!(result.is_err());
+    }
+
+    // --- RTL6j: Publish returns PublishResult with serials ---
+    #[tokio::test]
+    async fn rtl6j_publish_returns_publish_result() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl6j";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Attach
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        // Publish
+        let ch = channel.clone();
+        let publish_handle = tokio::spawn(async move {
+            ch.publish(Some("greeting"), Some(serde_json::json!("hello")))
+                .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msgs = mock.client_messages();
+        let message_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.message.action == Action::Message)
+            .collect();
+        assert_eq!(message_msgs[0].message.msg_serial, Some(0));
+
+        // ACK with serials
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(0),
+            count: Some(1),
+            res: Some(vec![crate::protocol::PublishResult {
+                serials: vec![Some("abc123".to_string())],
+            }]),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+
+        let result = publish_handle.await.unwrap().unwrap();
+        assert_eq!(result.serials.len(), 1);
+        assert_eq!(result.serials[0].as_deref(), Some("abc123"));
+    }
+
+    // --- RTL6j: Batch publish returns multiple serials ---
+    #[tokio::test]
+    async fn rtl6j_batch_publish_returns_multiple_serials() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl6j-batch";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Attach
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        // Publish batch
+        let ch = channel.clone();
+        let publish_handle = tokio::spawn(async move {
+            ch.publish_messages(vec![
+                serde_json::json!({"name": "msg1"}),
+                serde_json::json!({"name": "msg2"}),
+                serde_json::json!({"name": "msg3"}),
+            ])
+            .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // ACK with serials (one null for conflation)
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Ack,
+            msg_serial: Some(0),
+            count: Some(1),
+            res: Some(vec![crate::protocol::PublishResult {
+                serials: vec![
+                    Some("serial-1".to_string()),
+                    None,
+                    Some("serial-3".to_string()),
+                ],
+            }]),
+            ..ProtocolMessage::new(Action::Ack)
+        });
+
+        let result = publish_handle.await.unwrap().unwrap();
+        assert_eq!(result.serials.len(), 3);
+        assert_eq!(result.serials[0].as_deref(), Some("serial-1"));
+        assert!(result.serials[1].is_none());
+        assert_eq!(result.serials[2].as_deref(), Some("serial-3"));
+    }
+
+    // --- RTL7a: Subscribe with no name receives all messages ---
+    #[tokio::test]
+    async fn rtl7a_subscribe_receives_all_messages() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl7a";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Attach
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx) = channel.subscribe();
+
+        // Send messages with different names
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            messages: Some(vec![serde_json::json!({"name": "event1", "data": "data1"})]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            messages: Some(vec![serde_json::json!({"name": "event2", "data": "data2"})]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            messages: Some(vec![serde_json::json!({"data": "data3"})]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msg1 = rx.try_recv().unwrap();
+        assert_eq!(msg1.name.as_deref(), Some("event1"));
+        assert_eq!(msg1.data.as_ref().unwrap(), "data1");
+        let msg2 = rx.try_recv().unwrap();
+        assert_eq!(msg2.name.as_deref(), Some("event2"));
+        let msg3 = rx.try_recv().unwrap();
+        assert!(msg3.name.is_none());
+        assert_eq!(msg3.data.as_ref().unwrap(), "data3");
+    }
+
+    // --- RTL7a: Subscribe receives multiple messages from single ProtocolMessage ---
+    #[tokio::test]
+    async fn rtl7a_subscribe_multiple_messages_in_single_protocol_message() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl7a-multi";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Attach
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx) = channel.subscribe();
+
+        // Single ProtocolMessage with multiple messages
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            messages: Some(vec![
+                serde_json::json!({"name": "batch1", "data": "first"}),
+                serde_json::json!({"name": "batch2", "data": "second"}),
+                serde_json::json!({"name": "batch3", "data": "third"}),
+            ]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msg1 = rx.try_recv().unwrap();
+        assert_eq!(msg1.name.as_deref(), Some("batch1"));
+        let msg2 = rx.try_recv().unwrap();
+        assert_eq!(msg2.name.as_deref(), Some("batch2"));
+        let msg3 = rx.try_recv().unwrap();
+        assert_eq!(msg3.name.as_deref(), Some("batch3"));
+    }
+
+    // --- RTL7b: Subscribe with name only receives matching messages ---
+    #[tokio::test]
+    async fn rtl7b_subscribe_with_name_filter() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl7b";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Attach
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx) = channel.subscribe_with_name("target");
+
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            messages: Some(vec![serde_json::json!({"name": "other", "data": "skip"})]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            messages: Some(vec![serde_json::json!({"name": "target", "data": "match"})]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            messages: Some(vec![serde_json::json!({"data": "no-name"})]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.name.as_deref(), Some("target"));
+        assert_eq!(msg.data.as_ref().unwrap(), "match");
+        // No more messages
+        assert!(rx.try_recv().is_err());
+    }
+
+    // --- RTL7b: Multiple name-specific subscriptions ---
+    #[tokio::test]
+    async fn rtl7b_multiple_name_subscriptions() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl7b-multi";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Attach
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_alpha_id, mut alpha_rx) = channel.subscribe_with_name("alpha");
+        let (_beta_id, mut beta_rx) = channel.subscribe_with_name("beta");
+
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            messages: Some(vec![
+                serde_json::json!({"name": "alpha", "data": "a1"}),
+                serde_json::json!({"name": "beta", "data": "b1"}),
+                serde_json::json!({"name": "alpha", "data": "a2"}),
+                serde_json::json!({"name": "gamma", "data": "g1"}),
+            ]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert_eq!(alpha_rx.try_recv().unwrap().data.as_ref().unwrap(), "a1");
+        assert_eq!(alpha_rx.try_recv().unwrap().data.as_ref().unwrap(), "a2");
+        assert!(alpha_rx.try_recv().is_err());
+
+        assert_eq!(beta_rx.try_recv().unwrap().data.as_ref().unwrap(), "b1");
+        assert!(beta_rx.try_recv().is_err());
+    }
+
+    // --- RTL7g: Subscribe triggers implicit attach ---
+    #[tokio::test]
+    async fn rtl7g_subscribe_triggers_implicit_attach() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl7g";
+        let mock = MockWebSocket::with_handler({
+            let cn = channel_name.to_string();
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Default attachOnSubscribe is true
+        let channel = client.channels.get(channel_name);
+        assert_eq!(channel.state(), ChannelState::Initialized);
+
+        let (_sub_id, mut rx) = channel.subscribe();
+
+        // Wait for implicit attach to start
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Respond to ATTACH
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(channel_name.to_string()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(channel.state(), ChannelState::Attached);
+
+        // Verify the listener was registered
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(channel_name.to_string()),
+            messages: Some(vec![serde_json::json!({"name": "test", "data": "hello"})]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.name.as_deref(), Some("test"));
+    }
+
+    // --- RTL7h: Subscribe does not attach when attachOnSubscribe is false ---
+    #[tokio::test]
+    async fn rtl7h_subscribe_no_attach_when_disabled() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl7h";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(channel.state(), ChannelState::Initialized);
+
+        channel.subscribe();
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(channel.state(), ChannelState::Initialized);
+        let attach_count = mock
+            .client_messages()
+            .iter()
+            .filter(|m| m.message.action == Action::Attach)
+            .count();
+        assert_eq!(attach_count, 0);
+    }
+
+    // --- RTL7g: Subscribe does not attach when already attached ---
+    #[tokio::test]
+    async fn rtl7g_subscribe_no_attach_when_already_attached() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl7g-already";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+
+        // Attach first
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let attach_count_before = mock
+            .client_messages()
+            .iter()
+            .filter(|m| m.message.action == Action::Attach)
+            .count();
+
+        // Subscribe — should NOT send another ATTACH
+        channel.subscribe();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let attach_count_after = mock
+            .client_messages()
+            .iter()
+            .filter(|m| m.message.action == Action::Attach)
+            .count();
+        assert_eq!(attach_count_before, attach_count_after);
+        assert_eq!(channel.state(), ChannelState::Attached);
+    }
+
+    // --- RTL17: Messages not delivered when channel is not ATTACHED ---
+    #[tokio::test]
+    async fn rtl17_messages_not_delivered_when_not_attached() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl17";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let (_sub_id, mut rx) = channel.subscribe();
+
+        // Start attach but don't complete it — channel stays ATTACHING
+        let ch = channel.clone();
+        let _t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(channel.state(), ChannelState::Attaching);
+
+        // Send message while ATTACHING
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(channel_name.to_string()),
+            messages: Some(vec![
+                serde_json::json!({"name": "premature", "data": "skip"}),
+            ]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(rx.try_recv().is_err()); // No messages delivered
+    }
+
+    // --- RTL7f: Messages not echoed when echoMessages is false ---
+    #[tokio::test]
+    async fn rtl7f_echo_messages_filtered() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl7f";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage {
+                    action: Action::Connected,
+                    connection_id: Some("conn-self-123".to_string()),
+                    connection_details: Some(crate::protocol::ConnectionDetails {
+                        connection_key: Some("key-456".to_string()),
+                        client_id: None,
+                        connection_state_ttl: Some(120_000),
+                        max_idle_interval: Some(15_000),
+                        max_message_size: None,
+                        server_id: None,
+                    }),
+                    ..ProtocolMessage::new(Action::Connected)
+                });
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .echo_messages(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Attach
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx) = channel.subscribe();
+
+        // Message from self (same connectionId) — should be filtered
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            connection_id: Some("conn-self-123".to_string()),
+            messages: Some(vec![
+                serde_json::json!({"name": "echo", "data": "from-self"}),
+            ]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        // Message from another connection — should be delivered
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            connection_id: Some("conn-other-789".to_string()),
+            messages: Some(vec![
+                serde_json::json!({"name": "remote", "data": "from-other"}),
+            ]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.name.as_deref(), Some("remote"));
+        assert_eq!(msg.data.as_ref().unwrap(), "from-other");
+        assert!(rx.try_recv().is_err()); // No echo message
+    }
+
+    // --- RTL8a: Unsubscribe specific listener ---
+    #[tokio::test]
+    async fn rtl8a_unsubscribe_specific_listener() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl8a";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Attach
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (sub_a, mut rx_a) = channel.subscribe();
+        let (_sub_b, mut rx_b) = channel.subscribe();
+
+        // Both receive first message
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            messages: Some(vec![serde_json::json!({"name": "msg1", "data": "first"})]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(rx_a.try_recv().is_ok());
+        assert!(rx_b.try_recv().is_ok());
+
+        // Unsubscribe listener A
+        channel.unsubscribe(sub_a);
+
+        // Only B should receive second message
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            messages: Some(vec![serde_json::json!({"name": "msg2", "data": "second"})]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(rx_a.try_recv().is_err()); // A unsubscribed
+        let msg = rx_b.try_recv().unwrap();
+        assert_eq!(msg.name.as_deref(), Some("msg2"));
+    }
+
+    // --- RTL8b: Unsubscribe from specific name ---
+    #[tokio::test]
+    async fn rtl8b_unsubscribe_from_specific_name() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl8b";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Attach
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (sub_id, mut rx) = channel.subscribe_with_name("alpha");
+        let (_sub_beta, mut rx_beta) = channel.subscribe_with_name("beta");
+
+        // Both active
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            messages: Some(vec![
+                serde_json::json!({"name": "alpha", "data": "a1"}),
+                serde_json::json!({"name": "beta", "data": "b1"}),
+            ]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(rx.try_recv().is_ok());
+        assert!(rx_beta.try_recv().is_ok());
+
+        // Unsubscribe only "alpha"
+        channel.unsubscribe_with_name("alpha", sub_id);
+
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            messages: Some(vec![
+                serde_json::json!({"name": "alpha", "data": "a2"}),
+                serde_json::json!({"name": "beta", "data": "b2"}),
+            ]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(rx.try_recv().is_err()); // Alpha unsubscribed
+        let msg = rx_beta.try_recv().unwrap();
+        assert_eq!(msg.data.as_ref().unwrap(), "b2");
+    }
+
+    // --- RTL8c: Unsubscribe all ---
+    #[tokio::test]
+    async fn rtl8c_unsubscribe_all() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-rtl8c";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Attach
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_all, mut rx_all) = channel.subscribe();
+        let (_sub_named, mut rx_named) = channel.subscribe_with_name("specific");
+
+        // Both active
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            messages: Some(vec![
+                serde_json::json!({"name": "specific", "data": "first"}),
+            ]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(rx_all.try_recv().is_ok());
+        assert!(rx_named.try_recv().is_ok());
+
+        // Unsubscribe all
+        channel.unsubscribe_all();
+
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            messages: Some(vec![
+                serde_json::json!({"name": "specific", "data": "second"}),
+                serde_json::json!({"name": "other", "data": "third"}),
+            ]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(rx_all.try_recv().is_err());
+        assert!(rx_named.try_recv().is_err());
+    }
+
+    // --- TM2a: Message id populated from ProtocolMessage ---
+    #[tokio::test]
+    async fn tm2a_message_id_populated() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2a";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Attach
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx) = channel.subscribe();
+
+        // Send ProtocolMessage with id but messages without id
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            id: Some("abc123:5".to_string()),
+            connection_id: Some("abc123".to_string()),
+            timestamp: Some(1700000000000),
+            messages: Some(vec![
+                serde_json::json!({"name": "first", "data": "a"}),
+                serde_json::json!({"name": "second", "data": "b"}),
+                serde_json::json!({"name": "third", "data": "c"}),
+            ]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msg0 = rx.try_recv().unwrap();
+        assert_eq!(msg0.id.as_deref(), Some("abc123:5:0"));
+        let msg1 = rx.try_recv().unwrap();
+        assert_eq!(msg1.id.as_deref(), Some("abc123:5:1"));
+        let msg2 = rx.try_recv().unwrap();
+        assert_eq!(msg2.id.as_deref(), Some("abc123:5:2"));
+    }
+
+    // --- TM2a: Message with existing id is not overwritten ---
+    #[tokio::test]
+    async fn tm2a_existing_id_not_overwritten() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2a-existing";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx) = channel.subscribe();
+
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            id: Some("proto-id:0".to_string()),
+            messages: Some(vec![
+                serde_json::json!({"id": "my-custom-id", "name": "msg", "data": "hello"}),
+            ]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.id.as_deref(), Some("my-custom-id"));
+    }
+
+    // --- TM2a: No id when ProtocolMessage has no id ---
+    #[tokio::test]
+    async fn tm2a_no_id_when_protocol_message_has_no_id() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2a-no-proto-id";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx) = channel.subscribe();
+
+        // ProtocolMessage has no id field
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            connection_id: Some("abc123".to_string()),
+            messages: Some(vec![serde_json::json!({"name": "msg", "data": "hello"})]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msg = rx.try_recv().unwrap();
+        assert!(msg.id.is_none());
+    }
+
+    // --- TM2c: Message connectionId populated from ProtocolMessage ---
+    #[tokio::test]
+    async fn tm2c_connection_id_populated() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2c";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx) = channel.subscribe();
+
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            id: Some("msg:0".to_string()),
+            connection_id: Some("server-conn-xyz".to_string()),
+            messages: Some(vec![serde_json::json!({"name": "msg", "data": "hello"})]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.connection_id.as_deref(), Some("server-conn-xyz"));
+    }
+
+    // --- TM2c: Message with existing connectionId is not overwritten ---
+    #[tokio::test]
+    async fn tm2c_existing_connection_id_not_overwritten() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2c-existing";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx) = channel.subscribe();
+
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            id: Some("msg:0".to_string()),
+            connection_id: Some("proto-conn".to_string()),
+            messages: Some(vec![
+                serde_json::json!({"connectionId": "msg-conn", "name": "msg", "data": "hello"}),
+            ]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.connection_id.as_deref(), Some("msg-conn"));
+    }
+
+    // --- TM2f: Message timestamp populated from ProtocolMessage ---
+    #[tokio::test]
+    async fn tm2f_timestamp_populated() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2f";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx) = channel.subscribe();
+
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            id: Some("msg:0".to_string()),
+            timestamp: Some(1700000000000),
+            messages: Some(vec![serde_json::json!({"name": "msg", "data": "hello"})]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.timestamp, Some(1700000000000));
+    }
+
+    // --- TM2f: Message with existing timestamp is not overwritten ---
+    #[tokio::test]
+    async fn tm2f_existing_timestamp_not_overwritten() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2f-existing";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx) = channel.subscribe();
+
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            id: Some("msg:0".to_string()),
+            timestamp: Some(1700000000000),
+            messages: Some(vec![
+                serde_json::json!({"timestamp": 1600000000000_i64, "name": "msg", "data": "hello"}),
+            ]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.timestamp, Some(1600000000000));
+    }
+
+    // --- TM2a, TM2c, TM2f: All fields populated together ---
+    #[tokio::test]
+    async fn tm2_all_fields_populated_together() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2-all";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx) = channel.subscribe();
+
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(cn.clone()),
+            id: Some("connId:7".to_string()),
+            connection_id: Some("connId".to_string()),
+            timestamp: Some(1700000000000),
+            messages: Some(vec![
+                serde_json::json!({"name": "first", "data": "a"}),
+                serde_json::json!({"name": "second", "data": "b"}),
+            ]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msg0 = rx.try_recv().unwrap();
+        assert_eq!(msg0.id.as_deref(), Some("connId:7:0"));
+        assert_eq!(msg0.connection_id.as_deref(), Some("connId"));
+        assert_eq!(msg0.timestamp, Some(1700000000000));
+        assert_eq!(msg0.name.as_deref(), Some("first"));
+
+        let msg1 = rx.try_recv().unwrap();
+        assert_eq!(msg1.id.as_deref(), Some("connId:7:1"));
+        assert_eq!(msg1.connection_id.as_deref(), Some("connId"));
+        assert_eq!(msg1.timestamp, Some(1700000000000));
+        assert_eq!(msg1.name.as_deref(), Some("second"));
+    }
 }
