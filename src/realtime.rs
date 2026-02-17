@@ -56,6 +56,7 @@ impl Realtime {
         channels.set_attach_timeout(options.realtime_request_timeout);
         channels.set_echo_messages(options.echo_messages);
         channels.set_queue_messages(options.queue_messages);
+        channels.set_suspended_retry_timeout(options.suspended_retry_timeout);
         let connection = Connection::new(options, transport, &channels);
 
         let client = Self {
@@ -1057,6 +1058,11 @@ impl Connection {
         // Update connection state on all channels
         inner.channels.set_connection_state(new_state);
 
+        // RTL3: Propagate connection state changes to channels
+        inner
+            .channels
+            .handle_connection_state_change(new_state, reason.clone());
+
         let event = ConnectionEvent::from(new_state);
         let change = ConnectionStateChange {
             previous,
@@ -1086,6 +1092,31 @@ pub async fn await_state(conn: &Connection, target: ConnectionState, timeout_ms:
     }
 
     let mut rx = conn.on_state_change();
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
+
+    loop {
+        match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Ok(Ok(change)) => {
+                if change.current == target {
+                    return true;
+                }
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// Helper to wait for a specific channel state.
+pub async fn await_channel_state(
+    channel: &crate::channel::RealtimeChannel,
+    target: crate::protocol::ChannelState,
+    timeout_ms: u64,
+) -> bool {
+    if channel.state() == target {
+        return true;
+    }
+
+    let mut rx = channel.on_state_change();
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
 
     loop {

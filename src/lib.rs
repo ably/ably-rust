@@ -13427,4 +13427,1131 @@ mod unit_tests {
         assert_eq!(msg1.timestamp, Some(1700000000000));
         assert_eq!(msg1.name.as_deref(), Some("second"));
     }
+
+    // =========================================================================
+    // Phase 8d: Advanced Channel Features
+    // =========================================================================
+
+    /// Helper: set up a connected Realtime client with a mock WebSocket.
+    /// The handler auto-accepts every connection attempt.
+    fn phase8d_setup() -> (crate::realtime::Realtime, crate::mock_ws::MockWebSocket) {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::ProtocolMessage;
+        use crate::realtime::Realtime;
+
+        let mock = MockWebSocket::with_handler(|pending| {
+            pending.respond_with_success(ProtocolMessage::connected("connId", "connKey"));
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let client = Realtime::with_mock(
+            &ClientOptions::new("appId.keyId:keySecret")
+                .auto_connect(false)
+                .disconnected_retry_timeout(std::time::Duration::from_millis(50))
+                .realtime_request_timeout(std::time::Duration::from_millis(200))
+                .fallback_hosts(vec![]),
+            transport,
+        )
+        .unwrap();
+        (client, mock)
+    }
+
+    /// Helper: attach a channel by sending ATTACHED from the mock.
+    async fn phase8d_attach(
+        channel: &std::sync::Arc<crate::channel::RealtimeChannel>,
+        mock: &crate::mock_ws::MockWebSocket,
+        serial: Option<&str>,
+    ) {
+        use crate::protocol::{Action, ProtocolMessage};
+
+        let ch = channel.clone();
+        let attach_task = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(channel.name().to_string()),
+            channel_serial: serial.map(|s| s.to_string()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        attach_task.await.unwrap().unwrap();
+    }
+
+    // --- RTL3e: DISCONNECTED has no effect on ATTACHED channel ---
+    #[tokio::test]
+    async fn rtl3e_disconnected_no_effect_on_attached_channel() {
+        use crate::protocol::{ChannelState, ConnectionState};
+        use crate::realtime::await_state;
+
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get("test-rtl3e");
+        phase8d_attach(&channel, &mock, None).await;
+        assert_eq!(channel.state(), ChannelState::Attached);
+
+        // Subscribe to channel state changes
+        let mut rx = channel.on_state_change();
+
+        // Simulate disconnect
+        {
+            let conns = mock.active_connections();
+            conns.last().unwrap().simulate_disconnect();
+        }
+        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
+
+        // RTL3e: Channel should remain ATTACHED immediately after DISCONNECTED
+        assert_eq!(channel.state(), ChannelState::Attached);
+
+        // Verify no channel state change was emitted due to DISCONNECTED
+        // (use short timeout, before the reconnect retry fires RTL3d)
+        let result = tokio::time::timeout(std::time::Duration::from_millis(20), rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "No channel state change expected on DISCONNECTED"
+        );
+    }
+
+    // --- RTL3a: FAILED connection transitions ATTACHED channel to FAILED ---
+    #[tokio::test]
+    async fn rtl3a_failed_connection_transitions_attached_to_failed() {
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_channel_state, await_state};
+
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get("test-rtl3a");
+        phase8d_attach(&channel, &mock, None).await;
+        assert_eq!(channel.state(), ChannelState::Attached);
+
+        // Send connection-level ERROR (no channel field) to trigger FAILED
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Error,
+            error: Some(ErrorInfo {
+                code: Some(40198),
+                status_code: Some(401),
+                message: Some("Invalid credentials".to_string()),
+                href: None,
+            }),
+            ..ProtocolMessage::new(Action::Error)
+        });
+
+        assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+
+        // RTL3a: Channel should transition to FAILED
+        assert!(await_channel_state(&channel, ChannelState::Failed, 5000).await);
+        assert!(channel.error_reason().is_some());
+    }
+
+    // --- RTL3a: Channels in INITIALIZED unaffected by FAILED ---
+    #[tokio::test]
+    async fn rtl3a_initialized_unaffected_by_failed() {
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::await_state;
+
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let ch_init = client.channels.get("ch-initialized");
+        assert_eq!(ch_init.state(), ChannelState::Initialized);
+
+        // Trigger connection FAILED
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Error,
+            error: Some(ErrorInfo {
+                code: Some(40198),
+                status_code: Some(401),
+                message: Some("Fatal".to_string()),
+                href: None,
+            }),
+            ..ProtocolMessage::new(Action::Error)
+        });
+
+        assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+
+        // RTL3a: INITIALIZED channel should be unaffected
+        assert_eq!(ch_init.state(), ChannelState::Initialized);
+    }
+
+    // --- RTL3b: CLOSED connection transitions ATTACHED channel to DETACHED ---
+    #[tokio::test]
+    async fn rtl3b_closed_connection_transitions_attached_to_detached() {
+        use crate::protocol::{ChannelState, ConnectionState};
+        use crate::realtime::{await_channel_state, await_state};
+
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get("test-rtl3b");
+        phase8d_attach(&channel, &mock, None).await;
+        assert_eq!(channel.state(), ChannelState::Attached);
+
+        // Close the connection
+        client.close();
+
+        // RTL3b: Channel should transition to DETACHED
+        assert!(await_channel_state(&channel, ChannelState::Detached, 5000).await);
+    }
+
+    // --- RTL3d: CONNECTED re-attaches ATTACHED channels ---
+    #[tokio::test]
+    async fn rtl3d_connected_reattaches_attached_channels() {
+        use crate::protocol::{Action, ChannelState, ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_channel_state, await_state};
+
+        let channel_name = "test-rtl3d";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        phase8d_attach(&channel, &mock, Some("serial-001")).await;
+        assert_eq!(channel.state(), ChannelState::Attached);
+
+        // Simulate disconnect
+        {
+            let conns = mock.active_connections();
+            conns.last().unwrap().simulate_disconnect();
+        }
+        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
+
+        // Wait for reconnection
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // RTL3d: Channel should move to ATTACHING, send ATTACH
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Send ATTACHED from server for the reattach
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(channel_name.to_string()),
+            channel_serial: Some("serial-002".to_string()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+
+        assert!(await_channel_state(&channel, ChannelState::Attached, 5000).await);
+
+        // Verify ATTACH was sent on reconnect
+        let attach_msgs: Vec<_> = mock
+            .client_messages()
+            .into_iter()
+            .filter(|m| {
+                m.message.action == Action::Attach
+                    && m.message.channel.as_deref() == Some(channel_name)
+            })
+            .collect();
+        assert!(
+            attach_msgs.len() >= 2,
+            "Expected at least 2 ATTACH messages (initial + reattach)"
+        );
+    }
+
+    // --- RTL3d: INITIALIZED/DETACHED channels not re-attached ---
+    #[tokio::test]
+    async fn rtl3d_initialized_detached_not_reattached() {
+        use crate::protocol::{Action, ChannelState, ConnectionState};
+        use crate::realtime::await_state;
+
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // Create channel but don't attach it
+        let ch_init = client.channels.get("ch-init");
+        assert_eq!(ch_init.state(), ChannelState::Initialized);
+
+        let initial_attach_count = mock
+            .client_messages()
+            .into_iter()
+            .filter(|m| m.message.action == Action::Attach)
+            .count();
+
+        // Disconnect and reconnect
+        {
+            let conns = mock.active_connections();
+            conns.last().unwrap().simulate_disconnect();
+        }
+        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // RTL3d: No ATTACH messages sent for INITIALIZED channels
+        let final_attach_count = mock
+            .client_messages()
+            .into_iter()
+            .filter(|m| m.message.action == Action::Attach)
+            .count();
+        assert_eq!(final_attach_count, initial_attach_count);
+        assert_eq!(ch_init.state(), ChannelState::Initialized);
+    }
+
+    // --- RTL15a: attachSerial set from ATTACHED channelSerial ---
+    #[tokio::test]
+    async fn rtl15a_attach_serial_from_attached() {
+        use crate::protocol::ConnectionState;
+        use crate::realtime::await_state;
+
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get("test-rtl15a");
+        assert!(channel.attach_serial().is_none());
+
+        phase8d_attach(&channel, &mock, Some("attach-serial-001")).await;
+
+        // RTL15a: attachSerial populated from ATTACHED response
+        assert_eq!(
+            channel.attach_serial().as_deref(),
+            Some("attach-serial-001")
+        );
+    }
+
+    // --- RTL15a: attachSerial updated on additional ATTACHED ---
+    #[tokio::test]
+    async fn rtl15a_attach_serial_updated_on_additional_attached() {
+        use crate::protocol::{Action, ConnectionState, ProtocolMessage};
+        use crate::realtime::await_state;
+
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get("test-rtl15a-update");
+        phase8d_attach(&channel, &mock, Some("serial-v1")).await;
+        assert_eq!(channel.attach_serial().as_deref(), Some("serial-v1"));
+
+        // Server sends additional ATTACHED with new serial (UPDATE)
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some("test-rtl15a-update".to_string()),
+            channel_serial: Some("serial-v2".to_string()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // RTL15a: attachSerial updated
+        assert_eq!(channel.attach_serial().as_deref(), Some("serial-v2"));
+    }
+
+    // --- RTL15b: channelSerial set from ATTACHED ---
+    #[tokio::test]
+    async fn rtl15b_channel_serial_from_attached() {
+        use crate::protocol::ConnectionState;
+        use crate::realtime::await_state;
+
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get("test-rtl15b");
+        assert!(channel.channel_serial().is_none());
+
+        phase8d_attach(&channel, &mock, Some("ch-serial-001")).await;
+        assert_eq!(channel.channel_serial().as_deref(), Some("ch-serial-001"));
+    }
+
+    // --- RTL15b: channelSerial updated from MESSAGE ---
+    #[tokio::test]
+    async fn rtl15b_channel_serial_updated_from_message() {
+        use crate::protocol::{Action, ConnectionState, ProtocolMessage};
+        use crate::realtime::await_state;
+
+        let channel_name = "test-rtl15b-msg";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        phase8d_attach(&channel, &mock, Some("initial-serial")).await;
+        assert_eq!(channel.channel_serial().as_deref(), Some("initial-serial"));
+
+        // Server sends MESSAGE with updated channelSerial
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(channel_name.to_string()),
+            channel_serial: Some("msg-serial-002".to_string()),
+            messages: Some(vec![serde_json::json!({"name": "test"})]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // RTL15b: channelSerial updated from MESSAGE
+        assert_eq!(channel.channel_serial().as_deref(), Some("msg-serial-002"));
+    }
+
+    // --- RTL15b: channelSerial NOT updated when field absent ---
+    #[tokio::test]
+    async fn rtl15b_channel_serial_not_updated_when_absent() {
+        use crate::protocol::{Action, ConnectionState, ProtocolMessage};
+        use crate::realtime::await_state;
+
+        let channel_name = "test-rtl15b-absent";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        phase8d_attach(&channel, &mock, Some("keep-this")).await;
+        assert_eq!(channel.channel_serial().as_deref(), Some("keep-this"));
+
+        // Send MESSAGE without channelSerial
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Message,
+            channel: Some(channel_name.to_string()),
+            messages: Some(vec![serde_json::json!({"name": "test"})]),
+            ..ProtocolMessage::new(Action::Message)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // RTL15b: channelSerial should remain unchanged
+        assert_eq!(channel.channel_serial().as_deref(), Some("keep-this"));
+    }
+
+    // --- RTL15b: channelSerial cleared on DETACHED (RTL15b1) ---
+    #[tokio::test]
+    async fn rtl15b_channel_serial_cleared_on_detached() {
+        use crate::protocol::{Action, ChannelState, ConnectionState, ProtocolMessage};
+        use crate::realtime::await_state;
+
+        let channel_name = "test-rtl15b-detached";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        phase8d_attach(&channel, &mock, Some("attached-serial")).await;
+        assert_eq!(channel.channel_serial().as_deref(), Some("attached-serial"));
+
+        // Initiate detach
+        let ch = channel.clone();
+        let detach_task = tokio::spawn(async move { ch.detach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Send DETACHED response (with a channelSerial that should be ignored)
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Detached,
+            channel: Some(channel_name.to_string()),
+            channel_serial: Some("should-be-ignored".to_string()),
+            ..ProtocolMessage::new(Action::Detached)
+        });
+        detach_task.await.unwrap().unwrap();
+
+        // RTL15b1: channelSerial cleared on DETACHED
+        assert!(channel.channel_serial().is_none());
+        assert_eq!(channel.state(), ChannelState::Detached);
+    }
+
+    // --- RTL15b1: channelSerial cleared on FAILED ---
+    #[tokio::test]
+    async fn rtl15b1_channel_serial_cleared_on_failed() {
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_channel_state, await_state};
+
+        let channel_name = "test-rtl15b1-failed";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        phase8d_attach(&channel, &mock, Some("serial-to-clear")).await;
+        assert!(channel.channel_serial().is_some());
+
+        // Send channel-level ERROR
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Error,
+            channel: Some(channel_name.to_string()),
+            error: Some(ErrorInfo {
+                code: Some(90002),
+                status_code: None,
+                message: Some("Channel error".to_string()),
+                href: None,
+            }),
+            ..ProtocolMessage::new(Action::Error)
+        });
+
+        assert!(await_channel_state(&channel, ChannelState::Failed, 5000).await);
+
+        // RTL15b1: channelSerial cleared
+        assert!(channel.channel_serial().is_none());
+    }
+
+    // --- RTL13a: Server-initiated DETACHED triggers reattach ---
+    #[tokio::test]
+    async fn rtl13a_server_detached_triggers_reattach() {
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_channel_state, await_state};
+
+        let channel_name = "test-rtl13a";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        phase8d_attach(&channel, &mock, None).await;
+        assert_eq!(channel.state(), ChannelState::Attached);
+
+        // Server sends unsolicited DETACHED with error
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Detached,
+            channel: Some(channel_name.to_string()),
+            error: Some(ErrorInfo {
+                code: Some(50000),
+                status_code: None,
+                message: Some("Server detached".to_string()),
+                href: None,
+            }),
+            ..ProtocolMessage::new(Action::Detached)
+        });
+
+        // RTL13a: Should move to ATTACHING and send ATTACH
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Send ATTACHED for the reattach
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(channel_name.to_string()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+
+        assert!(await_channel_state(&channel, ChannelState::Attached, 5000).await);
+
+        // Verify two ATTACH messages were sent (initial + reattach)
+        let attach_msgs: Vec<_> = mock
+            .client_messages()
+            .into_iter()
+            .filter(|m| {
+                m.message.action == Action::Attach
+                    && m.message.channel.as_deref() == Some(channel_name)
+            })
+            .collect();
+        assert_eq!(attach_msgs.len(), 2);
+    }
+
+    // --- RTL13a: DETACHED while DETACHING is normal (not server-initiated) ---
+    #[tokio::test]
+    async fn rtl13a_detached_while_detaching_is_normal() {
+        use crate::protocol::{Action, ChannelState, ConnectionState, ProtocolMessage};
+        use crate::realtime::await_state;
+
+        let channel_name = "test-rtl13a-normal";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        phase8d_attach(&channel, &mock, None).await;
+
+        // User-initiated detach
+        let ch = channel.clone();
+        let detach_task = tokio::spawn(async move { ch.detach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Send DETACHED response (normal flow, not server-initiated)
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Detached,
+            channel: Some(channel_name.to_string()),
+            ..ProtocolMessage::new(Action::Detached)
+        });
+        detach_task.await.unwrap().unwrap();
+
+        assert_eq!(channel.state(), ChannelState::Detached);
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Should NOT trigger reattach — only 1 ATTACH total
+        let attach_msgs: Vec<_> = mock
+            .client_messages()
+            .into_iter()
+            .filter(|m| {
+                m.message.action == Action::Attach
+                    && m.message.channel.as_deref() == Some(channel_name)
+            })
+            .collect();
+        assert_eq!(attach_msgs.len(), 1);
+    }
+
+    // --- RTL12: Additional ATTACHED with resumed=false emits UPDATE ---
+    #[tokio::test]
+    async fn rtl12_additional_attached_not_resumed_emits_update() {
+        use crate::protocol::{
+            Action, ChannelEvent, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage,
+        };
+        use crate::realtime::await_state;
+
+        let channel_name = "test-rtl12";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        phase8d_attach(&channel, &mock, None).await;
+
+        let mut rx = channel.on_state_change();
+
+        // Server sends additional ATTACHED without RESUMED flag, with error
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(channel_name.to_string()),
+            error: Some(ErrorInfo {
+                code: Some(50000),
+                status_code: None,
+                message: Some("Continuity lost".to_string()),
+                href: None,
+            }),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+
+        // RTL12: Should emit UPDATE event
+        let change = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(change.event, ChannelEvent::Update);
+        assert_eq!(change.current, ChannelState::Attached);
+        assert_eq!(change.previous, ChannelState::Attached);
+        assert!(!change.resumed);
+        assert!(change.reason.is_some());
+        assert_eq!(change.reason.unwrap().code, Some(50000));
+
+        // Channel remains ATTACHED
+        assert_eq!(channel.state(), ChannelState::Attached);
+    }
+
+    // --- RTL12: Additional ATTACHED with resumed=true does NOT emit UPDATE ---
+    #[tokio::test]
+    async fn rtl12_additional_attached_resumed_no_update() {
+        use crate::protocol::{flags, Action, ChannelState, ConnectionState, ProtocolMessage};
+        use crate::realtime::await_state;
+
+        let channel_name = "test-rtl12-resumed";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        phase8d_attach(&channel, &mock, None).await;
+
+        let mut rx = channel.on_state_change();
+
+        // Server sends additional ATTACHED WITH RESUMED flag
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(channel_name.to_string()),
+            flags: Some(flags::RESUMED),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+
+        // RTL12: Should NOT emit UPDATE
+        let result = tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await;
+        assert!(result.is_err(), "No event expected when resumed=true");
+        assert_eq!(channel.state(), ChannelState::Attached);
+    }
+
+    // --- RTL12: Additional ATTACHED without error has null reason ---
+    #[tokio::test]
+    async fn rtl12_additional_attached_no_error_null_reason() {
+        use crate::protocol::{
+            Action, ChannelEvent, ChannelState, ConnectionState, ProtocolMessage,
+        };
+        use crate::realtime::await_state;
+
+        let channel_name = "test-rtl12-no-err";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        phase8d_attach(&channel, &mock, None).await;
+
+        let mut rx = channel.on_state_change();
+
+        // Server sends ATTACHED without error, without RESUMED flag
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(channel_name.to_string()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+
+        let change = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(change.event, ChannelEvent::Update);
+        // RTL12: reason is null
+        assert!(change.reason.is_none());
+    }
+
+    // --- RTL14: Channel ERROR transitions ATTACHED to FAILED ---
+    #[tokio::test]
+    async fn rtl14_channel_error_attached_to_failed() {
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_channel_state, await_state};
+
+        let channel_name = "test-rtl14";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        phase8d_attach(&channel, &mock, None).await;
+
+        // Send channel-scoped ERROR
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Error,
+            channel: Some(channel_name.to_string()),
+            error: Some(ErrorInfo {
+                code: Some(40160),
+                status_code: Some(401),
+                message: Some("Channel error".to_string()),
+                href: None,
+            }),
+            ..ProtocolMessage::new(Action::Error)
+        });
+
+        // RTL14: Channel transitions to FAILED
+        assert!(await_channel_state(&channel, ChannelState::Failed, 5000).await);
+        let err = channel.error_reason().unwrap();
+        assert_eq!(err.code, Some(40160));
+
+        // Connection should remain CONNECTED
+        assert_eq!(client.connection.state(), ConnectionState::Connected);
+    }
+
+    // --- RTL14: Channel ERROR does not affect other channels ---
+    #[tokio::test]
+    async fn rtl14_channel_error_does_not_affect_other_channels() {
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_channel_state, await_state};
+
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let ch1 = client.channels.get("ch-target");
+        let ch2 = client.channels.get("ch-other");
+        phase8d_attach(&ch1, &mock, None).await;
+        phase8d_attach(&ch2, &mock, None).await;
+
+        // Send ERROR only to ch1
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Error,
+            channel: Some("ch-target".to_string()),
+            error: Some(ErrorInfo {
+                code: Some(40160),
+                status_code: Some(401),
+                message: Some("Bad channel".to_string()),
+                href: None,
+            }),
+            ..ProtocolMessage::new(Action::Error)
+        });
+
+        assert!(await_channel_state(&ch1, ChannelState::Failed, 5000).await);
+
+        // RTL14: Other channel unaffected
+        assert_eq!(ch2.state(), ChannelState::Attached);
+        assert!(ch2.error_reason().is_none());
+    }
+
+    // --- RTL23: Channel name attribute ---
+    #[tokio::test]
+    async fn rtl23_channel_name_attribute() {
+        use crate::protocol::ConnectionState;
+        use crate::realtime::await_state;
+
+        let (client, _mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        // RTL23: Channel name matches what was passed to get()
+        let ch1 = client.channels.get("my-channel");
+        assert_eq!(ch1.name(), "my-channel");
+
+        let ch2 = client.channels.get("namespace:channel-name");
+        assert_eq!(ch2.name(), "namespace:channel-name");
+    }
+
+    // --- RTL24: errorReason set on channel error ---
+    #[tokio::test]
+    async fn rtl24_error_reason_set_on_error() {
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_channel_state, await_state};
+
+        let channel_name = "test-rtl24";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        assert!(channel.error_reason().is_none());
+
+        phase8d_attach(&channel, &mock, None).await;
+
+        // Send ERROR
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Error,
+            channel: Some(channel_name.to_string()),
+            error: Some(ErrorInfo {
+                code: Some(40160),
+                status_code: Some(401),
+                message: Some("Unauthorized".to_string()),
+                href: None,
+            }),
+            ..ProtocolMessage::new(Action::Error)
+        });
+
+        assert!(await_channel_state(&channel, ChannelState::Failed, 5000).await);
+
+        // RTL24: errorReason set
+        let err = channel.error_reason().unwrap();
+        assert_eq!(err.code, Some(40160));
+        assert_eq!(err.status_code, Some(401));
+    }
+
+    // --- RTL24: errorReason cleared on successful attach ---
+    #[tokio::test]
+    async fn rtl24_error_reason_cleared_on_attach() {
+        use crate::protocol::{Action, ChannelState, ConnectionState, ErrorInfo, ProtocolMessage};
+        use crate::realtime::{await_channel_state, await_state};
+
+        let channel_name = "test-rtl24-clear";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+
+        // First: cause an error
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Error,
+            channel: Some(channel_name.to_string()),
+            error: Some(ErrorInfo {
+                code: Some(90002),
+                status_code: None,
+                message: Some("Temporary error".to_string()),
+                href: None,
+            }),
+            ..ProtocolMessage::new(Action::Error)
+        });
+
+        assert!(await_channel_state(&channel, ChannelState::Failed, 5000).await);
+        assert!(channel.error_reason().is_some());
+
+        // Re-attach (allowed from FAILED via RTL4g)
+        phase8d_attach(&channel, &mock, None).await;
+
+        // RTL24: errorReason cleared on successful attach
+        assert!(channel.error_reason().is_none());
+    }
+
+    // --- RTL25a: whenState fires immediately if already in state ---
+    #[tokio::test]
+    async fn rtl25a_when_state_fires_immediately() {
+        use crate::protocol::{ChannelState, ConnectionState};
+        use crate::realtime::await_state;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let channel_name = "test-rtl25a";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        phase8d_attach(&channel, &mock, None).await;
+
+        // RTL25a: Already in ATTACHED state — callback fires immediately with None
+        let fired = std::sync::Arc::new(AtomicBool::new(false));
+        let fired2 = fired.clone();
+        let got_null = std::sync::Arc::new(AtomicBool::new(false));
+        let got_null2 = got_null.clone();
+
+        channel.when_state(ChannelState::Attached, move |change| {
+            fired2.store(true, Ordering::SeqCst);
+            got_null2.store(change.is_none(), Ordering::SeqCst);
+        });
+
+        // Give the spawned task a moment
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert!(fired.load(Ordering::SeqCst), "Callback should have fired");
+        assert!(
+            got_null.load(Ordering::SeqCst),
+            "Should have received None (already in state)"
+        );
+    }
+
+    // --- RTL25b: whenState waits for state transition ---
+    #[tokio::test]
+    async fn rtl25b_when_state_waits_for_transition() {
+        use crate::protocol::{ChannelState, ConnectionState};
+        use crate::realtime::await_state;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let channel_name = "test-rtl25b";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        assert_eq!(channel.state(), ChannelState::Initialized);
+
+        // RTL25b: Register whenState for ATTACHED before attaching
+        let fired = std::sync::Arc::new(AtomicBool::new(false));
+        let fired2 = fired.clone();
+        let got_change = std::sync::Arc::new(AtomicBool::new(false));
+        let got_change2 = got_change.clone();
+
+        channel.when_state(ChannelState::Attached, move |change| {
+            fired2.store(true, Ordering::SeqCst);
+            got_change2.store(change.is_some(), Ordering::SeqCst);
+        });
+
+        // Not fired yet
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!fired.load(Ordering::SeqCst));
+
+        // Now attach
+        phase8d_attach(&channel, &mock, None).await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // RTL25b: Should have fired with ChannelStateChange
+        assert!(
+            fired.load(Ordering::SeqCst),
+            "Callback should fire on transition"
+        );
+        assert!(
+            got_change.load(Ordering::SeqCst),
+            "Should receive StateChange object"
+        );
+    }
+
+    // --- RTL25b: whenState fires only once ---
+    #[tokio::test]
+    async fn rtl25b_when_state_fires_only_once() {
+        use crate::protocol::{Action, ChannelState, ConnectionState, ProtocolMessage};
+        use crate::realtime::await_state;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let channel_name = "test-rtl25b-once";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+
+        let fire_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let fire_count2 = fire_count.clone();
+
+        channel.when_state(ChannelState::Attached, move |_| {
+            fire_count2.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // First attach
+        phase8d_attach(&channel, &mock, None).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(fire_count.load(Ordering::SeqCst), 1);
+
+        // Detach
+        let ch = channel.clone();
+        let detach_task = tokio::spawn(async move { ch.detach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Detached,
+            channel: Some(channel_name.to_string()),
+            ..ProtocolMessage::new(Action::Detached)
+        });
+        detach_task.await.unwrap().unwrap();
+
+        // Re-attach
+        phase8d_attach(&channel, &mock, None).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // RTL25b: Should NOT fire again
+        assert_eq!(fire_count.load(Ordering::SeqCst), 1);
+    }
+
+    // --- RTL25a: whenState for non-current state does not fire immediately ---
+    #[tokio::test]
+    async fn rtl25a_when_state_for_non_current_state_waits() {
+        use crate::protocol::{ChannelState, ConnectionState};
+        use crate::realtime::await_state;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let channel_name = "test-rtl25a-past";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        phase8d_attach(&channel, &mock, None).await;
+        assert_eq!(channel.state(), ChannelState::Attached);
+
+        // Register whenState for ATTACHING — not the current state
+        let fired = std::sync::Arc::new(AtomicBool::new(false));
+        let fired2 = fired.clone();
+
+        channel.when_state(ChannelState::Attaching, move |_| {
+            fired2.store(true, Ordering::SeqCst);
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // RTL25: Should NOT fire — ATTACHING is not the current state
+        assert!(!fired.load(Ordering::SeqCst));
+    }
+
+    // --- RTL3d: Multiple channels re-attached on CONNECTED ---
+    #[tokio::test]
+    async fn rtl3d_multiple_channels_reattached() {
+        use crate::protocol::{Action, ChannelState, ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_channel_state, await_state};
+
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let ch1 = client.channels.get("ch-multi-1");
+        let ch2 = client.channels.get("ch-multi-2");
+        phase8d_attach(&ch1, &mock, None).await;
+        phase8d_attach(&ch2, &mock, None).await;
+
+        // Disconnect
+        {
+            let conns = mock.active_connections();
+            conns.last().unwrap().simulate_disconnect();
+        }
+        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
+
+        // Wait for reconnect
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Send ATTACHED for both channels on reconnect
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some("ch-multi-1".to_string()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some("ch-multi-2".to_string()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+
+        // RTL3d: Both channels re-attached
+        assert!(await_channel_state(&ch1, ChannelState::Attached, 5000).await);
+        assert!(await_channel_state(&ch2, ChannelState::Attached, 5000).await);
+
+        // Verify at least 4 ATTACH messages (2 initial + 2 reattach)
+        let attach_msgs: Vec<_> = mock
+            .client_messages()
+            .into_iter()
+            .filter(|m| m.message.action == Action::Attach)
+            .collect();
+        assert!(
+            attach_msgs.len() >= 4,
+            "Expected at least 4 ATTACH messages, got {}",
+            attach_msgs.len()
+        );
+    }
+
+    // --- RTL3d: Reattach includes channelSerial (RTL4c1) ---
+    #[tokio::test]
+    async fn rtl3d_reattach_includes_channel_serial() {
+        use crate::protocol::{Action, ChannelState, ConnectionState, ProtocolMessage};
+        use crate::realtime::{await_channel_state, await_state};
+
+        let channel_name = "test-rtl3d-serial";
+        let (client, mock) = phase8d_setup();
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client.channels.get(channel_name);
+        phase8d_attach(&channel, &mock, Some("serial-from-server")).await;
+
+        // Disconnect and reconnect
+        {
+            let conns = mock.active_connections();
+            conns.last().unwrap().simulate_disconnect();
+        }
+        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Send ATTACHED for reattach
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: Action::Attached,
+            channel: Some(channel_name.to_string()),
+            channel_serial: Some("serial-v2".to_string()),
+            ..ProtocolMessage::new(Action::Attached)
+        });
+        assert!(await_channel_state(&channel, ChannelState::Attached, 5000).await);
+
+        // Check that the reattach ATTACH message included channelSerial
+        let attach_msgs: Vec<_> = mock
+            .client_messages()
+            .into_iter()
+            .filter(|m| {
+                m.message.action == Action::Attach
+                    && m.message.channel.as_deref() == Some(channel_name)
+            })
+            .collect();
+        assert!(attach_msgs.len() >= 2);
+        // First attach: no channelSerial
+        assert!(attach_msgs[0].message.channel_serial.is_none());
+        // RTL4c1: Reattach includes channelSerial from previous ATTACHED
+        assert_eq!(
+            attach_msgs[1].message.channel_serial.as_deref(),
+            Some("serial-from-server")
+        );
+    }
 }

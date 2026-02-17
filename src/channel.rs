@@ -129,6 +129,12 @@ struct ChannelInner {
     /// Channel serial from server (RTL15b, RTL4c1).
     channel_serial: Mutex<Option<String>>,
 
+    /// Attach serial from ATTACHED response (RTL15a).
+    attach_serial: Mutex<Option<String>>,
+
+    /// Handle for the suspended retry timer (RTL13b). Cancel on state change.
+    suspended_retry_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+
     /// Server-granted modes decoded from ATTACHED flags (RTL4m).
     modes: Mutex<Option<Vec<ChannelMode>>>,
 
@@ -169,6 +175,12 @@ struct ChannelInner {
 
     /// Back-reference to ChannelsInner for msgSerial/ACK coordination.
     channels_inner: Mutex<Option<Arc<ChannelsInner>>>,
+
+    /// Suspended retry timeout (for RTL13b reattach retry).
+    suspended_retry_timeout: Mutex<Duration>,
+
+    /// Whether ATTACH was already sent for current ATTACHING state (avoid duplicates).
+    attach_sent: Mutex<bool>,
 }
 
 /// A queued operation to perform after a pending attach/detach completes.
@@ -192,6 +204,8 @@ impl RealtimeChannel {
                 attach_waiters: Mutex::new(Vec::new()),
                 detach_waiters: Mutex::new(Vec::new()),
                 channel_serial: Mutex::new(None),
+                attach_serial: Mutex::new(None),
+                suspended_retry_handle: Mutex::new(None),
                 modes: Mutex::new(None),
                 has_been_attached: Mutex::new(false),
                 attach_timeout: Mutex::new(Duration::from_secs(10)),
@@ -204,6 +218,8 @@ impl RealtimeChannel {
                 queued_messages: Mutex::new(Vec::new()),
                 queue_messages: Mutex::new(true),
                 channels_inner: Mutex::new(None),
+                suspended_retry_timeout: Mutex::new(Duration::from_secs(30)),
+                attach_sent: Mutex::new(false),
             }),
         }
     }
@@ -238,9 +254,43 @@ impl RealtimeChannel {
         self.inner.channel_serial.lock().unwrap().clone()
     }
 
+    /// Get the attach serial (RTL15a). Set from channelSerial in ATTACHED response.
+    pub fn attach_serial(&self) -> Option<String> {
+        self.inner.attach_serial.lock().unwrap().clone()
+    }
+
     /// Subscribe to all channel state change events.
     pub fn on_state_change(&self) -> broadcast::Receiver<ChannelStateChange> {
         self.inner.state_tx.subscribe()
+    }
+
+    /// Register a callback that fires once when the channel reaches the target state.
+    /// If already in that state, fires immediately with None.
+    /// Otherwise waits for the next transition to that state. RTL25.
+    pub fn when_state<F>(&self, target: ChannelState, callback: F)
+    where
+        F: FnOnce(Option<ChannelStateChange>) + Send + 'static,
+    {
+        if self.state() == target {
+            // RTL25a: Already in state, invoke immediately with null
+            callback(None);
+        } else {
+            // RTL25b: Wait for state transition (once)
+            let mut rx = self.inner.state_tx.subscribe();
+            tokio::spawn(async move {
+                loop {
+                    match rx.recv().await {
+                        Ok(change) => {
+                            if change.current == target {
+                                callback(Some(change));
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
     }
 
     /// Set the client message sender (called by Realtime when connection is available).
@@ -279,6 +329,122 @@ impl RealtimeChannel {
     /// Set back-reference to ChannelsInner for publish coordination.
     pub(crate) fn set_channels_inner(&self, ci: Arc<ChannelsInner>) {
         *self.inner.channels_inner.lock().unwrap() = Some(ci);
+    }
+
+    /// Set the suspended retry timeout (from ClientOptions). RTL13b.
+    pub(crate) fn set_suspended_retry_timeout(&self, timeout: Duration) {
+        *self.inner.suspended_retry_timeout.lock().unwrap() = timeout;
+    }
+
+    /// Cancel any pending suspended retry timer. RTL13c, RTL14.
+    fn cancel_retry_timer(&self) {
+        let mut handle = self.inner.suspended_retry_handle.lock().unwrap();
+        if let Some(h) = handle.take() {
+            h.abort();
+        }
+    }
+
+    /// Handle a connection state change affecting this channel. RTL3.
+    pub(crate) fn handle_connection_state_change(
+        &self,
+        new_conn_state: ConnectionState,
+        reason: Option<ErrorInfo>,
+    ) {
+        let ch_state = self.state();
+        match new_conn_state {
+            ConnectionState::Failed => {
+                // RTL3a: ATTACHED/ATTACHING channels → FAILED
+                if ch_state == ChannelState::Attached || ch_state == ChannelState::Attaching {
+                    self.cancel_retry_timer();
+                    // RTL15b1: Clear channelSerial on FAILED
+                    *self.inner.channel_serial.lock().unwrap() = None;
+                    self.set_state(ChannelState::Failed, reason.clone(), false, false);
+                    // Fail attach waiters
+                    let waiters: Vec<_> = self
+                        .inner
+                        .attach_waiters
+                        .lock()
+                        .unwrap()
+                        .drain(..)
+                        .collect();
+                    let err = reason.unwrap_or(ErrorInfo {
+                        code: Some(80000),
+                        status_code: None,
+                        message: Some("Connection failed".to_string()),
+                        href: None,
+                    });
+                    for w in waiters {
+                        let _ = w.send(Err(err.clone()));
+                    }
+                }
+            }
+            ConnectionState::Closed => {
+                // RTL3b: ATTACHED/ATTACHING channels → DETACHED
+                if ch_state == ChannelState::Attached || ch_state == ChannelState::Attaching {
+                    self.cancel_retry_timer();
+                    // RTL15b1: Clear channelSerial on DETACHED
+                    *self.inner.channel_serial.lock().unwrap() = None;
+                    self.set_state(ChannelState::Detached, None, false, false);
+                    // Fail attach waiters
+                    let waiters: Vec<_> = self
+                        .inner
+                        .attach_waiters
+                        .lock()
+                        .unwrap()
+                        .drain(..)
+                        .collect();
+                    for w in waiters {
+                        let _ = w.send(Err(ErrorInfo {
+                            code: Some(80017),
+                            status_code: None,
+                            message: Some("Connection closed".to_string()),
+                            href: None,
+                        }));
+                    }
+                }
+            }
+            ConnectionState::Suspended => {
+                // RTL3c: ATTACHED/ATTACHING channels → SUSPENDED
+                if ch_state == ChannelState::Attached || ch_state == ChannelState::Attaching {
+                    self.cancel_retry_timer();
+                    // RTL15b1: Clear channelSerial on SUSPENDED
+                    *self.inner.channel_serial.lock().unwrap() = None;
+                    self.set_state(ChannelState::Suspended, reason.clone(), false, false);
+                    // Fail attach waiters
+                    let waiters: Vec<_> = self
+                        .inner
+                        .attach_waiters
+                        .lock()
+                        .unwrap()
+                        .drain(..)
+                        .collect();
+                    let err = reason.unwrap_or(ErrorInfo {
+                        code: Some(80003),
+                        status_code: None,
+                        message: Some("Connection suspended".to_string()),
+                        href: None,
+                    });
+                    for w in waiters {
+                        let _ = w.send(Err(err.clone()));
+                    }
+                }
+            }
+            ConnectionState::Connected => {
+                // RTL3d: Re-attach ATTACHED/SUSPENDED channels
+                if ch_state == ChannelState::Attached || ch_state == ChannelState::Suspended {
+                    self.set_state(ChannelState::Attaching, None, false, false);
+                    let msg = self.build_attach_message();
+                    if self.send_message(msg) {
+                        *self.inner.attach_sent.lock().unwrap() = true;
+                    }
+                }
+                // INITIALIZED/DETACHED channels are NOT re-attached (RTL3d)
+            }
+            ConnectionState::Disconnected => {
+                // RTL3e: DISCONNECTED has no effect on channel state
+            }
+            _ => {}
+        }
     }
 
     /// Build the ATTACH protocol message with params, modes, channelSerial, flags.
@@ -1005,6 +1171,11 @@ impl RealtimeChannel {
                     return;
                 }
 
+                // RTL15a: Store attachSerial from channelSerial in ATTACHED
+                if let Some(ref serial) = msg.channel_serial {
+                    *self.inner.attach_serial.lock().unwrap() = Some(serial.clone());
+                }
+
                 // RTL15b: Store channelSerial from server
                 if let Some(ref serial) = msg.channel_serial {
                     *self.inner.channel_serial.lock().unwrap() = Some(serial.clone());
@@ -1020,8 +1191,11 @@ impl RealtimeChannel {
                     *self.inner.modes.lock().unwrap() = Some(flags_to_modes(mode_flags));
                 }
 
+                // Cancel any pending retry timer (successful reattach)
+                self.cancel_retry_timer();
+
                 if current_state == ChannelState::Attached {
-                    // RTL2g/RTL12: Already attached — emit UPDATE if not resumed
+                    // RTL12: Already attached — emit UPDATE if not resumed
                     if !resumed {
                         let change = ChannelStateChange {
                             previous: ChannelState::Attached,
@@ -1033,7 +1207,7 @@ impl RealtimeChannel {
                         };
                         let _ = self.inner.state_tx.send(change);
                     }
-                    // If resumed, suppress the event per RTL12
+                    // RTL12: If resumed, suppress the event
                 } else {
                     // Clear error reason on successful attach
                     *self.inner.error_reason.lock().unwrap() = None;
@@ -1060,6 +1234,89 @@ impl RealtimeChannel {
                 self.execute_pending_op();
             }
             Action::Detached => {
+                let current_state = self.state();
+
+                // RTL13a: Server-initiated detach — NOT when we're DETACHING (user requested)
+                if current_state == ChannelState::Attached
+                    || current_state == ChannelState::Suspended
+                {
+                    // Server-initiated detach → immediate reattach (RTL13a)
+                    self.set_state(ChannelState::Attaching, msg.error.clone(), false, false);
+                    let attach_msg = self.build_attach_message();
+                    let sent = self.send_message(attach_msg);
+                    if sent {
+                        // Register an attach waiter to detect timeout → SUSPENDED (RTL13b)
+                        let inner = Arc::clone(&self.inner);
+                        let timeout = *self.inner.attach_timeout.lock().unwrap();
+                        let suspended_retry_timeout =
+                            *self.inner.suspended_retry_timeout.lock().unwrap();
+                        let handle = tokio::spawn(async move {
+                            let channel = RealtimeChannel {
+                                inner: Arc::clone(&inner),
+                            };
+                            // Wait for attach timeout
+                            tokio::time::sleep(timeout).await;
+                            // If still ATTACHING, transition to SUSPENDED and start retry loop
+                            if channel.state() == ChannelState::Attaching {
+                                let err = ErrorInfo {
+                                    code: Some(90007),
+                                    status_code: None,
+                                    message: Some("Reattach timed out".to_string()),
+                                    href: None,
+                                };
+                                // Drain attach waiters
+                                let waiters: Vec<_> = channel
+                                    .inner
+                                    .attach_waiters
+                                    .lock()
+                                    .unwrap()
+                                    .drain(..)
+                                    .collect();
+                                for w in waiters {
+                                    let _ = w.send(Err(err.clone()));
+                                }
+                                channel.set_state(ChannelState::Suspended, Some(err), false, false);
+                                // RTL15b1: Clear channelSerial on SUSPENDED
+                                *channel.inner.channel_serial.lock().unwrap() = None;
+                                // RTL13b: Start retry loop
+                                channel.start_suspended_retry(suspended_retry_timeout);
+                            }
+                        });
+                        *self.inner.suspended_retry_handle.lock().unwrap() = Some(handle);
+                    }
+                    return;
+                }
+
+                if current_state == ChannelState::Attaching {
+                    // RTL13b: Server DETACHED while ATTACHING → go directly to SUSPENDED
+                    let err = msg.error.clone().unwrap_or(ErrorInfo {
+                        code: Some(90007),
+                        status_code: None,
+                        message: Some("Server detached during reattach".to_string()),
+                        href: None,
+                    });
+                    // Drain attach waiters
+                    let waiters: Vec<_> = self
+                        .inner
+                        .attach_waiters
+                        .lock()
+                        .unwrap()
+                        .drain(..)
+                        .collect();
+                    for w in waiters {
+                        let _ = w.send(Err(err.clone()));
+                    }
+                    self.set_state(ChannelState::Suspended, Some(err), false, false);
+                    // RTL15b1: Clear channelSerial on SUSPENDED
+                    *self.inner.channel_serial.lock().unwrap() = None;
+                    // Start retry timer
+                    let suspended_retry_timeout =
+                        *self.inner.suspended_retry_timeout.lock().unwrap();
+                    self.start_suspended_retry(suspended_retry_timeout);
+                    return;
+                }
+
+                // Normal detach flow (DETACHING state or other)
                 // RTL15b1: Clear channelSerial on DETACHED
                 *self.inner.channel_serial.lock().unwrap() = None;
 
@@ -1084,8 +1341,15 @@ impl RealtimeChannel {
                 self.execute_pending_op();
             }
             Action::Error => {
-                // Channel-level error → Failed
+                // RTL14: Channel-level error → Failed
                 let reason = msg.error.clone();
+
+                // RTL14: Cancel any pending retry timers
+                self.cancel_retry_timer();
+
+                // RTL15b1: Clear channelSerial on FAILED
+                *self.inner.channel_serial.lock().unwrap() = None;
+
                 self.set_state(ChannelState::Failed, reason.clone(), false, false);
 
                 // Fail attach waiters
@@ -1118,14 +1382,83 @@ impl RealtimeChannel {
                     let _ = waiter.send(Err(err.clone()));
                 }
             }
-            Action::Message => {
-                // Deliver messages to subscribers (RTL7, RTL17, TM2)
-                self.deliver_messages(msg);
+            Action::Message | Action::Presence => {
+                // RTL15b: Update channelSerial from MESSAGE/PRESENCE if present
+                if let Some(ref serial) = msg.channel_serial {
+                    *self.inner.channel_serial.lock().unwrap() = Some(serial.clone());
+                }
+
+                if msg.action == Action::Message {
+                    // Deliver messages to subscribers (RTL7, RTL17, TM2)
+                    self.deliver_messages(msg);
+                }
             }
             _ => {
-                // Other channel messages (PRESENCE, SYNC, etc.)
+                // Other channel messages (SYNC, etc.)
             }
         }
+    }
+
+    /// Start the suspended retry loop for RTL13b.
+    /// Periodically attempts reattach from SUSPENDED state.
+    fn start_suspended_retry(&self, retry_timeout: Duration) {
+        let inner = Arc::clone(&self.inner);
+        let handle = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(retry_timeout).await;
+                let channel = RealtimeChannel {
+                    inner: Arc::clone(&inner),
+                };
+                let state = channel.state();
+                if state != ChannelState::Suspended {
+                    break;
+                }
+                // RTL13c: Check connection is still CONNECTED
+                let conn_state = *channel.inner.connection_state.lock().unwrap();
+                if conn_state != ConnectionState::Connected {
+                    break;
+                }
+                // Attempt reattach
+                channel.set_state(ChannelState::Attaching, None, false, false);
+                let msg = channel.build_attach_message();
+                let sent = channel.send_message(msg);
+                if !sent {
+                    channel.set_state(ChannelState::Suspended, None, false, false);
+                    continue;
+                }
+                // Wait for ATTACHED or timeout
+                let timeout = *channel.inner.attach_timeout.lock().unwrap();
+                tokio::time::sleep(timeout).await;
+                // If still ATTACHING after timeout, go back to SUSPENDED
+                if channel.state() == ChannelState::Attaching {
+                    let err = ErrorInfo {
+                        code: Some(90007),
+                        status_code: None,
+                        message: Some("Reattach timed out".to_string()),
+                        href: None,
+                    };
+                    // Drain attach waiters
+                    let waiters: Vec<_> = channel
+                        .inner
+                        .attach_waiters
+                        .lock()
+                        .unwrap()
+                        .drain(..)
+                        .collect();
+                    for w in waiters {
+                        let _ = w.send(Err(err.clone()));
+                    }
+                    channel.set_state(ChannelState::Suspended, Some(err), false, false);
+                    // RTL15b1: Clear channelSerial on SUSPENDED
+                    *channel.inner.channel_serial.lock().unwrap() = None;
+                    // Continue retry loop
+                } else {
+                    // Attached or some other state — stop retrying
+                    break;
+                }
+            }
+        });
+        *self.inner.suspended_retry_handle.lock().unwrap() = Some(handle);
     }
 
     /// Execute any pending operation queued via RTL4h/RTL5i.
@@ -1211,6 +1544,8 @@ pub(crate) struct ChannelsInner {
     /// Pending ACK waiters keyed by msgSerial. RTL6j.
     pending_acks:
         Mutex<HashMap<i64, tokio::sync::oneshot::Sender<Result<PublishResult, ErrorInfo>>>>,
+    /// Suspended retry timeout (from ClientOptions). RTL13b.
+    suspended_retry_timeout: Mutex<Duration>,
 }
 
 impl Channels {
@@ -1226,6 +1561,7 @@ impl Channels {
                 queue_messages: Mutex::new(true),
                 next_msg_serial: Mutex::new(0),
                 pending_acks: Mutex::new(HashMap::new()),
+                suspended_retry_timeout: Mutex::new(Duration::from_secs(30)),
             }),
         }
     }
@@ -1340,12 +1676,40 @@ impl Channels {
         }
     }
 
+    /// Handle a connection state change — propagate RTL3 effects to all channels.
+    pub(crate) fn handle_connection_state_change(
+        &self,
+        new_state: ConnectionState,
+        reason: Option<ErrorInfo>,
+    ) {
+        let channels = self.inner.channels.lock().unwrap();
+        for channel in channels.values() {
+            channel.handle_connection_state_change(new_state, reason.clone());
+        }
+    }
+
+    /// Set the suspended retry timeout on all channels. RTL13b.
+    pub(crate) fn set_suspended_retry_timeout(&self, timeout: Duration) {
+        *self.inner.suspended_retry_timeout.lock().unwrap() = timeout;
+        let channels = self.inner.channels.lock().unwrap();
+        for channel in channels.values() {
+            channel.set_suspended_retry_timeout(timeout);
+        }
+    }
+
     /// Send queued ATTACH messages for channels in ATTACHING state.
     /// Called when connection becomes CONNECTED (RTL4i).
+    /// Skips channels where ATTACH was already sent (e.g., by RTL3d).
     pub(crate) fn send_pending_attaches(&self) {
         let channels = self.inner.channels.lock().unwrap();
         for channel in channels.values() {
             if channel.state() == ChannelState::Attaching {
+                let mut sent = channel.inner.attach_sent.lock().unwrap();
+                if *sent {
+                    // Already sent by RTL3d, reset flag
+                    *sent = false;
+                    continue;
+                }
                 let msg = channel.build_attach_message();
                 channel.send_message(msg);
             }
@@ -1366,6 +1730,8 @@ impl Channels {
         ch.set_self_connection_id(conn_id);
         let queue = *self.inner.queue_messages.lock().unwrap();
         ch.set_queue_messages(queue);
+        let suspended_retry = *self.inner.suspended_retry_timeout.lock().unwrap();
+        ch.set_suspended_retry_timeout(suspended_retry);
         ch.set_channels_inner(Arc::clone(&self.inner));
     }
 
