@@ -638,23 +638,221 @@ re-authentication.
 
 ## Phase 10: Realtime Presence
 
+### Goal
+Full presence lifecycle over Realtime WebSocket connections: PresenceMap and
+LocalPresenceMap data structures, sync protocol, subscribe/unsubscribe,
+enter/update/leave, get with sync waiting, auto re-entry on reattach, and
+history delegation to REST.
+
 ### Steps
-<!-- To be filled in during implementation -->
+
+1. **Implement PresenceMap** (RTP2) — the internal map tracking all presence
+   members on a channel, keyed by `memberKey` (connectionId:clientId):
+   - `put(msg, newness)` → stores member as PRESENT action, returns emitted
+     message with original action. Newness check: msgSerial > index > timestamp
+     (RTP2b). During sync, LEAVE stored as ABSENT (RTP2h2a).
+   - `remove(msg, newness)` → LEAVE removes if newer. During sync, stores as
+     ABSENT instead.
+   - `get(key)`, `values()` (excludes ABSENT), `clear()`
+   - `start_sync()` → mark all current members as residuals (RTP18a)
+   - `end_sync()` → remove stale residuals, return synthesized LEAVEs with
+     id=None (RTP19), clear sync_in_progress (RTP18b)
+   - Newness comparison: synthesized leaves use timestamp (RTP2b1); normal
+     messages use msgSerial/index (RTP2b2). Equal timestamps → incoming wins.
+
+2. **Implement LocalPresenceMap** (RTP17) — tracks this client's own presence
+   entries, keyed by clientId only:
+   - `put(msg)` → stores ENTER/UPDATE/PRESENT. Overwrites existing (RTP17h).
+   - `remove(client_id)` → only for non-synthesized LEAVE (RTP17b). Synthesized
+     LEAVE (connectionId not prefix of id) is ignored.
+   - Populated from server echoes (PRESENCE messages with our connectionId),
+     NOT from enter() calls directly.
+
+3. **Implement sync cursor parsing** (RTP18c) — parse `channelSerial` as
+   `serial:cursor`. Empty cursor after `:` or no `:` means single-message
+   sync (complete immediately).
+
+4. **Implement RealtimePresence** struct wrapping `Arc<PresenceInner>`:
+   - Subscribe: `subscribe()`, `subscribe_action(action)`, `subscribe_actions(actions)`
+     — RTP6a/b. Triggers implicit attach (RTP6d) unless `attachOnSubscribe=false` (RTP6e).
+   - Unsubscribe: `unsubscribe(id)` (RTP7a), `unsubscribe_action(id, action)` (RTP7b),
+     `unsubscribe_all()` (RTP7c)
+   - Enter/update/leave: `enter(data)` (RTP8), `update(data)` (RTP9),
+     `leave(data)` (RTP10)
+   - Client methods: `enter_client(clientId, data)` (RTP14),
+     `update_client(clientId, data)` (RTP15), `leave_client(clientId, data)` (RTP16)
+   - Get: `get()`, `get_with_options(opts)` (RTP11) — waits for sync, supports
+     `wait_for_sync: false`, triggers implicit attach (RTP11b)
+   - History: delegates to REST presence history (RTP12)
+
+5. **Integrate presence into channel** — add presence field to ChannelInner:
+   - Route PRESENCE messages to `handle_presence_message()`
+   - Route SYNC messages to `handle_sync_message()`
+   - On ATTACHED: call `handle_attached(flags, resumed)` — HAS_PRESENCE
+     triggers start_sync; no HAS_PRESENCE clears map with synthesized LEAVEs;
+     non-RESUMED triggers re-entry (RTP17i)
+   - On DETACHED/FAILED: call `handle_detached_or_failed()` — clear both maps,
+     fail queued presence, reset sync state (RTP5a)
+   - On ATTACHED: flush queued presence (RTP5b)
+
+6. **Implement ACK/NACK for presence** — reuse the same ACK/NACK mechanism
+   as MESSAGE. Presence ProtocolMessages go through `prepare_publish()` which
+   assigns msgSerial and registers a waiter. The server ACKs them identically.
+
+7. **Implement auto re-entry** (RTP17i) — on non-RESUMED ATTACHED, iterate
+   `local_presence_map.values()` and send ENTER for each member with stored
+   clientId and data. On NACK, emit channel UPDATE event with error code
+   91004 (RTP17e). If connectionId changed, omit `id` from the re-entry
+   message (RTP17g1). Re-entry sends sequentially (each waits for ACK).
+
+8. **Implement implicit attach** (RTP8d, RTP15e, RTP6d, RTP11b) — presence
+   operations (enter, enterClient, subscribe, get) trigger channel attach if
+   channel is in INITIALIZED or DETACHED state. Use a weak back-reference
+   to ChannelInner to avoid circular Arc references.
+
+9. **Write tests** — ~105 tests covering PresenceMap newness (RTP2), sync
+   protocol (RTP18/RTP19), channel state effects (RTP1/RTP5/RTL11),
+   enter/update/leave (RTP8-10/RTP14-16), subscribe (RTP6/RTP7), get with
+   sync waiting (RTP11), history (RTP12), re-entry (RTP17), implicit attach
+   (RTP8d/RTP15e/RTP6d/RTP11b), bulk enterClient (RTP4).
 
 ### References
 - Spec: `RTP1–RTP19`
-- UTS: `realtime/unit/presence/`
+- UTS: `realtime/unit/presence/` (8 files)
+
+### Findings
+
+- **LocalPresenceMap is populated from server echoes, not enter() calls.**
+  When the client calls `enter()`, the server echoes back a PRESENCE message
+  with the connection's connectionId. The LocalPresenceMap should be populated
+  from these echoes (checking that the connectionId matches), not directly
+  from the `enter()` call. This ensures the map reflects server-confirmed
+  state.
+
+- **Re-entry sends sequentially, not concurrently.** The `send_presence_immediately()`
+  call awaits ACK for each member before proceeding to the next. Tests must
+  ACK each re-entry message in turn, otherwise only the first member gets
+  re-entered. A test that collects all messages after a fixed sleep will only
+  see one.
+
+- **RTP15f (clientId mismatch check) may not be implementable.** The spec says
+  to reject `enterClient` when the connection's clientId doesn't match the
+  argument. However, `enterClient` is specifically designed for privileged
+  connections (wildcard `"*"` clientId) to act on behalf of others. If the
+  SDK rejects wildcard `"*"` at the ClientOptions level (as the Ably protocol
+  reserves it), there's no way to distinguish "privileged" from "unprivileged"
+  connections client-side. The UTS spec acknowledges this: "adapt these tests
+  to use a concrete clientId and skip the client-side enterClient clientId
+  mismatch check (RTP15f)." Server-side validation handles this instead.
+
+- **Implicit attach needs a weak back-reference.** PresenceInner needs to
+  trigger `channel.attach()`, but ChannelInner owns PresenceInner. Using
+  `Arc<ChannelInner>` creates a reference cycle. Solution: store a
+  `Weak<ChannelInner>` in PresenceInner, set after Arc construction.
+
+- **`attachOnSubscribe` option.** The `subscribe()` method should check the
+  channel's `attachOnSubscribe` option (default true). When false, subscribe
+  does NOT trigger implicit attach (RTP6e). This requires PresenceInner to
+  access channel options, which also goes through the weak back-reference.
+
+- **Sync cursor format.** The `channelSerial` field in SYNC messages uses the
+  format `serial:cursor`. If the cursor part (after `:`) is empty or the
+  field has no `:`, the sync is complete (single message). This is easy to
+  get wrong — splitting on `:` must handle the "empty after colon" case.
+
+- **SUSPENDED state preserves presence map.** Unlike DETACHED and FAILED which
+  clear both maps (RTP5a), SUSPENDED does NOT clear the presence map (RTP5f).
+  The map is preserved so that presence data is still available when the
+  channel reattaches.
+
+- **Data::is_none() may be private.** If the SDK's Data type has a private
+  `is_none()` method, use `matches!(member.data, Data::None)` instead when
+  checking for empty data in re-entry message construction.
 
 ---
 
 ## Phase 11: Delta/VCDiff
 
+### Goal
+Add delta compression support for Realtime messages. When enabled, the server
+sends binary diffs (VCDiff, RFC 3284) between consecutive messages instead of
+full payloads. The SDK must decode these deltas and handle errors by triggering
+channel reattachment.
+
 ### Steps
-<!-- To be filled in during implementation -->
+
+1. **Add VCDiff decoder dependency** as optional, behind a feature flag (e.g.
+   `vcdiff-deltas`). This keeps the dependency out of builds that don't need it.
+
+2. **Define a `DeltaDecoder` trait/interface** with a single method:
+   `decode(base: bytes, delta: bytes) -> Result<bytes, Error>`. This abstraction
+   enables mock decoders for testing without requiring the real VCDiff library.
+
+3. **Implement mock encoder/decoder for tests** following `mock_vcdiff.md`.
+   A simple deterministic algorithm works well (e.g. URL-encoding base and value
+   separated by `/`). Also implement a `FailingDecoder` that always returns an
+   error for testing RTL18 recovery paths.
+
+4. **Add per-channel delta state** — three fields:
+   - `delta_base: Option<Vec<u8>>` — last payload as raw bytes (RTL19)
+   - `delta_last_msg_id: Option<String>` — last message ID (RTL20)
+   - `delta_decoder: Option<Box<dyn DeltaDecoder>>` — decoder instance (PC3)
+
+5. **Clear delta state on state transitions** — clear `delta_base` and
+   `delta_last_msg_id` on DETACHED, FAILED, and non-resumed ATTACHED. Do NOT
+   clear on SUSPENDED (delta state should persist like presence map).
+
+6. **Implement delta processing in message delivery** — as a preprocessing step
+   before subscriber delivery, inside the message loop:
+   - Check if message has `encoding` containing `"vcdiff"` → delta message
+   - If delta: check decoder exists (PC3: no decoder → FAILED 40019), get
+     base payload, decode, store result as new base (RTL19c), replace data
+   - If non-delta: store data as base for future deltas (RTL19b)
+   - Update `delta_last_msg_id` after each message (RTL20)
+   - Messages in an array must be processed in index order (RTL21)
+
+7. **Implement delta recovery** (RTL18) — on decode failure:
+   - Discard the message (RTL18b)
+   - Clear delta state (RTL18c)
+   - Transition to ATTACHING with error code 40018
+   - Send ATTACH with channelSerial for resume (RTL18c)
+
+8. **Wire decoder injection** — when the VCDiff feature is enabled, automatically
+   set `RealDecoder` on channels during configuration. When disabled, leave
+   `delta_decoder` as None (PC3 triggers on delta message arrival).
+
+### Findings
+
+1. **Delta messages identified by encoding, not extras** — UTS tests identify
+   delta messages purely by `encoding: "vcdiff"`, not by checking
+   `extras.delta.from`. This is simpler and sufficient.
+
+2. **No-decoder behavior** — UTS test 5 says "emit an error event" with code
+   40019 but doesn't specify a state transition. The Ably spec PC3 says the
+   channel should transition to FAILED. Follow the spec.
+
+3. **Non-delta messages also update base** — every non-delta message must store
+   its data as the base payload (RTL19b), not just messages on delta-enabled
+   channels. This ensures the base is always available when the server starts
+   sending deltas.
+
+4. **JSON data stored as wire-form** — when a non-delta message has JSON object
+   data (not a string), store the JSON serialization as bytes for the base.
+
+5. **Base payload is raw bytes** — string data is stored as UTF-8 bytes,
+   binary data as raw bytes. Delta decoding operates on bytes, not strings.
+
+6. **SUSPENDED preserves delta state** — unlike DETACHED/FAILED, SUSPENDED
+   should keep delta state intact so that if the channel resumes, deltas can
+   continue from where they left off.
+
+7. **Recovery sends ATTACH with channelSerial** — reuse the existing
+   `build_attach_message()` which includes the stored `channelSerial` for
+   the server to resume from the correct position.
 
 ### References
-- Spec: `PC3`, `VD1–VD2`, `RTL18–RTL21`
-- UTS: `realtime/unit/channels/channel_delta_decoding.md`
+- Spec: `PC3`, `PC3a`, `VD1–VD2`, `RTL18a–c`, `RTL19a–c`, `RTL20`, `RTL21`
+- UTS: `realtime/unit/channels/channel_delta_decoding.md`, `realtime/unit/helpers/mock_vcdiff.md`
 
 ---
 
@@ -694,4 +892,10 @@ re-authentication.
 
 | Phase | UTS File | Issue | Resolution |
 |-------|----------|-------|------------|
-| — | — | (populated during development) | — |
+| 10 | `realtime_presence_enter.md` | RTP15f clientId mismatch check assumes wildcard `"*"` clientId is accepted at ClientOptions level | Skip client-side check; server validates. UTS spec acknowledges this adaptation. |
+| 10 | `realtime_presence_reentry.md` | RTP17g test was missing server PRESENCE echo to populate LocalPresenceMap | Added echo steps to UTS test |
+| 10 | `realtime_presence_reentry.md` | RTP17g used wildcard clientId `"*"` which some SDKs reject | Changed to concrete clientId `"admin"` in UTS |
+| 10 | `realtime_presence_channel_state.md` | RTL11 DETACHED test sent DETACHED while ATTACHING, triggering SUSPENDED (RTL13b) instead | Changed to explicit attach+detach approach in UTS |
+| 10 | `presence_sync.md` | RTP2h2a assertion was ambiguous about what "stored as ABSENT" means | Clarified assertion wording in UTS |
+| 11 | `channel_delta_decoding.md` | No explicit test for "no decoder registered → channel FAILED with 40019" (PC3). UTS mentions the concept in notes but not as a test case | Added `pc3_no_decoder_causes_failed` test based on spec PC3 |
+| 11 | `channel_delta_decoding.md` | Test 6 (compound encoding `"vcdiff/utf-8"`) requires full encoding pipeline to strip vcdiff layer and process remaining layers | Deferred — current implementation checks `contains("vcdiff")` but doesn't strip or process remaining encoding layers |

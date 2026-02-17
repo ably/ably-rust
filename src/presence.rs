@@ -1,10 +1,10 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use futures::stream::Stream;
 use serde_json;
 
-use crate::channel::ChannelsInner;
+use crate::channel::{ChannelInner, ChannelsInner};
 use crate::protocol::{
     self, flags, Action, ChannelState, ChannelStateChange, ConnectionState, ErrorInfo,
     ProtocolMessage,
@@ -440,6 +440,9 @@ pub(crate) struct PresenceInner {
 
     /// REST client for history delegation. RTP12.
     pub(crate) rest_client: Mutex<Option<Rest>>,
+
+    /// Weak reference to the owning ChannelInner for implicit attach. RTP8d/RTP15e/RTP6d/RTP11b.
+    pub(crate) channel_inner: Mutex<Option<Weak<ChannelInner>>>,
 }
 
 impl PresenceInner {
@@ -461,6 +464,7 @@ impl PresenceInner {
             connection_state: Mutex::new(ConnectionState::Initialized),
             channel_state_tx: Mutex::new(None),
             rest_client: Mutex::new(None),
+            channel_inner: Mutex::new(None),
         }
     }
 
@@ -508,6 +512,11 @@ impl PresenceInner {
     /// Set the REST client for history delegation. RTP12.
     pub(crate) fn set_rest_client(&self, rest: Rest) {
         *self.rest_client.lock().unwrap() = Some(rest);
+    }
+
+    /// Set weak reference to owning ChannelInner for implicit attach.
+    pub(crate) fn set_channel_inner(&self, inner: Weak<ChannelInner>) {
+        *self.channel_inner.lock().unwrap() = Some(inner);
     }
 
     /// Emit a presence message to matching subscribers.
@@ -561,6 +570,36 @@ impl RealtimePresence {
         *self.inner.sync_complete.lock().unwrap()
     }
 
+    /// Trigger implicit attach if the channel is INITIALIZED or DETACHED. RTP8d/RTP6d/RTP11b.
+    /// Spawns the attach as a background task so it doesn't block the caller.
+    fn trigger_implicit_attach(&self) {
+        let ch_state = *self.inner.channel_state.lock().unwrap();
+        if ch_state == ChannelState::Initialized || ch_state == ChannelState::Detached {
+            let weak = self.inner.channel_inner.lock().unwrap().clone();
+            if let Some(weak) = weak {
+                if let Some(inner) = weak.upgrade() {
+                    let channel = crate::channel::RealtimeChannel {
+                        inner: Arc::clone(&inner),
+                    };
+                    tokio::spawn(async move {
+                        let _ = channel.attach().await;
+                    });
+                }
+            }
+        }
+    }
+
+    /// Get the attachOnSubscribe option from the owning channel. RTP6e.
+    fn attach_on_subscribe(&self) -> bool {
+        let weak = self.inner.channel_inner.lock().unwrap().clone();
+        if let Some(weak) = weak {
+            if let Some(inner) = weak.upgrade() {
+                return inner.options.lock().unwrap().attach_on_subscribe;
+            }
+        }
+        true // default
+    }
+
     // -- Get (RTP11) --
 
     /// Get current presence members. Waits for sync to complete. RTP11.
@@ -574,6 +613,11 @@ impl RealtimePresence {
         options: PresenceGetOptions,
     ) -> std::result::Result<Vec<PresenceMessage>, ErrorInfo> {
         let ch_state = *self.inner.channel_state.lock().unwrap();
+
+        // RTP11b: Implicit attach if INITIALIZED
+        if ch_state == ChannelState::Initialized {
+            self.trigger_implicit_attach();
+        }
 
         // RTP11d: Error on SUSPENDED when waitForSync is true
         if ch_state == ChannelState::Suspended && options.wait_for_sync {
@@ -720,6 +764,12 @@ impl RealtimePresence {
                 action_filter,
                 tx,
             });
+
+        // RTP6d: Implicit attach if attachOnSubscribe is true
+        if self.attach_on_subscribe() {
+            self.trigger_implicit_attach();
+        }
+
         (id, rx)
     }
 
@@ -730,6 +780,37 @@ impl RealtimePresence {
             .lock()
             .unwrap()
             .retain(|s| s.id != id);
+    }
+
+    /// Unsubscribe a listener for a specific action only. RTP7b.
+    /// If the subscription was for multiple actions, it continues receiving the others.
+    /// If this was the last action, the subscription is removed entirely.
+    pub fn unsubscribe_action(&self, id: PresenceSubscriptionId, action: PresenceAction) {
+        let mut subs = self.inner.subscriptions.lock().unwrap();
+        subs.retain_mut(|s| {
+            if s.id != id {
+                return true;
+            }
+            if let Some(ref mut filter) = s.action_filter {
+                filter.retain(|a| *a != action);
+                !filter.is_empty() // remove subscription if no actions remain
+            } else {
+                // Was subscribed to all actions — now subscribe to all except this one
+                s.action_filter = Some(
+                    [
+                        PresenceAction::Enter,
+                        PresenceAction::Leave,
+                        PresenceAction::Update,
+                        PresenceAction::Present,
+                        PresenceAction::Absent,
+                    ]
+                    .into_iter()
+                    .filter(|a| *a != action)
+                    .collect(),
+                );
+                true
+            }
+        });
     }
 
     /// Unsubscribe all listeners. RTP7c.
@@ -807,6 +888,9 @@ impl RealtimePresence {
                 href: None,
             });
         }
+        // RTP15f: Client-side clientId mismatch check is skipped because this SDK
+        // rejects wildcard clientId "*" at the ClientOptions level. Server-side
+        // validation handles permission checks for enterClient.
         self.send_presence(PresenceAction::Enter, Some(client_id), data)
             .await
     }
@@ -880,10 +964,9 @@ impl RealtimePresence {
             ..ProtocolMessage::new(Action::Presence)
         };
 
-        // RTP8d/RTP15e: Implicit attach if INITIALIZED
+        // RTP8d/RTP15e: Implicit attach if INITIALIZED — trigger attach and queue message
         if ch_state == ChannelState::Initialized {
-            // TODO: trigger implicit attach and queue message
-            // For now, queue the message — it will be sent after ATTACHED
+            self.trigger_implicit_attach();
             let (tx, rx) = tokio::sync::oneshot::channel::<
                 std::result::Result<protocol::PublishResult, ErrorInfo>,
             >();

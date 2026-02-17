@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use tokio::sync::broadcast;
 
+use crate::delta::DeltaDecoder;
 use crate::presence::{PresenceInner, RealtimePresence};
 use crate::protocol::{
     flags, Action, ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionState,
@@ -116,7 +117,7 @@ pub(crate) struct ChannelInner {
     error_reason: Mutex<Option<ErrorInfo>>,
 
     /// Channel options.
-    options: Mutex<RealtimeChannelOptions>,
+    pub(crate) options: Mutex<RealtimeChannelOptions>,
 
     /// Broadcast channel for state change events.
     state_tx: broadcast::Sender<ChannelStateChange>,
@@ -185,6 +186,15 @@ pub(crate) struct ChannelInner {
 
     /// Whether ATTACH was already sent for current ATTACHING state (avoid duplicates).
     attach_sent: Mutex<bool>,
+
+    /// Last successfully processed message ID for delta validation (RTL20).
+    pub(crate) delta_last_msg_id: Mutex<Option<String>>,
+
+    /// Base payload for delta decoding (RTL19). Stored as raw bytes.
+    pub(crate) delta_base: Mutex<Option<Vec<u8>>>,
+
+    /// VCDiff decoder instance. Set via set_delta_decoder(). PC3.
+    delta_decoder: Mutex<Option<Box<dyn DeltaDecoder>>>,
 }
 
 /// A queued operation to perform after a pending attach/detach completes.
@@ -199,36 +209,40 @@ impl RealtimeChannel {
         let (state_tx, _) = broadcast::channel(64);
         let presence = Arc::new(PresenceInner::new(name.clone()));
         presence.set_channel_state_tx(state_tx.clone());
-        Self {
-            inner: Arc::new(ChannelInner {
-                name,
-                presence,
-                state: Mutex::new(ChannelState::Initialized),
-                error_reason: Mutex::new(None),
-                options: Mutex::new(options),
-                state_tx,
-                client_msg_tx: Mutex::new(None),
-                attach_waiters: Mutex::new(Vec::new()),
-                detach_waiters: Mutex::new(Vec::new()),
-                channel_serial: Mutex::new(None),
-                attach_serial: Mutex::new(None),
-                suspended_retry_handle: Mutex::new(None),
-                modes: Mutex::new(None),
-                has_been_attached: Mutex::new(false),
-                attach_timeout: Mutex::new(Duration::from_secs(10)),
-                pending_op: Mutex::new(None),
-                connection_state: Mutex::new(ConnectionState::Initialized),
-                subscriptions: Mutex::new(Vec::new()),
-                next_sub_id: Mutex::new(0),
-                echo_messages: Mutex::new(true),
-                self_connection_id: Mutex::new(None),
-                queued_messages: Mutex::new(Vec::new()),
-                queue_messages: Mutex::new(true),
-                channels_inner: Mutex::new(None),
-                suspended_retry_timeout: Mutex::new(Duration::from_secs(30)),
-                attach_sent: Mutex::new(false),
-            }),
-        }
+        let inner = Arc::new(ChannelInner {
+            name,
+            presence,
+            state: Mutex::new(ChannelState::Initialized),
+            error_reason: Mutex::new(None),
+            options: Mutex::new(options),
+            state_tx,
+            client_msg_tx: Mutex::new(None),
+            attach_waiters: Mutex::new(Vec::new()),
+            detach_waiters: Mutex::new(Vec::new()),
+            channel_serial: Mutex::new(None),
+            attach_serial: Mutex::new(None),
+            suspended_retry_handle: Mutex::new(None),
+            modes: Mutex::new(None),
+            has_been_attached: Mutex::new(false),
+            attach_timeout: Mutex::new(Duration::from_secs(10)),
+            pending_op: Mutex::new(None),
+            connection_state: Mutex::new(ConnectionState::Initialized),
+            subscriptions: Mutex::new(Vec::new()),
+            next_sub_id: Mutex::new(0),
+            echo_messages: Mutex::new(true),
+            self_connection_id: Mutex::new(None),
+            queued_messages: Mutex::new(Vec::new()),
+            queue_messages: Mutex::new(true),
+            channels_inner: Mutex::new(None),
+            suspended_retry_timeout: Mutex::new(Duration::from_secs(30)),
+            attach_sent: Mutex::new(false),
+            delta_last_msg_id: Mutex::new(None),
+            delta_base: Mutex::new(None),
+            delta_decoder: Mutex::new(None),
+        });
+        // Set weak back-reference for implicit attach in presence. RTP8d/RTP6d/RTP11b.
+        inner.presence.set_channel_inner(Arc::downgrade(&inner));
+        Self { inner }
     }
 
     /// Get the channel name.
@@ -350,6 +364,39 @@ impl RealtimeChannel {
         *self.inner.suspended_retry_timeout.lock().unwrap() = timeout;
     }
 
+    /// Set the VCDiff delta decoder for this channel. PC3.
+    pub(crate) fn set_delta_decoder(&self, decoder: Box<dyn DeltaDecoder>) {
+        *self.inner.delta_decoder.lock().unwrap() = Some(decoder);
+    }
+
+    /// Clear delta decoding state (base payload and last message ID).
+    /// Called on state transitions that invalidate delta continuity.
+    fn clear_delta_state(&self) {
+        *self.inner.delta_last_msg_id.lock().unwrap() = None;
+        *self.inner.delta_base.lock().unwrap() = None;
+    }
+
+    /// RTL18: Trigger delta recovery by reattaching with channelSerial.
+    /// Clears delta state and sends ATTACH to resume from last known position.
+    fn trigger_delta_recovery(&self) {
+        // RTL18b: Discard the message (caller returns early after calling this)
+        // RTL18c: Clear delta state and reattach
+        self.clear_delta_state();
+        self.set_state(
+            ChannelState::Attaching,
+            Some(ErrorInfo {
+                code: Some(40018),
+                status_code: None,
+                message: Some("Delta decode failed, reattaching".to_string()),
+                href: None,
+            }),
+            false,
+            false,
+        );
+        let attach_msg = self.build_attach_message();
+        self.send_message(attach_msg);
+    }
+
     /// Cancel any pending suspended retry timer. RTL13c, RTL14.
     fn cancel_retry_timer(&self) {
         let mut handle = self.inner.suspended_retry_handle.lock().unwrap();
@@ -372,6 +419,7 @@ impl RealtimeChannel {
                     self.cancel_retry_timer();
                     // RTL15b1: Clear channelSerial on FAILED
                     *self.inner.channel_serial.lock().unwrap() = None;
+                    self.clear_delta_state();
                     self.set_state(ChannelState::Failed, reason.clone(), false, false);
                     // Fail attach waiters
                     let waiters: Vec<_> = self
@@ -398,6 +446,7 @@ impl RealtimeChannel {
                     self.cancel_retry_timer();
                     // RTL15b1: Clear channelSerial on DETACHED
                     *self.inner.channel_serial.lock().unwrap() = None;
+                    self.clear_delta_state();
                     self.set_state(ChannelState::Detached, None, false, false);
                     // Fail attach waiters
                     let waiters: Vec<_> = self
@@ -1132,12 +1181,110 @@ impl RealtimeChannel {
                     .and_then(|o| o.get("name"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                let data = msg_obj.and_then(|o| o.get("data")).cloned();
+                let mut data = msg_obj.and_then(|o| o.get("data")).cloned();
                 let client_id = msg_obj
                     .and_then(|o| o.get("clientId"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
                 let extras = msg_obj.and_then(|o| o.get("extras")).cloned();
+                let encoding = msg_obj
+                    .and_then(|o| o.get("encoding"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                // Delta processing (RTL19, RTL20, RTL21, PC3, PC3a, RTL18)
+                let is_delta = encoding
+                    .as_deref()
+                    .map(|e| e.contains("vcdiff"))
+                    .unwrap_or(false);
+
+                if is_delta {
+                    // Check decoder availability (PC3)
+                    let has_decoder = self.inner.delta_decoder.lock().unwrap().is_some();
+                    if !has_decoder {
+                        // PC3: No vcdiff decoder configured → FAILED
+                        drop(subs);
+                        self.set_state(
+                            ChannelState::Failed,
+                            Some(ErrorInfo {
+                                code: Some(40019),
+                                status_code: None,
+                                message: Some(
+                                    "Delta message received but no vcdiff decoder configured"
+                                        .to_string(),
+                                ),
+                                href: None,
+                            }),
+                            false,
+                            false,
+                        );
+                        return;
+                    }
+
+                    // Get base payload for delta decode
+                    let base = self.inner.delta_base.lock().unwrap().clone();
+                    if base.is_none() {
+                        // No base payload — trigger recovery
+                        drop(subs);
+                        self.trigger_delta_recovery();
+                        return;
+                    }
+                    let base = base.unwrap();
+
+                    // Convert delta data to bytes
+                    let delta_bytes = match &data {
+                        Some(serde_json::Value::String(s)) => s.as_bytes().to_vec(),
+                        _ => {
+                            // Can't decode non-string delta data
+                            drop(subs);
+                            self.trigger_delta_recovery();
+                            return;
+                        }
+                    };
+
+                    // PC3a: Decode delta (lock decoder only for the call)
+                    let decode_result = {
+                        let decoder = self.inner.delta_decoder.lock().unwrap();
+                        decoder.as_ref().unwrap().decode(&base, &delta_bytes)
+                    };
+
+                    match decode_result {
+                        Ok(decoded) => {
+                            // RTL19c: Store decoded result as new base
+                            *self.inner.delta_base.lock().unwrap() = Some(decoded.clone());
+
+                            // Replace message data with decoded result
+                            match String::from_utf8(decoded) {
+                                Ok(s) => data = Some(serde_json::Value::String(s)),
+                                Err(e) => {
+                                    // Binary result — store as base64
+                                    data = Some(serde_json::Value::String(base64::encode(
+                                        e.into_bytes(),
+                                    )));
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // RTL18: Delta decode failure → trigger recovery
+                            drop(subs);
+                            self.trigger_delta_recovery();
+                            return;
+                        }
+                    }
+                } else {
+                    // RTL19b: Non-delta message — store data as base for future deltas
+                    let base_bytes = match &data {
+                        Some(serde_json::Value::String(s)) => Some(s.as_bytes().to_vec()),
+                        Some(other) => Some(other.to_string().as_bytes().to_vec()),
+                        None => None,
+                    };
+                    *self.inner.delta_base.lock().unwrap() = base_bytes;
+                }
+
+                // RTL20: Update last message ID
+                if let Some(ref msg_id) = id {
+                    *self.inner.delta_last_msg_id.lock().unwrap() = Some(msg_id.clone());
+                }
 
                 let message = Message {
                     id,
@@ -1193,6 +1340,11 @@ impl RealtimeChannel {
                 // RTL15b: Store channelSerial from server
                 if let Some(ref serial) = msg.channel_serial {
                     *self.inner.channel_serial.lock().unwrap() = Some(serial.clone());
+                }
+
+                // Clear delta state on non-resumed attach (fresh channel state)
+                if !resumed {
+                    self.clear_delta_state();
                 }
 
                 // RTL4m: Decode modes from ATTACHED flags
@@ -1356,6 +1508,7 @@ impl RealtimeChannel {
                 // Normal detach flow (DETACHING state or other)
                 // RTL15b1: Clear channelSerial on DETACHED
                 *self.inner.channel_serial.lock().unwrap() = None;
+                self.clear_delta_state();
 
                 // Clear errorReason on successful detach
                 *self.inner.error_reason.lock().unwrap() = None;
@@ -1394,6 +1547,7 @@ impl RealtimeChannel {
 
                 // RTL15b1: Clear channelSerial on FAILED
                 *self.inner.channel_serial.lock().unwrap() = None;
+                self.clear_delta_state();
 
                 self.set_state(ChannelState::Failed, reason.clone(), false, false);
 
@@ -1821,6 +1975,12 @@ impl Channels {
         ch.inner.presence.set_channel_state(ch.state());
         let presence_client_id = self.inner.presence_client_id.lock().unwrap().clone();
         ch.inner.presence.set_client_id(presence_client_id);
+
+        // Wire vcdiff decoder if feature is enabled
+        #[cfg(feature = "vcdiff-deltas")]
+        {
+            ch.set_delta_decoder(Box::new(crate::delta::RealDecoder));
+        }
     }
 
     /// Set echo_messages on all channels and store for future channels. RTL7f.

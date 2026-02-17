@@ -18,10 +18,10 @@ Realtime from scratch.
 **Goal:** Establish the testing approach that maps UTS pseudo-code to Rust tests.
 
 Tasks:
-- [ ] Set up a mock HTTP client infrastructure (matching UTS `MockHttpClient`)
-- [ ] Set up sandbox integration test infrastructure (app provisioning/teardown)
-- [ ] Define Rust test conventions: naming, module structure, spec-item comments
-- [ ] Verify existing tests pass; update dependencies if needed
+- [x] Set up a mock HTTP client infrastructure (matching UTS `MockHttpClient`)
+- [x] Set up sandbox integration test infrastructure (app provisioning/teardown)
+- [x] Define Rust test conventions: naming, module structure, spec-item comments
+- [x] Verify existing tests pass; update dependencies if needed
 
 **UTS references:**
 - `test/rest/unit/helpers/mock_http.md`
@@ -38,11 +38,11 @@ HTTP layer — we need both.
 **Goal:** Align the existing REST client with UTS, fill gaps.
 
 Tasks:
-- [ ] `ClientOptions` — validate against `TO1–TO3`, `RSC1`
-- [ ] `RestClient` attributes — `RSC5`, `RSC7` (headers), `RSC8` (protocol), `RSC13` (timeouts), `RSC17` (clientId), `RSC18` (TLS)
-- [ ] `ErrorInfo` type — `TI1–TI5`
-- [ ] Logging — `RSC2–RSC4` (may be deferred if low priority)
-- [ ] HTTP request/response types — format negotiation, content types
+- [x] `ClientOptions` — validate against `TO1–TO3`, `RSC1`
+- [x] `RestClient` attributes — `RSC5`, `RSC7` (headers), `RSC8` (protocol), `RSC13` (timeouts), `RSC17` (clientId), `RSC18` (TLS)
+- [x] `ErrorInfo` type — `TI1–TI5`
+- [x] Logging — `RSC2–RSC4` (may be deferred if low priority)
+- [x] HTTP request/response types — format negotiation, content types
 
 **UTS test specs:**
 - `rest/unit/rest_client.md`
@@ -59,19 +59,19 @@ unit tests to match UTS and fixing any discrepancies.
 **Goal:** Complete auth implementation, fully tested against UTS.
 
 Tasks:
-- [ ] Basic auth — `RSA1`, `RSA2`, `RSA11`
-- [ ] Token auth selection logic — `RSA3`, `RSA4`
-- [ ] Token params — `RSA5` (TTL), `RSA6` (capability)
-- [ ] Client ID — `RSA7`, `RSA12`, `RSA15`
-- [ ] `requestToken` — `RSA8`
-- [ ] `createTokenRequest` — `RSA9`
-- [ ] `authorize` — `RSA10`
-- [ ] Token renewal on 401 — `RSC10`, `RSA4b4`
-- [ ] Token details type — `RSA16`
-- [ ] Auth callback / auth URL — `RSA8c`, `RSA8d`
-- [ ] Token revocation — `RSA17`
-- [ ] `TokenDetails` type — `TD1–TD7`
-- [ ] `TokenRequest` type — `TE1–TE6`
+- [x] Basic auth — `RSA1`, `RSA2`, `RSA11`
+- [x] Token auth selection logic — `RSA3`, `RSA4`
+- [x] Token params — `RSA5` (TTL), `RSA6` (capability)
+- [x] Client ID — `RSA7`, `RSA12`, `RSA15`
+- [x] `requestToken` — `RSA8`
+- [x] `createTokenRequest` — `RSA9`
+- [x] `authorize` — `RSA10`
+- [x] Token renewal on 401 — `RSC10`, `RSA4b4`
+- [x] Token details type — `RSA16`
+- [x] Auth callback / auth URL — `RSA8c`, `RSA8d`
+- [x] Token revocation — `RSA17`
+- [x] `TokenDetails` type — `TD1–TD7`
+- [x] `TokenRequest` type — `TE1–TE6`
 
 **UTS test specs:**
 - `rest/unit/auth/` (8 files)
@@ -89,13 +89,13 @@ token revocation, and align unit tests to UTS mock patterns.
 **Goal:** Complete REST channel operations with full UTS coverage.
 
 Tasks:
-- [ ] Publish — `RSL1` (including idempotent publishing `RSL1k`)
-- [ ] History — `RSL2`
-- [ ] Message encoding/decoding — `RSL4`, `RSL6`
-- [ ] Message type — `TM1–TM5`
-- [ ] Pagination — `TG1–TG7`
-- [ ] Channel collection — `RSN1–RSN4`
-- [ ] Channel attributes — `RSL7–RSL9`
+- [x] Publish — `RSL1` (including idempotent publishing `RSL1k`)
+- [x] History — `RSL2`
+- [x] Message encoding/decoding — `RSL4`, `RSL6`
+- [x] Message type — `TM1–TM5`
+- [x] Pagination — `TG1–TG7`
+- [x] Channel collection — `RSN1–RSN4`
+- [x] Channel attributes — `RSL7–RSL9`
 
 **UTS test specs:**
 - `rest/unit/channel/` (9 files)
@@ -117,10 +117,10 @@ publish result with serials, and full encoding pipeline tests.
 **Goal:** Complete REST presence with UTS coverage.
 
 Tasks:
-- [ ] Presence get — `RSP3`
-- [ ] Presence history — `RSP4`
-- [ ] Presence message decoding — `RSP5`
-- [ ] PresenceMessage type — `TP1–TP5`
+- [x] Presence get — `RSP3`
+- [x] Presence history — `RSP4`
+- [x] Presence message decoding — `RSP5`
+- [x] PresenceMessage type — `TP1–TP5`
 
 **UTS test specs:**
 - `rest/unit/presence/rest_presence.md`
@@ -136,10 +136,10 @@ Tasks:
 **Goal:** Robust host fallback behavior.
 
 Tasks:
-- [ ] Primary domain determination — `REC1`
-- [ ] Fallback domains — `REC2`
-- [ ] Connectivity check — `REC3`
-- [ ] Fallback behavior — `RSC15`
+- [x] Primary domain determination — `REC1`
+- [x] Fallback domains — `REC2`
+- [x] Connectivity check — `REC3`
+- [x] Fallback behavior — `RSC15`
 
 **UTS test specs:**
 - `rest/unit/fallback.md`
@@ -153,9 +153,9 @@ Tasks:
 **Goal:** Remaining REST features before starting Realtime.
 
 Tasks:
-- [ ] `request()` function — `RSC19`
-- [ ] `time()` function — `RSC16`
-- [ ] `stats()` function — `RSC6`
+- [x] `request()` function — `RSC19`
+- [x] `time()` function — `RSC16`
+- [x] `stats()` function — `RSC6`
 - [ ] Batch publish — `RSC22`
 - [ ] Batch presence — `RSC24`
 - [ ] Push admin — `RSH1`
@@ -185,22 +185,22 @@ messages, annotations are new.
 connect/close lifecycle.
 
 Tasks:
-- [ ] Add `tokio-tungstenite` WebSocket dependency
-- [ ] `ConnectionState` enum — INITIALIZED, CONNECTING, CONNECTED, DISCONNECTED,
+- [x] Add `tokio-tungstenite` WebSocket dependency
+- [x] `ConnectionState` enum — INITIALIZED, CONNECTING, CONNECTED, DISCONNECTED,
       SUSPENDED, CLOSING, CLOSED, FAILED
-- [ ] `ConnectionStateChange` type — previous, current, event, reason
-- [ ] `ProtocolMessage` type — action enum, fields (connectionId, connectionKey,
+- [x] `ConnectionStateChange` type — previous, current, event, reason
+- [x] `ProtocolMessage` type — action enum, fields (connectionId, connectionKey,
       connectionSerial, connectionDetails, error, etc.)
-- [ ] `ConnectionDetails` type — connectionKey, maxIdleInterval, connectionStateTtl
-- [ ] Mock WebSocket infrastructure (matching UTS `MockWebSocket`)
-- [ ] `RealtimeClient` constructor — `RTC1`, `RTC12`
-- [ ] `Connection` type with state machine — `RTN4`
-- [ ] Connect — `RTC15`, `RTN11`
-- [ ] Close — `RTC16`, `RTN12`
-- [ ] Auto-connect — `RTN3`
-- [ ] Connection events (on/once) — `RTN4`
-- [ ] Connection ID and key — `RTN8`, `RTN9`
-- [ ] Error reason — `RTN25`
+- [x] `ConnectionDetails` type — connectionKey, maxIdleInterval, connectionStateTtl
+- [x] Mock WebSocket infrastructure (matching UTS `MockWebSocket`)
+- [x] `RealtimeClient` constructor — `RTC1`, `RTC12`
+- [x] `Connection` type with state machine — `RTN4`
+- [x] Connect — `RTC15`, `RTN11`
+- [x] Close — `RTC16`, `RTN12`
+- [x] Auto-connect — `RTN3`
+- [x] Connection events (on/once) — `RTN4`
+- [x] Connection ID and key — `RTN8`, `RTN9`
+- [x] Error reason — `RTN25`
 
 **UTS test specs:**
 - `realtime/unit/helpers/mock_websocket.md`
@@ -220,13 +220,13 @@ types and the basic happy-path connection lifecycle.
 **Goal:** Robust connection failure handling, resume/recovery, and ping.
 
 Tasks:
-- [ ] Connection open failures — `RTN14` (invalid key, timeout, retry,
+- [x] Connection open failures — `RTN14` (invalid key, timeout, retry,
       DISCONNECTED→SUSPENDED transition)
-- [ ] Connection failures while connected — `RTN15` (resume with connectionKey,
+- [x] Connection failures while connected — `RTN15` (resume with connectionKey,
       failed resume, token errors, connectionStateTtl expiry)
-- [ ] Ping — `RTN13` (HEARTBEAT send/receive, timeout, state-dependent behavior)
-- [ ] `whenState` — `RTN26`
-- [ ] Update events — `RTN24`
+- [x] Ping — `RTN13` (HEARTBEAT send/receive, timeout, state-dependent behavior)
+- [x] `whenState` — `RTN26`
+- [x] Update events — `RTN24`
 
 **UTS test specs:**
 - `realtime/unit/connection/connection_open_failures_test.md` — RTN14 (8 tests)
@@ -245,11 +245,11 @@ Tasks:
 configuration.
 
 Tasks:
-- [ ] Heartbeats / idle detection — `RTN23` (HEARTBEAT protocol or ping frames,
+- [x] Heartbeats / idle detection — `RTN23` (HEARTBEAT protocol or ping frames,
       maxIdleInterval, idle timeout → reconnect)
-- [ ] Fallback hosts for Realtime — `RTN17` core (primary domain preference,
+- [x] Fallback hosts for Realtime — `RTN17` core (primary domain preference,
       random fallback ordering, error conditions for fallback, empty fallback set)
-- [ ] Timeout configuration — `RTC7` (default values, disconnectedRetryTimeout)
+- [x] Timeout configuration — `RTC7` (default values, disconnectedRetryTimeout)
 
 **Deferred to later phases (require channels or auth):**
 - RTN17e (HTTP requests use same fallback host) → **Phase 8** (needs channels)
@@ -272,9 +272,9 @@ Tasks:
 **Goal:** Channel collection, state machine, and options infrastructure.
 
 Tasks:
-- [ ] Channels collection — `RTS1–RTS4` (get, release, iteration)
-- [ ] Channel state events — `RTL2` (state change EventEmitter)
-- [ ] Channel options — `TB2–TB4`, `RTS3`, `RTL16` (modes, params)
+- [x] Channels collection — `RTS1–RTS4` (get, release, iteration)
+- [x] Channel state events — `RTL2` (state change EventEmitter)
+- [x] Channel options — `TB2–TB4`, `RTS3`, `RTL16` (modes, params)
 
 **UTS test specs:**
 - `realtime/unit/channels/channels_collection_test.md`
@@ -291,10 +291,10 @@ observe state changes. No dependency on attach/detach.
 **Goal:** Core channel lifecycle operations.
 
 Tasks:
-- [ ] Attach — `RTL4` (attach flow, implicit attach, error handling)
-- [ ] Detach — `RTL5` (detach flow, error states)
-- [ ] RTC7 attach/detach timeouts (deferred from Phase 7c)
-- [ ] ACK/NACK — `RTN7` (deferred from Phase 7c, needed for attach confirmations)
+- [x] Attach — `RTL4` (attach flow, implicit attach, error handling)
+- [x] Detach — `RTL5` (detach flow, error states)
+- [x] RTC7 attach/detach timeouts (deferred from Phase 7c)
+- [x] ACK/NACK — `RTN7` (deferred from Phase 7c, needed for attach confirmations)
 
 **UTS test specs:**
 - `realtime/unit/channels/channel_attach_test.md` (16 tests)
@@ -310,9 +310,9 @@ Tasks:
 **Goal:** Publishing and subscribing to messages on channels.
 
 Tasks:
-- [ ] Publish — `RTL6` (publish, queuing, encoding, implicit attach)
-- [ ] Subscribe/unsubscribe — `RTL7`, `RTL8` (subscribe, filtering)
-- [ ] Message field population — `TM2` (id, timestamp, connectionId, etc.)
+- [x] Publish — `RTL6` (publish, queuing, encoding, implicit attach)
+- [x] Subscribe/unsubscribe — `RTL7`, `RTL8` (subscribe, filtering)
+- [x] Message field population — `TM2` (id, timestamp, connectionId, etc.)
 
 **UTS test specs:**
 - `realtime/unit/channels/channel_publish_test.md` (23 tests, ~60K)
@@ -329,16 +329,16 @@ Tasks:
 cases.
 
 Tasks:
-- [ ] Connection state effects — `RTL3`
-- [ ] Channel properties — `RTL15` (attachSerial, channelSerial)
-- [ ] Server-initiated detach — `RTL13`
-- [ ] Additional ATTACHED — `RTL12` (reattach on updated ATTACHED)
-- [ ] Error handling — `RTL14`
-- [ ] Channel attributes — `RTL23–RTL24`
-- [ ] `whenState` — `RTL25`
-- [ ] Channel history — `RTL10`
-- [ ] RTN17e HTTP requests use same fallback host (deferred from Phase 7c)
-- [ ] RTN17j connectivity check before fallback (deferred from Phase 7c)
+- [x] Connection state effects — `RTL3`
+- [x] Channel properties — `RTL15` (attachSerial, channelSerial)
+- [x] Server-initiated detach — `RTL13`
+- [x] Additional ATTACHED — `RTL12` (reattach on updated ATTACHED)
+- [x] Error handling — `RTL14`
+- [x] Channel attributes — `RTL23–RTL24`
+- [x] `whenState` — `RTL25`
+- [x] Channel history — `RTL10`
+- [x] RTN17e HTTP requests use same fallback host (deferred from Phase 7c)
+- [x] RTN17j connectivity check before fallback (deferred from Phase 7c)
 
 **UTS test specs:**
 - `realtime/unit/channels/channel_connection_state_test.md`
@@ -361,10 +361,10 @@ Tasks:
 re-authentication.
 
 Tasks:
-- [ ] Connection auth — `RSA4` Realtime parts
-- [ ] Realtime authorize — `RTC8`
-- [ ] Token renewal over connection — `RSA8d` Realtime parts
-- [ ] Server-initiated reauth — `RTN22` (AUTH message, token renewal without
+- [x] Connection auth — `RSA4` Realtime parts
+- [x] Realtime authorize — `RTC8`
+- [x] Token renewal over connection — `RSA8d` Realtime parts
+- [x] Server-initiated reauth — `RTN22` (AUTH message, token renewal without
       disconnect, forced disconnect on failure) — deferred from Phase 7c
 
 **UTS test specs:**
@@ -379,22 +379,30 @@ Tasks:
 **Goal:** Full presence lifecycle over Realtime.
 
 Tasks:
-- [ ] Presence map — `RTP2`
-- [ ] Enter/update/leave — `RTP8–RTP10`
-- [ ] Subscribe/unsubscribe — `RTP6–RTP7`
-- [ ] Get — `RTP11`
-- [ ] History — `RTP12`
-- [ ] Sync — `RTP18–RTP19`
-- [ ] Channel state effects — `RTP5`, `RTL11`
-- [ ] Connection state conditions — `RTP16`
-- [ ] Client methods (enterClient etc.) — `RTP14–RTP15`
-- [ ] Local presence map — `RTP17`
+- [x] Presence map — `RTP2` (PresenceMap with newness check, ABSENT handling)
+- [x] Enter/update/leave — `RTP8–RTP10` (with implicit attach RTP8d)
+- [x] Subscribe/unsubscribe — `RTP6–RTP7` (including action-specific subscribe/unsubscribe RTP6b/RTP7b, attachOnSubscribe RTP6e)
+- [x] Get — `RTP11` (sync waiting, wait_for_sync option, implicit attach RTP11b)
+- [x] History — `RTP12` (delegation to REST)
+- [x] Sync — `RTP18–RTP19` (multi-message sync, cursor parsing, residual cleanup)
+- [x] Channel state effects — `RTP5`, `RTL11` (ATTACHED/DETACHED/FAILED/SUSPENDED handling)
+- [x] Connection state conditions — `RTP16` (queued presence, send on ATTACHED)
+- [x] Client methods (enterClient etc.) — `RTP14–RTP15` (RTP15f skipped — SDK rejects wildcard clientId at ClientOptions level, server validates permissions)
+- [x] Local presence map — `RTP17` (auto re-entry RTP17i, NACK error RTP17e, connectionId change RTP17g1)
 
 **UTS test specs:**
 - `realtime/unit/presence/` (8 files)
 - `realtime/integration/presence_lifecycle_test.md`
 
-**Existing state:** Not implemented.
+**Implementation notes:**
+- Implemented in 3 sub-phases: 10a (PresenceMap + LocalPresenceMap + sync, 53 tests),
+  10b (RealtimePresence + channel integration, 27 tests), 10c (get + history + re-entry, 15 tests)
+- Additional alignment pass added 10 more tests (RTP17g, RTP11a multi-sync, RTP5f,
+  RTP4 bulk enter, RTP8d/RTP15e/RTP6d/RTP11b implicit attach, RTP6e, RTP7b)
+- RTP15f client-side clientId mismatch check not implemented: SDK rejects wildcard
+  `"*"` at `ClientOptions` level per existing validation, so enterClient permission
+  is validated server-side. UTS spec acknowledges this adaptation.
+- Total: ~105 presence tests across unit_tests module
 
 ---
 
@@ -403,13 +411,24 @@ Tasks:
 **Goal:** Delta compression support for Realtime messages.
 
 Tasks:
-- [ ] VCDiff decoder plugin — `PC3`, `VD1–VD2`
-- [ ] Delta decoding in channels — `RTL18–RTL21`
+- [x] VCDiff decoder plugin — `PC3`, `VD1–VD2`
+- [x] Delta decoding in channels — `RTL18–RTL21`
 
 **UTS test specs:**
 - `realtime/unit/channels/channel_delta_decoding.md`
 - `realtime/unit/helpers/mock_vcdiff.md`
-- `realtime/integration/delta_decoding_test.md`
+
+**Implementation notes:**
+- Added `vcdiff` crate as optional dependency behind `vcdiff-deltas` feature flag.
+- Trait-based `DeltaDecoder` abstraction for testability; `RealDecoder` wraps
+  `vcdiff::decode()`, mock uses URL-encoding algorithm for deterministic test deltas.
+- Delta processing added to `deliver_messages()` as preprocessing before subscriber
+  delivery. Per-channel state: `delta_base`, `delta_last_msg_id`, `delta_decoder`.
+- Delta state cleared on DETACHED, FAILED, and non-resumed ATTACHED; preserved on SUSPENDED.
+- Recovery (RTL18): decode failure → clear delta state, transition to ATTACHING,
+  send ATTACH with channelSerial for resume.
+- No decoder (PC3): delta message without decoder → channel FAILED with error 40019.
+- 15 new tests, 507 total (4 pre-existing crypto failures).
 
 ---
 

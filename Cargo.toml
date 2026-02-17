@@ -42,6 +42,7 @@ url = "2.2.2"
 cbc = "0.1.2"
 num-traits = "0.2.15"
 num-derive = "0.3.3"
+vcdiff = { path = "../vcdiff-rust", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.18.2", features = ["full"] }
@@ -50,4 +51,5 @@ http = "0.2"
 [features]
 native-tls-alpn = ["reqwest/native-tls-alpn"]
 rustls = ["reqwest/rustls"]
+vcdiff-deltas = ["dep:vcdiff"]
 default = ["reqwest/native-tls-alpn"]
