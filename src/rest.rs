@@ -339,16 +339,16 @@ impl Rest {
                 )
             })??;
 
-        // Return the response if it was successful, otherwise try to decode a
-        // JSON error from the response body, falling back to a generic error
-        // if decoding fails.
+        // Return the response if it was successful, otherwise try to decode an
+        // error from the response body (using the Content-Type to select JSON
+        // or MessagePack), falling back to a generic error if decoding fails.
         if res.status().is_success() {
             return Ok(http::Response::new(res));
         }
 
         let status_code: u32 = res.status().as_u16().into();
-        let err = res
-            .json::<WrappedError>()
+        let err = http::Response::new(res)
+            .body::<WrappedError>()
             .await
             .map(|e| e.error)
             .unwrap_or_else(|err| {
@@ -381,8 +381,8 @@ impl Rest {
                 }
 
                 let status_code: u32 = res.status().as_u16().into();
-                return Err(res
-                    .json::<WrappedError>()
+                return Err(http::Response::new(res)
+                    .body::<WrappedError>()
                     .await
                     .map(|e| e.error)
                     .unwrap_or_else(|err| {
@@ -694,8 +694,13 @@ impl<'a> PublishBuilder<'a> {
 
 /// Data is the payload of a message which can either be a utf-8 encoded
 /// string, a JSON serializable object, or a binary array.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
+///
+/// Uses a custom `Deserialize` impl (not `#[serde(untagged)]`) to correctly
+/// distinguish msgpack `str` vs `bin` types. With `untagged`, serde tries
+/// variants in order and `String` would catch binary data that is valid UTF-8.
+/// The custom impl uses `deserialize_any` so the deserializer calls the
+/// appropriate visitor method based on the wire type.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Data {
     String(String),
     JSON(serde_json::Value),
@@ -721,6 +726,89 @@ impl Serialize for Data {
             Self::None => String::from(""),
         };
         s.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Data {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+
+        struct DataVisitor;
+
+        impl<'de> Visitor<'de> for DataVisitor {
+            type Value = Data;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a string, byte array, JSON value, or null")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<Data, E> {
+                Ok(Data::String(v.to_owned()))
+            }
+
+            fn visit_string<E: de::Error>(self, v: String) -> std::result::Result<Data, E> {
+                Ok(Data::String(v))
+            }
+
+            fn visit_bytes<E: de::Error>(self, v: &[u8]) -> std::result::Result<Data, E> {
+                Ok(Data::Binary(serde_bytes::ByteBuf::from(v)))
+            }
+
+            fn visit_byte_buf<E: de::Error>(self, v: Vec<u8>) -> std::result::Result<Data, E> {
+                Ok(Data::Binary(serde_bytes::ByteBuf::from(v)))
+            }
+
+            fn visit_none<E: de::Error>(self) -> std::result::Result<Data, E> {
+                Ok(Data::None)
+            }
+
+            fn visit_unit<E: de::Error>(self) -> std::result::Result<Data, E> {
+                Ok(Data::None)
+            }
+
+            fn visit_bool<E: de::Error>(self, v: bool) -> std::result::Result<Data, E> {
+                Ok(Data::JSON(serde_json::Value::Bool(v)))
+            }
+
+            fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<Data, E> {
+                Ok(Data::JSON(serde_json::Value::Number(v.into())))
+            }
+
+            fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<Data, E> {
+                Ok(Data::JSON(serde_json::Value::Number(v.into())))
+            }
+
+            fn visit_f64<E: de::Error>(self, v: f64) -> std::result::Result<Data, E> {
+                serde_json::Number::from_f64(v)
+                    .map(|n| Data::JSON(serde_json::Value::Number(n)))
+                    .ok_or_else(|| de::Error::custom("invalid float value"))
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> std::result::Result<Data, M::Error> {
+                let value = serde_json::Value::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )?;
+                Ok(Data::JSON(value))
+            }
+
+            fn visit_seq<S: de::SeqAccess<'de>>(
+                self,
+                seq: S,
+            ) -> std::result::Result<Data, S::Error> {
+                let value = serde_json::Value::deserialize(
+                    serde::de::value::SeqAccessDeserializer::new(seq),
+                )?;
+                Ok(Data::JSON(value))
+            }
+        }
+
+        deserializer.deserialize_any(DataVisitor)
     }
 }
 

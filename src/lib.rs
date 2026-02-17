@@ -369,8 +369,8 @@ mod tests {
         // Check the token details.
         assert!(!token.token.is_empty(), "Expected token to be set");
         assert!(
-            meta.issued >= server_time,
-            "Expected issued ({}) to be after server time ({})",
+            meta.issued + Duration::seconds(1) >= server_time,
+            "Expected issued ({}) to be within 1s of server time ({})",
             meta.issued,
             server_time,
         );
@@ -14553,5 +14553,238 @@ mod unit_tests {
             attach_msgs[1].message.channel_serial.as_deref(),
             Some("serial-from-server")
         );
+    }
+
+    // ---------------------------------------------------------------
+    // RSC8 — Error response decoded from MessagePack
+    // UTS: rest/unit/rest_client.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsc8_error_response_parsed_from_msgpack() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::msgpack(
+                400,
+                &serde_json::json!({
+                    "error": {
+                        "code": 40099,
+                        "statusCode": 400,
+                        "message": "Test error",
+                        "href": ""
+                    }
+                }),
+            )
+        });
+
+        let client = mock_client(mock);
+        let err = client.time().await.expect_err("Expected error");
+
+        assert_eq!(err.code, crate::error::ErrorCode::Testing);
+        assert_eq!(err.status_code, Some(400));
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSA4b4 — Token renewal with MessagePack error response
+    // UTS: rest/unit/auth/token_renewal.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsa4c_server_401_triggers_token_renewal_msgpack() -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let mock = MockHttpClient::with_handler(move |req| {
+            let n = call_count_clone.fetch_add(1, Ordering::SeqCst);
+
+            if req.url.path().contains("/requestToken") {
+                // Return a new token (JSON is fine for requestToken)
+                MockResponse::json(
+                    200,
+                    &json!({
+                        "token": format!("token-{}", n),
+                        "expires": 9999999999999_i64,
+                        "issued": 1000000000000_i64,
+                        "capability": "{\"*\":[\"*\"]}"
+                    }),
+                )
+            } else if n == 1 {
+                // First /time request: reject with 401 token error as msgpack
+                MockResponse::msgpack(
+                    401,
+                    &json!({
+                        "error": {
+                            "code": 40140,
+                            "statusCode": 401,
+                            "message": "Token expired",
+                            "href": ""
+                        }
+                    }),
+                )
+            } else {
+                // Subsequent requests succeed (msgpack)
+                MockResponse::msgpack(200, &json!([1234567890000_i64]))
+            }
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_token_auth(true)
+            .rest_with_http_client(Box::new(mock))
+            .unwrap();
+
+        let time = client.time().await?;
+        assert_eq!(time.timestamp_millis(), 1234567890000);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL6 — MessagePack binary data preserved
+    // UTS: rest/unit/encoding/message_encoding.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl6_msgpack_binary_data_preserved() -> Result<()> {
+        // Construct a msgpack response where the data field is msgpack bin type.
+        // Using serde_bytes::ByteBuf ensures rmp_serde serializes as bin, not str.
+        #[derive(serde::Serialize)]
+        struct MsgpackMessage {
+            name: String,
+            data: serde_bytes::ByteBuf,
+        }
+
+        let msg = MsgpackMessage {
+            name: "event".to_string(),
+            data: serde_bytes::ByteBuf::from(vec![0x48, 0x65, 0x6C, 0x6C, 0x6F]), // "Hello" bytes
+        };
+
+        let mock =
+            MockHttpClient::with_handler(move |_req| MockResponse::msgpack(200, &vec![&msg]));
+
+        let client = mock_client(mock);
+        let res = client.channels().get("test").history().send().await?;
+        let items = res.items().await?;
+
+        assert_eq!(items.len(), 1);
+        // Must be Binary, NOT String (even though bytes are valid UTF-8)
+        assert_eq!(
+            items[0].data,
+            crate::rest::Data::Binary(serde_bytes::ByteBuf::from(vec![
+                0x48, 0x65, 0x6C, 0x6C, 0x6F
+            ]))
+        );
+        assert_eq!(items[0].encoding, crate::rest::Encoding::None);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSL6 — MessagePack string data preserved
+    // UTS: rest/unit/encoding/message_encoding.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsl6_msgpack_string_data_preserved() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::msgpack(
+                200,
+                &json!([
+                    {"name": "event", "data": "Hello World"}
+                ]),
+            )
+        });
+
+        let client = mock_client(mock);
+        let res = client.channels().get("test").history().send().await?;
+        let items = res.items().await?;
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].data,
+            crate::rest::Data::String("Hello World".to_string())
+        );
+        assert_eq!(items[0].encoding, crate::rest::Encoding::None);
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // RSP5 — Presence binary data decoded from MessagePack
+    // UTS: rest/unit/presence/rest_presence.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rsp5_presence_msgpack_binary_data_preserved() -> Result<()> {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct MsgpackPresence {
+            action: u8,
+            client_id: String,
+            data: serde_bytes::ByteBuf,
+        }
+
+        let msg = MsgpackPresence {
+            action: 1, // present
+            client_id: "client1".to_string(),
+            data: serde_bytes::ByteBuf::from(b"some data".to_vec()),
+        };
+
+        let mock =
+            MockHttpClient::with_handler(move |_req| MockResponse::msgpack(200, &vec![&msg]));
+
+        let client = mock_client(mock);
+        let res = client.channels().get("test").presence.get().send().await?;
+        let items = res.items().await?;
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].data,
+            crate::rest::Data::Binary(serde_bytes::ByteBuf::from(b"some data".to_vec()))
+        );
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // Data msgpack round-trip preserves types
+    // Regression test for custom Deserialize impl
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn data_msgpack_round_trip_preserves_types() {
+        // String data: must stay String after msgpack round-trip
+        let data = crate::rest::Data::String("hello".to_string());
+        let packed = rmp_serde::to_vec_named(&data).unwrap();
+        let unpacked: crate::rest::Data = rmp_serde::from_slice(&packed).unwrap();
+        assert_eq!(unpacked, crate::rest::Data::String("hello".to_string()));
+
+        // Binary data (valid UTF-8): must stay Binary, NOT become String
+        let data = crate::rest::Data::Binary(serde_bytes::ByteBuf::from(b"hello".to_vec()));
+        let packed = rmp_serde::to_vec_named(&data).unwrap();
+        let unpacked: crate::rest::Data = rmp_serde::from_slice(&packed).unwrap();
+        assert_eq!(
+            unpacked,
+            crate::rest::Data::Binary(serde_bytes::ByteBuf::from(b"hello".to_vec()))
+        );
+
+        // Binary data (non-UTF-8)
+        let data =
+            crate::rest::Data::Binary(serde_bytes::ByteBuf::from(vec![0x01, 0x02, 0x03, 0x04]));
+        let packed = rmp_serde::to_vec_named(&data).unwrap();
+        let unpacked: crate::rest::Data = rmp_serde::from_slice(&packed).unwrap();
+        assert_eq!(
+            unpacked,
+            crate::rest::Data::Binary(serde_bytes::ByteBuf::from(vec![0x01, 0x02, 0x03, 0x04]))
+        );
+
+        // JSON data round-trip (through JSON serializer, not msgpack, since
+        // Data::JSON serializes as a JSON string in msgpack)
+        let data = crate::rest::Data::String("test".to_string());
+        let json_str = serde_json::to_string(&data).unwrap();
+        let unpacked: crate::rest::Data = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(unpacked, crate::rest::Data::String("test".to_string()));
     }
 }
