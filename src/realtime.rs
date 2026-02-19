@@ -19,8 +19,85 @@ use crate::protocol::{
 use crate::mock_ws::{MockTransport, MockTransportConnection, ServerAction};
 #[cfg(test)]
 use crate::rest;
-#[cfg(test)]
 use crate::ClientOptions;
+
+// Real WebSocket transport types
+use futures::stream::StreamExt;
+use futures::SinkExt;
+use tokio_tungstenite::tungstenite;
+
+/// Actions from a real WebSocket server.
+enum RealServerAction {
+    Message(ProtocolMessage),
+    Disconnect,
+}
+
+/// A real WebSocket transport connection wrapping tokio-tungstenite.
+struct RealTransportConnection {
+    sink: futures::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        tungstenite::Message,
+    >,
+    stream: futures::stream::SplitStream<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    >,
+    format: crate::rest::Format,
+}
+
+impl RealTransportConnection {
+    /// Send a protocol message to the server.
+    async fn send_message(&mut self, msg: ProtocolMessage) -> Result<(), String> {
+        let ws_msg = match self.format {
+            crate::rest::Format::JSON => {
+                let json = serde_json::to_string(&msg).map_err(|e| e.to_string())?;
+                tungstenite::Message::Text(json)
+            }
+            crate::rest::Format::MessagePack => {
+                let bytes = rmp_serde::to_vec_named(&msg).map_err(|e| e.to_string())?;
+                tungstenite::Message::Binary(bytes)
+            }
+        };
+        self.sink.send(ws_msg).await.map_err(|e| e.to_string())
+    }
+
+    /// Receive the next server action (message or disconnect).
+    async fn recv(&mut self) -> Option<RealServerAction> {
+        loop {
+            match self.stream.next().await {
+                Some(Ok(tungstenite::Message::Text(text))) => {
+                    match serde_json::from_str::<ProtocolMessage>(&text) {
+                        Ok(msg) => return Some(RealServerAction::Message(msg)),
+                        Err(_) => continue, // Skip malformed messages
+                    }
+                }
+                Some(Ok(tungstenite::Message::Binary(bytes))) => {
+                    match rmp_serde::from_slice::<ProtocolMessage>(&bytes) {
+                        Ok(msg) => return Some(RealServerAction::Message(msg)),
+                        Err(_) => continue,
+                    }
+                }
+                Some(Ok(tungstenite::Message::Ping(_))) => continue,
+                Some(Ok(tungstenite::Message::Pong(_))) => continue,
+                Some(Ok(tungstenite::Message::Close(_))) => {
+                    return Some(RealServerAction::Disconnect);
+                }
+                Some(Ok(tungstenite::Message::Frame(_))) => continue,
+                Some(Err(_)) => return Some(RealServerAction::Disconnect),
+                None => return None,
+            }
+        }
+    }
+
+    /// Send a WebSocket close frame.
+    async fn close(&mut self) {
+        let _ = self.sink.send(tungstenite::Message::Close(None)).await;
+        let _ = self.sink.close().await;
+    }
+}
 
 /// Errors that qualify for fallback host retry (RTN17f).
 fn is_fallback_eligible_error(status_code: Option<u16>, is_connection_refused: bool) -> bool {
@@ -181,6 +258,34 @@ impl Realtime {
         Ok(client)
     }
 
+    /// Create a new Realtime client with real WebSocket transport.
+    /// If `auto_connect` is true (default), a connection is initiated immediately.
+    pub fn new(options: &ClientOptions) -> crate::Result<Self> {
+        let auto_connect = options.auto_connect;
+        let channels = Channels::new();
+        channels.set_attach_timeout(options.realtime_request_timeout);
+        channels.set_echo_messages(options.echo_messages);
+        channels.set_queue_messages(options.queue_messages);
+        channels.set_suspended_retry_timeout(options.suspended_retry_timeout);
+        let connection = Connection::new_real(options, &channels);
+
+        let auth = RealtimeAuth {
+            inner: Arc::clone(&connection.inner),
+        };
+
+        let client = Self {
+            connection,
+            channels,
+            auth,
+        };
+
+        if auto_connect {
+            client.connect();
+        }
+
+        Ok(client)
+    }
+
     /// Initiate a connection (proxies to Connection::connect). RTN11, RTC15.
     pub fn connect(&self) {
         self.connection.connect();
@@ -284,6 +389,13 @@ pub(crate) struct ConnectionInner {
     /// Oneshot sender for authorize() waiting for server response (RTC8a3).
     authorize_waiter:
         Mutex<Option<tokio::sync::oneshot::Sender<std::result::Result<(), ErrorInfo>>>>,
+
+    /// Wire format (JSON or MessagePack) for the WebSocket connection.
+    format: crate::rest::Format,
+
+    /// Whether this connection uses the real WebSocket transport (true)
+    /// or mock transport (false, test only).
+    use_real_transport: bool,
 }
 
 impl Connection {
@@ -364,6 +476,93 @@ impl Connection {
                 use_token_auth: options.use_token_auth,
                 cached_token: Arc::new(Mutex::new(None)),
                 authorize_waiter: Mutex::new(None),
+                format: options.format,
+                use_real_transport: false,
+            }),
+        }
+    }
+
+    fn new_real(options: &ClientOptions, channels: &Channels) -> Self {
+        let host = &options.realtime_host;
+        let scheme = if options.tls { "wss" } else { "ws" };
+
+        let ws_url =
+            url::Url::parse(&format!("{}://{}/?", scheme, host)).expect("valid WebSocket URL");
+
+        let mut ws_params = Vec::new();
+
+        // Protocol version
+        ws_params.push(("v".to_string(), "2".to_string()));
+
+        // Format
+        let format_str = match options.format {
+            crate::rest::Format::MessagePack => "msgpack",
+            crate::rest::Format::JSON => "json",
+        };
+        ws_params.push(("format".to_string(), format_str.to_string()));
+
+        // Heartbeats
+        ws_params.push(("heartbeats".to_string(), "true".to_string()));
+
+        // Echo (RTC1a)
+        ws_params.push(("echo".to_string(), options.echo_messages.to_string()));
+
+        // Auth: key (for basic auth) — token auth uses accessToken, added before connect
+        let uses_basic_auth = matches!(options.credential, Credential::Key(_))
+            && !options.use_token_auth
+            && options.client_id.is_none();
+        if uses_basic_auth {
+            if let Credential::Key(ref key) = options.credential {
+                ws_params.push(("key".to_string(), format!("{}:{}", key.name, key.value)));
+            }
+        }
+
+        // Transport params (RTC1f) — override defaults
+        if let Some(ref params) = options.transport_params {
+            for (k, v) in params {
+                ws_params.retain(|(existing_k, _)| existing_k != k);
+                ws_params.push((k.clone(), v.clone()));
+            }
+        }
+
+        let (state_tx, _) = broadcast::channel(64);
+
+        let primary_host = options.realtime_host.clone();
+        let fallback_hosts = options.fallback_hosts.clone();
+
+        Self {
+            inner: Arc::new(ConnectionInner {
+                state: Mutex::new(ConnectionState::Initialized),
+                id: Mutex::new(None),
+                key: Mutex::new(None),
+                error_reason: Mutex::new(None),
+                state_tx,
+                ws_url,
+                ws_params: Mutex::new(ws_params),
+                #[cfg(test)]
+                transport: Arc::new(MockTransport::new(
+                    crate::mock_ws::MockWebSocket::new().inner(),
+                )),
+                task_handle: Mutex::new(None),
+                disconnected_retry_timeout: options.disconnected_retry_timeout,
+                suspended_retry_timeout: options.suspended_retry_timeout,
+                realtime_request_timeout: options.realtime_request_timeout,
+                connection_state_ttl: Mutex::new(DEFAULT_CONNECTION_STATE_TTL_MS),
+                disconnected_since: Mutex::new(None),
+                close_requested: Mutex::new(false),
+                client_msg_tx: Mutex::new(None),
+                pending_pings: Mutex::new(Vec::new()),
+                max_idle_interval: Mutex::new(0),
+                fallback_hosts,
+                primary_host,
+                channels: channels.clone(),
+                credential: options.credential.clone(),
+                client_id: options.client_id.clone(),
+                use_token_auth: options.use_token_auth,
+                cached_token: Arc::new(Mutex::new(None)),
+                authorize_waiter: Mutex::new(None),
+                format: options.format,
+                use_real_transport: true,
             }),
         }
     }
@@ -815,29 +1014,36 @@ impl Connection {
 
     /// Spawn a connect task from a static ConnectionInner reference.
     /// Used by authorize() which doesn't have a &self reference.
-    #[cfg(test)]
     fn spawn_connect_task_static(inner: &Arc<ConnectionInner>) {
+        let use_real = inner.use_real_transport;
         let inner_clone = Arc::clone(inner);
         let handle = tokio::spawn(async move {
-            Connection::connection_loop(&inner_clone).await;
+            if use_real {
+                Connection::real_connection_loop(&inner_clone).await;
+            } else {
+                #[cfg(test)]
+                Connection::connection_loop(&inner_clone).await;
+                #[cfg(not(test))]
+                Connection::real_connection_loop(&inner_clone).await;
+            }
         });
         *inner.task_handle.lock().unwrap() = Some(handle);
     }
 
-    #[cfg(not(test))]
-    fn spawn_connect_task_static(_inner: &Arc<ConnectionInner>) {
-        todo!("Real WebSocket transport not yet implemented")
-    }
-
     /// Spawn the async task that performs the WebSocket connection.
-    #[cfg(test)]
     fn spawn_connect_task(&self) {
+        let use_real = self.inner.use_real_transport;
         let inner = Arc::clone(&self.inner);
-
         let handle = tokio::spawn(async move {
-            Connection::connection_loop(&inner).await;
+            if use_real {
+                Connection::real_connection_loop(&inner).await;
+            } else {
+                #[cfg(test)]
+                Connection::connection_loop(&inner).await;
+                #[cfg(not(test))]
+                Connection::real_connection_loop(&inner).await;
+            }
         });
-
         *self.inner.task_handle.lock().unwrap() = Some(handle);
     }
 
@@ -1151,17 +1357,387 @@ impl Connection {
         }
     }
 
-    #[cfg(not(test))]
-    fn spawn_connect_task(&self) {
-        todo!("Real WebSocket transport not yet implemented")
+    /// Attempt to connect to a specific URL using a real WebSocket.
+    /// Returns (was_ever_connected, last_disconnect_status_code, was_connection_refused).
+    async fn real_try_connect(inner: &ConnectionInner, url: url::Url) -> (bool, Option<u16>, bool) {
+        let id_before = inner.id.lock().unwrap().clone();
+
+        match tokio_tungstenite::connect_async(url).await {
+            Ok((ws_stream, _response)) => {
+                let (sink, stream) = ws_stream.split();
+                let mut conn = RealTransportConnection {
+                    sink,
+                    stream,
+                    format: inner.format,
+                };
+
+                let (client_tx, mut client_rx) =
+                    tokio::sync::mpsc::unbounded_channel::<ProtocolMessage>();
+                {
+                    *inner.client_msg_tx.lock().unwrap() = Some(client_tx.clone());
+                }
+                inner.channels.set_client_msg_tx(Some(client_tx));
+
+                Connection::real_handle_connection(inner, &mut conn, &mut client_rx).await;
+
+                {
+                    *inner.client_msg_tx.lock().unwrap() = None;
+                }
+                inner.channels.set_client_msg_tx(None);
+
+                let state = *inner.state.lock().unwrap();
+
+                let status_code = if state == ConnectionState::Disconnected {
+                    inner
+                        .error_reason
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .and_then(|e| e.status_code)
+                } else {
+                    None
+                };
+
+                let id_after = inner.id.lock().unwrap().clone();
+                let got_connected = state == ConnectionState::Connected
+                    || (id_after.is_some() && id_after != id_before);
+
+                (got_connected, status_code, false)
+            }
+            Err(_) => {
+                (false, None, true) // Connection refused
+            }
+        }
     }
 
-    #[cfg(not(test))]
-    fn spawn_close_task(&self) {
-        todo!("Real WebSocket transport not yet implemented")
+    /// The main connection loop using a real WebSocket transport.
+    async fn real_connection_loop(inner: &ConnectionInner) {
+        loop {
+            let close_requested = *inner.close_requested.lock().unwrap();
+            if close_requested {
+                break;
+            }
+
+            let current_state = *inner.state.lock().unwrap();
+            if current_state == ConnectionState::Closed || current_state == ConnectionState::Failed
+            {
+                break;
+            }
+
+            if current_state != ConnectionState::Connecting {
+                break;
+            }
+
+            // RTN2e: If using token auth, obtain a token before connecting.
+            if Connection::uses_token_auth(inner) {
+                let needs_token = {
+                    let cached = inner.cached_token.lock().unwrap();
+                    match cached.as_ref() {
+                        None => true,
+                        Some(td) => {
+                            if let Some(ref meta) = td.metadata {
+                                meta.expires < chrono::Utc::now()
+                            } else {
+                                false
+                            }
+                        }
+                    }
+                };
+
+                if needs_token {
+                    match Connection::obtain_token(inner).await {
+                        Ok(token) => {
+                            Connection::update_token_in_params(inner, &token);
+                            *inner.cached_token.lock().unwrap() = Some(token);
+                        }
+                        Err(msg) => {
+                            let error = ErrorInfo {
+                                code: Some(40170),
+                                status_code: Some(401),
+                                message: Some(msg),
+                                href: None,
+                            };
+                            Connection::set_state_inner(
+                                inner,
+                                ConnectionState::Disconnected,
+                                Some(error),
+                            );
+                            let close_requested = *inner.close_requested.lock().unwrap();
+                            if close_requested {
+                                break;
+                            }
+                            let retry_timeout = inner.disconnected_retry_timeout;
+                            tokio::time::sleep(retry_timeout).await;
+                            let close_requested = *inner.close_requested.lock().unwrap();
+                            if close_requested {
+                                break;
+                            }
+                            Connection::set_state_inner(inner, ConnectionState::Connecting, None);
+                            continue;
+                        }
+                    }
+                } else {
+                    let cached = inner.cached_token.lock().unwrap();
+                    if let Some(ref token) = *cached {
+                        Connection::update_token_in_params(inner, token);
+                    }
+                }
+            }
+
+            // RTN17i: Always try primary host first
+            let url = Connection::build_url(inner);
+            let (was_connected, status_code, was_refused) =
+                Connection::real_try_connect(inner, url).await;
+
+            if !was_connected {
+                // RTN17: Primary failed — try fallback hosts if eligible
+                let should_fallback = is_fallback_eligible_error(status_code, was_refused)
+                    && !inner.fallback_hosts.is_empty();
+
+                if should_fallback {
+                    let mut fallbacks = inner.fallback_hosts.clone();
+                    for i in (1..fallbacks.len()).rev() {
+                        let j_str = rand_id();
+                        let j = j_str
+                            .bytes()
+                            .fold(0usize, |acc, b| acc.wrapping_add(b as usize))
+                            % (i + 1);
+                        fallbacks.swap(i, j);
+                    }
+
+                    let mut fallback_connected = false;
+                    for host in &fallbacks {
+                        let close_requested = *inner.close_requested.lock().unwrap();
+                        if close_requested {
+                            return;
+                        }
+
+                        let url = Connection::build_url_with_host(inner, Some(host));
+                        let (was_connected, _status, _refused) =
+                            Connection::real_try_connect(inner, url).await;
+
+                        if was_connected {
+                            fallback_connected = true;
+                            break;
+                        }
+                    }
+
+                    if !fallback_connected {
+                        let error = ErrorInfo {
+                            code: Some(80000),
+                            status_code: Some(400),
+                            message: Some("Connection refused".to_string()),
+                            href: None,
+                        };
+                        Connection::set_state_inner(
+                            inner,
+                            ConnectionState::Disconnected,
+                            Some(error),
+                        );
+                    }
+                } else if *inner.state.lock().unwrap() != ConnectionState::Disconnected
+                    && *inner.state.lock().unwrap() != ConnectionState::Failed
+                {
+                    let error = ErrorInfo {
+                        code: Some(80000),
+                        status_code: Some(400),
+                        message: Some("Connection refused".to_string()),
+                        href: None,
+                    };
+                    Connection::set_state_inner(inner, ConnectionState::Disconnected, Some(error));
+                }
+            }
+
+            // After connection ends, check if we should retry
+            let close_requested = *inner.close_requested.lock().unwrap();
+            if close_requested {
+                break;
+            }
+
+            let current_state = *inner.state.lock().unwrap();
+            match current_state {
+                ConnectionState::Disconnected => {
+                    let should_suspend = {
+                        let ttl = *inner.connection_state_ttl.lock().unwrap();
+                        let mut since = inner.disconnected_since.lock().unwrap();
+                        if since.is_none() {
+                            *since = Some(tokio::time::Instant::now());
+                        }
+                        if let Some(start) = *since {
+                            start.elapsed().as_millis() as u64 >= ttl
+                        } else {
+                            false
+                        }
+                    };
+
+                    if should_suspend {
+                        let error = ErrorInfo {
+                            code: Some(80003),
+                            status_code: None,
+                            message: Some(
+                                "Connection state TTL expired, transitioning to SUSPENDED"
+                                    .to_string(),
+                            ),
+                            href: None,
+                        };
+                        Connection::set_state_inner(inner, ConnectionState::Suspended, Some(error));
+                    } else {
+                        let retry_timeout = inner.disconnected_retry_timeout;
+                        tokio::time::sleep(retry_timeout).await;
+
+                        let close_requested = *inner.close_requested.lock().unwrap();
+                        if close_requested {
+                            break;
+                        }
+
+                        Connection::set_state_inner(inner, ConnectionState::Connecting, None);
+                        continue;
+                    }
+                }
+                ConnectionState::Suspended => {}
+                ConnectionState::Failed | ConnectionState::Closed => {
+                    break;
+                }
+                _ => break,
+            }
+
+            // SUSPENDED retry loop (RTN14f)
+            let current_state = *inner.state.lock().unwrap();
+            if current_state == ConnectionState::Suspended {
+                loop {
+                    let retry_timeout = inner.suspended_retry_timeout;
+                    tokio::time::sleep(retry_timeout).await;
+
+                    let close_requested = *inner.close_requested.lock().unwrap();
+                    if close_requested {
+                        return;
+                    }
+
+                    Connection::set_state_inner(inner, ConnectionState::Connecting, None);
+
+                    let url = Connection::build_url(inner);
+                    let (was_connected, _, _) = Connection::real_try_connect(inner, url).await;
+
+                    if was_connected {
+                        let state = *inner.state.lock().unwrap();
+                        if state == ConnectionState::Connected {
+                            *inner.disconnected_since.lock().unwrap() = None;
+                            break;
+                        }
+                    }
+                    Connection::set_state_inner(inner, ConnectionState::Suspended, None);
+                }
+
+                let state = *inner.state.lock().unwrap();
+                match state {
+                    ConnectionState::Disconnected => {
+                        *inner.disconnected_since.lock().unwrap() =
+                            Some(tokio::time::Instant::now());
+                        Connection::set_state_inner(inner, ConnectionState::Connecting, None);
+                        continue;
+                    }
+                    ConnectionState::Connected => {
+                        continue;
+                    }
+                    _ => break,
+                }
+            }
+        }
     }
 
-    #[cfg(test)]
+    /// Process messages on an established real WebSocket connection.
+    async fn real_handle_connection(
+        inner: &ConnectionInner,
+        conn: &mut RealTransportConnection,
+        client_rx: &mut tokio::sync::mpsc::UnboundedReceiver<ProtocolMessage>,
+    ) {
+        let compute_idle_timeout = |inner: &ConnectionInner| -> Option<Duration> {
+            let max_idle = *inner.max_idle_interval.lock().unwrap();
+            if max_idle > 0 {
+                let timeout_ms = max_idle + inner.realtime_request_timeout.as_millis() as u64;
+                Some(Duration::from_millis(timeout_ms))
+            } else {
+                None
+            }
+        };
+
+        let mut idle_timeout = compute_idle_timeout(inner);
+        let mut idle_deadline = idle_timeout.map(|d| tokio::time::Instant::now() + d);
+
+        loop {
+            let idle_sleep = async {
+                if let Some(deadline) = idle_deadline {
+                    tokio::time::sleep_until(deadline).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
+
+            tokio::select! {
+                server_msg = conn.recv() => {
+                    if let Some(timeout) = idle_timeout {
+                        idle_deadline = Some(tokio::time::Instant::now() + timeout);
+                    }
+
+                    match server_msg {
+                        Some(RealServerAction::Message(msg)) => {
+                            let should_break = Connection::handle_protocol_message(inner, msg);
+                            if should_break {
+                                break;
+                            }
+                            idle_timeout = compute_idle_timeout(inner);
+                            if let Some(timeout) = idle_timeout {
+                                idle_deadline = Some(tokio::time::Instant::now() + timeout);
+                            }
+                        }
+                        Some(RealServerAction::Disconnect) => {
+                            let error = ErrorInfo {
+                                code: Some(80003),
+                                status_code: None,
+                                message: Some("Connection disconnected".to_string()),
+                                href: None,
+                            };
+                            Connection::set_state_inner(
+                                inner,
+                                ConnectionState::Disconnected,
+                                Some(error),
+                            );
+                            break;
+                        }
+                        None => {
+                            break;
+                        }
+                    }
+                }
+                client_msg = client_rx.recv() => {
+                    if let Some(msg) = client_msg {
+                        let _ = conn.send_message(msg).await;
+                    }
+                }
+                _ = idle_sleep => {
+                    let error = ErrorInfo {
+                        code: Some(80003),
+                        status_code: None,
+                        message: Some("No activity for maxIdleInterval + realtimeRequestTimeout".to_string()),
+                        href: None,
+                    };
+                    Connection::set_state_inner(
+                        inner,
+                        ConnectionState::Disconnected,
+                        Some(error),
+                    );
+                    break;
+                }
+            }
+        }
+
+        // Send close frame when exiting handle_connection
+        let close_requested = *inner.close_requested.lock().unwrap();
+        if close_requested {
+            conn.close().await;
+        }
+    }
+
     fn spawn_close_task(&self) {
         let inner = Arc::clone(&self.inner);
         tokio::spawn(async move {

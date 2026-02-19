@@ -1,9 +1,9 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Ably Application statistics retrieved from [REST stats endpoint].
 ///
 /// [REST stats endpoint]: https://docs.ably.io/rest-api/#stats
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Stats {
     pub interval_id: String,
@@ -28,7 +28,7 @@ pub struct Stats {
     pub peak_rates: Option<Rates>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Unit {
     Minute,
@@ -43,7 +43,7 @@ impl Default for Unit {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MessageCount {
     pub count: f64,
@@ -52,7 +52,7 @@ pub struct MessageCount {
     pub refused: f64,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ResourceCount {
     pub peak: f64,
@@ -63,7 +63,7 @@ pub struct ResourceCount {
     pub refused: f64,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RequestCount {
     pub failed: f64,
@@ -71,7 +71,7 @@ pub struct RequestCount {
     pub succeeded: f64,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MessageTypes {
     pub all: MessageCount,
@@ -79,7 +79,7 @@ pub struct MessageTypes {
     pub presence: MessageCount,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ConnectionTypes {
     pub all: ResourceCount,
@@ -87,7 +87,7 @@ pub struct ConnectionTypes {
     pub tls: ResourceCount,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MessageTraffic {
     pub all: MessageTypes,
@@ -100,7 +100,7 @@ pub struct MessageTraffic {
     pub http_event: MessageTypes,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Push {
     pub messages: f64,
@@ -108,7 +108,7 @@ pub struct Push {
     pub direct_publishes: f64,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PushNotifications {
     pub invalid: f64,
@@ -117,7 +117,7 @@ pub struct PushNotifications {
     pub failed: PushNotificationFailures,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PushTransportCount {
     pub total: f64,
@@ -127,14 +127,14 @@ pub struct PushTransportCount {
     pub web: f64,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PushNotificationFailures {
     pub retriable: PushTransportCount,
     pub final_: PushTransportCount,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct XchgMessages {
     pub all: MessageTypes,
@@ -142,7 +142,7 @@ pub struct XchgMessages {
     pub consumer_paid: MessageDirections,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MessageDirections {
     pub all: MessageTypes,
@@ -150,7 +150,7 @@ pub struct MessageDirections {
     pub outbound: MessageTraffic,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Rates {
     pub messages: f64,
@@ -159,7 +159,7 @@ pub struct Rates {
     pub reactor: ReactorRates,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ReactorRates {
     pub http_event: f64,

@@ -354,6 +354,36 @@ impl<'a> Auth<'a> {
         Ok(())
     }
 
+    /// Revoke tokens matching the given specifiers (RSA17).
+    ///
+    /// Requires key-based authentication. Returns an error if called with
+    /// token authentication (RSA17d).
+    pub async fn revoke_tokens(
+        &self,
+        request: &crate::rest::RevokeTokensRequest,
+    ) -> Result<Vec<crate::rest::RevokeTokenResult>> {
+        // RSA17d: Must use key auth
+        let key = match &self.inner().opts.credential {
+            Credential::Key(k) => k.clone(),
+            _ => {
+                return Err(Error::with_status(
+                    ErrorCode::UnableToObtainCredentialsFromGivenParameters,
+                    401,
+                    "Token revocation requires key-based authentication",
+                ));
+            }
+        };
+
+        let path = format!("/keys/{}/revokeTokens", key.name);
+        self.rest
+            .request(http::Method::POST, &path)
+            .body(request)
+            .send()
+            .await?
+            .body()
+            .await
+    }
+
     /// Generate a random 16 character nonce to use in a TokenRequest.
     fn generate_nonce() -> String {
         thread_rng()
@@ -516,7 +546,7 @@ pub struct TokenRequest {
 /// requestToken endpoint].
 ///
 /// [REST requestToken endpoint]: https://docs.ably.io/rest-api/#request-token
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenDetails {
     pub token: String,
@@ -542,7 +572,7 @@ impl From<String> for TokenDetails {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenMetadata {
     #[serde(with = "chrono::serde::ts_milliseconds")]

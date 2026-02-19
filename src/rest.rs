@@ -138,6 +138,20 @@ impl Rest {
         })
     }
 
+    /// Query the presence state of multiple channels in a single request (RSC24).
+    ///
+    /// Returns a list of per-channel presence results. Each result contains
+    /// the channel name and either its presence members or an error.
+    pub async fn batch_presence(&self, channels: &[&str]) -> Result<Vec<BatchPresenceResult>> {
+        let channels_param = channels.join(",");
+        self.request(http::Method::GET, "/presence")
+            .params(&[("channels", channels_param.as_str())])
+            .send()
+            .await?
+            .body()
+            .await
+    }
+
     /// Start building a HTTP request to the Ably REST API.
     ///
     /// Returns a RequestBuilder which can be used to set query params, headers
@@ -729,7 +743,7 @@ impl<'a> RestAnnotations<'a> {
                     self.channel_name, encoded_serial
                 ),
             )
-            .body(&body)
+            .body(&[body])
             .send()
             .await
             .map(|_| ())
@@ -749,7 +763,7 @@ impl<'a> RestAnnotations<'a> {
                     self.channel_name, encoded_serial
                 ),
             )
-            .body(&body)
+            .body(&[body])
             .send()
             .await
             .map(|_| ())
@@ -1125,11 +1139,13 @@ pub enum AnnotationAction {
 }
 
 /// An annotation on a message. TAN1, TAN2.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Annotation {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub annotation_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<AnnotationAction>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1467,4 +1483,51 @@ impl<T: DeserializeOwned + 'static + Send> Decode for DecodeRaw<T> {
     type Options = ();
     type Item = T;
     fn decode(_item: &mut Self::Item, _options: &Self::Options) {}
+}
+
+/// A per-channel result from batch presence (RSC24).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchPresenceResult {
+    pub channel: String,
+    #[serde(default)]
+    pub presence: Option<Vec<PresenceMessage>>,
+    #[serde(default)]
+    pub error: Option<crate::protocol::ErrorInfo>,
+}
+
+/// Request body for revoking tokens (RSA17).
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeTokensRequest {
+    pub targets: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issued_before: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_reauth_margin: Option<bool>,
+}
+
+/// Response from revoking tokens (RSA17).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeTokensResponse {
+    #[serde(default)]
+    pub success_count: u32,
+    #[serde(default)]
+    pub failure_count: u32,
+    #[serde(default)]
+    pub results: Vec<RevokeTokenResult>,
+}
+
+/// A per-target result from token revocation.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeTokenResult {
+    pub target: String,
+    #[serde(default)]
+    pub issued_before: Option<i64>,
+    #[serde(default)]
+    pub applies_at: Option<i64>,
+    #[serde(default)]
+    pub error: Option<crate::protocol::ErrorInfo>,
 }

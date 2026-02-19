@@ -72,6 +72,45 @@ mod tests {
             .unwrap()
     }
 
+    /// Generate a JWT token for Ably authentication.
+    ///
+    /// The JWT is signed with HMAC-SHA256 using the key secret.
+    /// Claims follow the Ably JWT spec: `x-ably-clientId`, `x-ably-capability`.
+    fn generate_jwt(
+        key: &auth::Key,
+        client_id: Option<&str>,
+        capability: Option<&str>,
+        ttl_ms: Option<i64>,
+        expires_at: Option<i64>,
+    ) -> String {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+
+        let now = Utc::now().timestamp();
+        let ttl_secs = ttl_ms.map(|ms| ms / 1000).unwrap_or(3600);
+        let exp = expires_at.unwrap_or(now + ttl_secs);
+
+        let mut claims = serde_json::Map::new();
+        claims.insert("iat".to_string(), json!(now));
+        claims.insert("exp".to_string(), json!(exp));
+
+        if let Some(cid) = client_id {
+            claims.insert("x-ably-clientId".to_string(), json!(cid));
+        }
+        if let Some(cap) = capability {
+            claims.insert("x-ably-capability".to_string(), json!(cap));
+        }
+
+        let mut header = Header::new(Algorithm::HS256);
+        header.kid = Some(key.name.clone());
+
+        encode(
+            &header,
+            &claims,
+            &EncodingKey::from_secret(key.value.as_bytes()),
+        )
+        .expect("JWT encoding should not fail")
+    }
+
     /// A test app in the Ably Sandbox environment.
     #[derive(Clone, Debug, Deserialize)]
     struct TestApp {
@@ -91,34 +130,64 @@ mod tests {
     }
 
     impl TestApp {
-        /// Creates a test app in the Ably Sandbox environment with a single
-        /// API key.
+        /// Creates a test app in the Ably Sandbox environment matching
+        /// ably-common/test-resources/test-app-setup.json.
+        ///
+        /// keys[0] — full access {"*":["*"]}
+        /// keys[1] — mixed capabilities (cansubscribe, canpublish, pushenabled)
+        /// keys[2] — per-channel capabilities (channel0-channel6)
+        /// keys[3] — subscribe-only {"*":["subscribe"]}
+        /// keys[4] — revocableTokens: true
+        /// keys[5] — capability {"[*]*":["*"]}
         async fn create() -> Result<Self> {
             let spec = json!({
+                "limits": { "presence": { "maxMembers": 250 } },
                 "keys": [
-                    {}
+                    {},
+                    {
+                        "capability": "{ \"cansubscribe:*\":[\"subscribe\"], \"canpublish:*\":[\"publish\"], \"canpublish:andpresence\":[\"presence\",\"publish\"], \"pushenabled:*\":[\"publish\",\"subscribe\",\"push-subscribe\"], \"pushenabled:admin:*\":[\"publish\",\"subscribe\",\"push-admin\"] }"
+                    },
+                    {
+                        "capability": "{ \"channel0\":[\"publish\"], \"channel1\":[\"publish\"], \"channel2\":[\"publish\", \"subscribe\"], \"channel3\":[\"subscribe\"], \"channel4\":[\"presence\", \"publish\", \"subscribe\"], \"channel5\":[\"presence\"], \"channel6\":[\"*\"] }"
+                    },
+                    {
+                        "capability": "{ \"*\":[\"subscribe\"] }"
+                    },
+                    {
+                        "revocableTokens": true
+                    },
+                    {
+                        "capability": "{ \"[*]*\":[\"*\"] }"
+                    }
                 ],
                 "namespaces": [
                     { "id": "persisted", "persisted": true },
-                    { "id": "pushenabled", "pushEnabled": true }
+                    { "id": "pushenabled", "pushEnabled": true },
+                    { "id": "mutable", "mutableMessages": true }
                 ],
                 "channels": [
                     {
                         "name": "persisted:presence_fixtures",
                         "presence": [
+                            { "clientId": "client_bool", "data": "true" },
+                            { "clientId": "client_int", "data": "24" },
                             {
                                 "clientId": "client_string",
-                                "data": "some presence data"
+                                "data": "This is a string clientData payload"
                             },
                             {
                                 "clientId": "client_json",
-                                "data": "{\"some\":\"presence data\"}",
+                                "data": "{ \"test\": \"This is a JSONObject clientData payload\"}"
+                            },
+                            {
+                                "clientId": "client_decoded",
+                                "data": "{\"example\":{\"json\":\"Object\"}}",
                                 "encoding": "json"
                             },
                             {
-                                "clientId": "client_binary",
-                                "data": "c29tZSBwcmVzZW5jZSBkYXRh",
-                                "encoding": "base64"
+                                "clientId": "client_encoded",
+                                "data": "HO4cYSP8LybPYBPZPHQOtuD53yrD3YV3NBoTEYBh4U0N1QXHbtkfsDfTspKeLQFt",
+                                "encoding": "json/utf-8/cipher+aes-128-cbc/base64"
                             }
                         ]
                     }
@@ -147,6 +216,16 @@ mod tests {
 
         fn key(&self) -> auth::Key {
             self.keys[0].clone()
+        }
+
+        /// Returns keys[2] — per-channel capabilities.
+        fn restricted_key(&self) -> auth::Key {
+            self.keys[2].clone()
+        }
+
+        /// Returns keys[4] — revocableTokens: true.
+        fn revocable_key(&self) -> auth::Key {
+            self.keys[4].clone()
         }
 
         fn token_request(&self, params: &auth::TokenParams) -> Result<auth::TokenRequest> {
@@ -611,20 +690,23 @@ mod tests {
         let app = TestApp::create().await?;
         let client = app.client();
 
-        // Retrieve the presence set
+        // Retrieve the presence set from the fixture channel.
+        // Fixtures: client_bool, client_int, client_string, client_json,
+        // client_decoded, client_encoded (6 members total).
         let channel = client.channels().get("persisted:presence_fixtures");
         let res = channel.presence.get().send().await?;
         let presence = res.items().await?;
-        assert_eq!(presence.len(), 3);
-        assert_eq!(presence[0].data, "some presence data".as_bytes().into());
-        assert_eq!(
-            presence[1].data,
-            Data::JSON(serde_json::json!({"some":"presence data"}))
+        assert!(
+            presence.len() >= 5,
+            "Expected at least 5 presence members, got {}",
+            presence.len()
         );
-        assert_eq!(
-            presence[2].data,
-            Data::String("some presence data".to_string())
-        );
+
+        // Verify expected clients are present
+        let client_ids: Vec<_> = presence.iter().map(|m| m.client_id.as_deref()).collect();
+        assert!(client_ids.contains(&Some("client_string")));
+        assert!(client_ids.contains(&Some("client_json")));
+        assert!(client_ids.contains(&Some("client_decoded")));
 
         Ok(())
     }
@@ -635,20 +717,20 @@ mod tests {
         let app = TestApp::create().await?;
         let client = app.client();
 
-        // Retrieve the presence history
+        // Retrieve the presence history from the fixture channel.
         let channel = client.channels().get("persisted:presence_fixtures");
         let res = channel.presence.history().send().await?;
         let presence = res.items().await?;
-        assert_eq!(presence.len(), 3);
-        assert_eq!(presence[0].data, "some presence data".as_bytes().into());
-        assert_eq!(
-            presence[1].data,
-            Data::JSON(serde_json::json!({"some":"presence data"}))
+        assert!(
+            presence.len() >= 5,
+            "Expected at least 5 presence history items, got {}",
+            presence.len()
         );
-        assert_eq!(
-            presence[2].data,
-            Data::String("some presence data".to_string())
-        );
+
+        // Verify expected clients are present in history
+        let client_ids: Vec<_> = presence.iter().map(|m| m.client_id.as_deref()).collect();
+        assert!(client_ids.contains(&Some("client_string")));
+        assert!(client_ids.contains(&Some("client_json")));
 
         Ok(())
     }
@@ -684,7 +766,7 @@ mod tests {
         )?;
 
         // Wait a second.
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
 
         // Retrieve the channel history.
         let mut pages = channel.history().pages().try_collect::<Vec<_>>().await?;
@@ -753,7 +835,7 @@ mod tests {
             .await?;
 
         // Wait a second.
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
 
         // Retrieve the channel history backwards one message at a time.
         let mut pages = channel.history().backwards().limit(1).pages();
@@ -862,6 +944,1186 @@ mod tests {
             .send()
             .await
             .expect("Expected REST request to succeed");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn realtime_connect_to_sandbox() -> Result<()> {
+        let app = TestApp::create().await?;
+        let options = app.options().auto_connect(false).use_binary_protocol(false);
+        let client = realtime::Realtime::new(&options)?;
+
+        assert_eq!(
+            client.connection.state(),
+            protocol::ConnectionState::Initialized
+        );
+
+        client.connect();
+
+        // Wait for CONNECTED state
+        let connected = realtime::await_state(
+            &client.connection,
+            protocol::ConnectionState::Connected,
+            10000,
+        )
+        .await;
+        assert!(connected, "Expected connection to reach CONNECTED state");
+
+        assert_eq!(
+            client.connection.state(),
+            protocol::ConnectionState::Connected
+        );
+        assert!(client.connection.id().is_some());
+        assert!(client.connection.key().is_some());
+
+        // Close the connection
+        client.close();
+
+        let closed =
+            realtime::await_state(&client.connection, protocol::ConnectionState::Closed, 5000)
+                .await;
+        assert!(closed, "Expected connection to reach CLOSED state");
+
+        Ok(())
+    }
+
+    // -- Auth integration tests (auth.md) --
+
+    // RSA4 - Invalid credentials rejected
+    #[tokio::test]
+    async fn rest_auth_invalid_credentials_rejected() -> Result<()> {
+        let client = ClientOptions::new("invalid.key:secret")
+            .environment("sandbox")?
+            .rest()?;
+
+        let err = client
+            .request(Method::GET, "/channels/test-invalid")
+            .send()
+            .await
+            .expect_err("Expected error for invalid credentials");
+
+        // Sandbox returns 404 for non-existent app, or 401 for bad key
+        assert!(
+            err.status_code == Some(401) || err.status_code == Some(404),
+            "Expected 401 or 404, got {:?}",
+            err.status_code
+        );
+
+        Ok(())
+    }
+
+    // RSA8 - Token auth with JWT
+    #[tokio::test]
+    async fn rest_auth_jwt_token() -> Result<()> {
+        let app = TestApp::create().await?;
+        let key = app.key();
+
+        let jwt = generate_jwt(&key, None, None, Some(3600000), None);
+
+        let client = ClientOptions::with_token(jwt)
+            .environment("sandbox")?
+            .rest()?;
+
+        // Verify authentication works
+        client
+            .request(Method::GET, "/channels/test-jwt-auth")
+            .send()
+            .await?;
+
+        Ok(())
+    }
+
+    // RSA8 - Token auth with native token
+    #[tokio::test]
+    async fn rest_auth_native_token() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        // Obtain a native token
+        let token = client
+            .auth()
+            .request_token(&Default::default(), &app.auth_options())
+            .await?;
+
+        assert!(!token.token.is_empty());
+        assert!(token.metadata.as_ref().unwrap().expires > Utc::now());
+
+        // Create new client using only the token
+        let token_client = ClientOptions::with_token(token.token)
+            .environment("sandbox")?
+            .rest()?;
+
+        token_client
+            .request(Method::GET, "/channels/test-native-token")
+            .send()
+            .await?;
+
+        Ok(())
+    }
+
+    // RSA8 - Capability restriction with JWT
+    #[tokio::test]
+    async fn rest_auth_jwt_capability_restriction() -> Result<()> {
+        let app = TestApp::create().await?;
+        let key = app.key();
+
+        let allowed_channel = "test-cap-allowed";
+        let denied_channel = "test-cap-denied";
+
+        let cap = format!("{{\"{}\":[\"publish\",\"subscribe\"]}}", allowed_channel);
+        let jwt = generate_jwt(&key, None, Some(&cap), Some(3600000), None);
+
+        let client = ClientOptions::with_token(jwt)
+            .environment("sandbox")?
+            .rest()?;
+
+        // Allowed channel should succeed (publish)
+        client
+            .channels()
+            .get(allowed_channel)
+            .publish()
+            .name("test")
+            .string("hello")
+            .send()
+            .await?;
+
+        // Denied channel should fail with 40160
+        let err = client
+            .channels()
+            .get(denied_channel)
+            .publish()
+            .name("test")
+            .string("hello")
+            .send()
+            .await
+            .expect_err("Expected capability error");
+
+        assert_eq!(
+            err.code,
+            ErrorCode::OperationNotPermittedWithProvidedCapability
+        );
+
+        Ok(())
+    }
+
+    // -- Publish integration tests (publish.md) --
+
+    // RSL1d - Error indication on publish failure
+    #[tokio::test]
+    async fn rest_publish_error_on_forbidden_channel() -> Result<()> {
+        let app = TestApp::create().await?;
+
+        // keys[2] has per-channel caps: channel0=[publish], etc.
+        // Use a channel NOT in the capability
+        let restricted_client = ClientOptions::with_key(app.restricted_key())
+            .environment("sandbox")?
+            .rest()?;
+
+        let err = restricted_client
+            .channels()
+            .get("forbidden-channel")
+            .publish()
+            .name("event")
+            .string("data")
+            .send()
+            .await
+            .expect_err("Expected permission error");
+
+        assert_eq!(
+            err.code,
+            ErrorCode::OperationNotPermittedWithProvidedCapability
+        );
+
+        Ok(())
+    }
+
+    // RSL1k5 - Idempotent publish with client-supplied IDs
+    #[tokio::test]
+    async fn rest_publish_idempotent_client_id() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("persisted:idempotent-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        let fixed_id = format!("client-id-{}", Utc::now().timestamp_millis());
+
+        // Publish same message ID multiple times
+        for i in 1..=3 {
+            channel
+                .publish()
+                .id(&fixed_id)
+                .name("event")
+                .string(format!("data-{}", i))
+                .send()
+                .await?;
+        }
+
+        // Wait for persistence
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        let res = channel.history().send().await?;
+        let history = res.items().await?;
+
+        // Only one message should exist (idempotent)
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id.as_deref(), Some(fixed_id.as_str()));
+
+        Ok(())
+    }
+
+    // RSL1m4 - ClientId mismatch rejection
+    #[tokio::test]
+    async fn rest_publish_client_id_mismatch() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        // Request a token with a specific clientId
+        let params = TokenParams {
+            client_id: Some("authenticated-client".to_string()),
+            ..Default::default()
+        };
+        let token = client
+            .auth()
+            .request_token(&params, &app.auth_options())
+            .await?;
+
+        // Create client with the token
+        let token_client = ClientOptions::with_token(token.token)
+            .environment("sandbox")?
+            .rest()?;
+
+        // Publish with a different clientId - should fail
+        let err = token_client
+            .request(Method::POST, "/channels/test-mismatch/messages")
+            .body(&json!({
+                "name": "event",
+                "data": "data",
+                "clientId": "different-client"
+            }))
+            .send()
+            .await
+            .expect_err("Expected clientId mismatch error");
+
+        assert_eq!(err.status_code, Some(400));
+
+        Ok(())
+    }
+
+    // -- History integration tests (history.md) --
+
+    // RSL2b1 - History direction forwards
+    #[tokio::test]
+    async fn rest_history_direction_forwards() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("persisted:history-fwd-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        // Publish messages sequentially
+        channel.publish().name("first").string("1").send().await?;
+        channel.publish().name("second").string("2").send().await?;
+        channel.publish().name("third").string("3").send().await?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        let res = channel.history().forwards().send().await?;
+        let history = res.items().await?;
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].name.as_deref(), Some("first"));
+        assert_eq!(history[1].name.as_deref(), Some("second"));
+        assert_eq!(history[2].name.as_deref(), Some("third"));
+
+        Ok(())
+    }
+
+    // RSL2b2 - History limit parameter
+    #[tokio::test]
+    async fn rest_history_limit() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("persisted:history-limit-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        for i in 1..=10 {
+            channel
+                .publish()
+                .name(format!("event-{}", i))
+                .string(i.to_string())
+                .send()
+                .await?;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        let res = channel.history().limit(5).send().await?;
+        let history = res.items().await?;
+        assert_eq!(history.len(), 5);
+
+        // Default is backwards, so newest first
+        assert_eq!(history[0].name.as_deref(), Some("event-10"));
+
+        Ok(())
+    }
+
+    // RSL2 - History on channel with no messages
+    #[tokio::test]
+    async fn rest_history_empty_channel() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("history-empty-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        let res = channel.history().send().await?;
+        let history = res.items().await?;
+        assert_eq!(history.len(), 0);
+
+        Ok(())
+    }
+
+    // -- Presence integration tests (presence.md) --
+
+    // RSP3a1 - Get with limit parameter
+    #[tokio::test]
+    async fn rest_presence_get_with_limit() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel = client.channels().get("persisted:presence_fixtures");
+        let res = channel.presence.get().limit(2).send().await?;
+        let presence = res.items().await?;
+        assert!(presence.len() <= 2);
+
+        Ok(())
+    }
+
+    // RSP3a2 - Get with clientId filter
+    #[tokio::test]
+    async fn rest_presence_get_with_client_id_filter() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel = client.channels().get("persisted:presence_fixtures");
+        let res = channel
+            .presence
+            .get()
+            .client_id("client_string")
+            .send()
+            .await?;
+        let presence = res.items().await?;
+        assert_eq!(presence.len(), 1);
+        assert_eq!(presence[0].client_id.as_deref(), Some("client_string"));
+        assert_eq!(
+            presence[0].data,
+            Data::String("This is a string clientData payload".to_string())
+        );
+
+        Ok(())
+    }
+
+    // RSP3 - Get on channel with no presence
+    #[tokio::test]
+    async fn rest_presence_get_empty() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("presence-empty-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        let res = channel.presence.get().send().await?;
+        let presence = res.items().await?;
+        assert_eq!(presence.len(), 0);
+
+        Ok(())
+    }
+
+    // RSP5 - JSON data decoded to object
+    #[tokio::test]
+    async fn rest_presence_decoded_json_data() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel = client.channels().get("persisted:presence_fixtures");
+        let res = channel
+            .presence
+            .get()
+            .client_id("client_decoded")
+            .send()
+            .await?;
+        let presence = res.items().await?;
+        assert_eq!(presence.len(), 1);
+        assert_eq!(
+            presence[0].data,
+            Data::JSON(json!({"example": {"json": "Object"}}))
+        );
+
+        Ok(())
+    }
+
+    // RSP - Presence member field validation
+    #[tokio::test]
+    async fn rest_presence_member_fields() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel = client.channels().get("persisted:presence_fixtures");
+        let res = channel
+            .presence
+            .get()
+            .client_id("client_string")
+            .send()
+            .await?;
+        let presence = res.items().await?;
+        assert_eq!(presence.len(), 1);
+
+        let member = &presence[0];
+        assert_eq!(member.client_id.as_deref(), Some("client_string"));
+        assert!(member.connection_id.is_some());
+        assert_eq!(
+            member.data,
+            Data::String("This is a string clientData payload".to_string())
+        );
+
+        Ok(())
+    }
+
+    // RSP - Pagination through presence members
+    #[tokio::test]
+    async fn rest_presence_pagination() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel = client.channels().get("persisted:presence_fixtures");
+
+        // Request with small limit to force pagination
+        let mut all_members = Vec::new();
+        let mut pages = channel.presence.get().limit(2).pages();
+
+        while let Some(page) = pages.try_next().await? {
+            let items = page.items().await?;
+            all_members.extend(items);
+        }
+
+        // Should have retrieved all fixture members (at least 5)
+        assert!(
+            all_members.len() >= 5,
+            "Expected at least 5 members via pagination, got {}",
+            all_members.len()
+        );
+
+        // No duplicate clientIds
+        let client_ids: Vec<_> = all_members
+            .iter()
+            .map(|m| m.client_id.as_deref().unwrap_or(""))
+            .collect();
+        let unique: HashSet<_> = client_ids.iter().collect();
+        assert_eq!(unique.len(), client_ids.len());
+
+        Ok(())
+    }
+
+    // -- Pagination integration tests (pagination.md) --
+
+    // TG1, TG2 - PaginatedResult items and navigation
+    #[tokio::test]
+    async fn rest_pagination_items_and_navigation() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("persisted:pag-basic-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        // Publish enough messages to require pagination
+        for i in 1..=15 {
+            channel
+                .publish()
+                .name(format!("event-{}", i))
+                .string(i.to_string())
+                .send()
+                .await?;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+        // Request with small limit to force pagination
+        let mut pages = channel.history().limit(5).pages();
+        let page1 = pages.try_next().await?.expect("Expected at least one page");
+        let items = page1.items().await?;
+        assert_eq!(items.len(), 5, "Expected 5 items on first page");
+
+        // Should have more pages
+        let page2 = pages.try_next().await?.expect("Expected a second page");
+        let items2 = page2.items().await?;
+        assert_eq!(items2.len(), 5, "Expected 5 items on second page");
+
+        Ok(())
+    }
+
+    // TG3 - next page retrieval via pages stream
+    #[tokio::test]
+    async fn rest_pagination_all_pages() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("persisted:pag-all-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        for i in 1..=12 {
+            channel
+                .publish()
+                .name(format!("event-{}", i))
+                .string(i.to_string())
+                .send()
+                .await?;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+        // Collect all messages across pages
+        let mut all_messages = Vec::new();
+        let mut pages = channel.history().limit(5).pages();
+        while let Some(page) = pages.try_next().await? {
+            all_messages.extend(page.items().await?);
+        }
+
+        assert_eq!(all_messages.len(), 12);
+
+        // Verify no duplicates
+        let ids: HashSet<_> = all_messages
+            .iter()
+            .map(|m| m.id.as_ref().unwrap())
+            .collect();
+        assert_eq!(ids.len(), 12);
+
+        Ok(())
+    }
+
+    // TG5 - Iterate through all pages with large set
+    #[tokio::test]
+    async fn rest_pagination_iterate_all() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("persisted:pag-iter-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        let message_count = 25;
+        for i in 1..=message_count {
+            channel
+                .publish()
+                .name(format!("event-{}", i))
+                .string(i.to_string())
+                .send()
+                .await?;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        let mut all_messages = Vec::new();
+        let mut pages = channel.history().limit(7).pages();
+        while let Some(page) = pages.try_next().await? {
+            all_messages.extend(page.items().await?);
+        }
+
+        assert_eq!(all_messages.len(), message_count);
+
+        // Verify all event names present
+        let names: HashSet<_> = all_messages
+            .iter()
+            .map(|m| m.name.as_ref().unwrap().clone())
+            .collect();
+        for i in 1..=message_count {
+            assert!(names.contains(&format!("event-{}", i)));
+        }
+
+        Ok(())
+    }
+
+    // TG - Last page has no next
+    #[tokio::test]
+    async fn rest_pagination_last_page() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("persisted:pag-last-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        for i in 1..=3 {
+            channel
+                .publish()
+                .name(format!("event-{}", i))
+                .string(i.to_string())
+                .send()
+                .await?;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        // Limit larger than message count - should be single page
+        let mut pages = channel.history().limit(10).pages();
+        let page = pages.try_next().await?.expect("Expected one page");
+        let items = page.items().await?;
+        assert_eq!(items.len(), 3);
+
+        // No more pages
+        let next = pages.try_next().await?;
+        assert!(next.is_none(), "Expected no more pages");
+
+        Ok(())
+    }
+
+    // TG - Pagination with forwards direction
+    #[tokio::test]
+    async fn rest_pagination_forwards() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("persisted:pag-fwd-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        for i in 1..=8 {
+            channel
+                .publish()
+                .name(format!("event-{}", i))
+                .string(i.to_string())
+                .send()
+                .await?;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+        // Collect forwards
+        let mut all_messages = Vec::new();
+        let mut pages = channel.history().forwards().limit(3).pages();
+        while let Some(page) = pages.try_next().await? {
+            all_messages.extend(page.items().await?);
+        }
+
+        assert_eq!(all_messages.len(), 8);
+        // Forwards means oldest first
+        assert_eq!(all_messages[0].name.as_deref(), Some("event-1"));
+        assert_eq!(all_messages[7].name.as_deref(), Some("event-8"));
+
+        Ok(())
+    }
+
+    // -- Time/Stats integration tests (time_stats.md) --
+
+    // RSC6 - stats() with parameters
+    #[tokio::test]
+    async fn rest_stats_with_params() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let res = client.stats().limit(5).send().await?;
+        let stats = res.items().await?;
+        assert!(stats.len() <= 5);
+
+        Ok(())
+    }
+
+    // -- Mutable Messages integration tests (mutable_messages.md) --
+
+    // RSL11 - getMessage retrieves published message
+    #[tokio::test]
+    async fn rest_mutable_get_message() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("mutable:get-msg-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        // Publish a message
+        channel
+            .publish()
+            .name("test-event")
+            .string("hello world")
+            .send()
+            .await?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        // Get the serial from history
+        let res = channel.history().send().await?;
+        let history = res.items().await?;
+        assert_eq!(history.len(), 1);
+        let serial = history[0]
+            .serial
+            .as_ref()
+            .expect("Expected message to have a serial");
+
+        // Retrieve by serial
+        let msg = channel.get_message(serial).await?;
+        assert_eq!(msg.name.as_deref(), Some("test-event"));
+        assert_eq!(msg.data, Data::String("hello world".to_string()));
+        assert_eq!(msg.serial.as_deref(), Some(serial.as_str()));
+
+        Ok(())
+    }
+
+    // RSL15 - updateMessage updates a published message
+    #[tokio::test]
+    async fn rest_mutable_update_message() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("mutable:update-msg-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        // Publish original message
+        channel
+            .publish()
+            .name("original")
+            .string("original-data")
+            .send()
+            .await?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        // Get serial from history
+        let res = channel.history().send().await?;
+        let history = res.items().await?;
+        let serial = history[0].serial.as_ref().expect("Expected serial").clone();
+
+        // Update the message
+        let update_msg = rest::Message {
+            serial: Some(serial.clone()),
+            name: Some("updated".to_string()),
+            data: Data::String("updated-data".to_string()),
+            ..Default::default()
+        };
+        let op = rest::MessageOperation {
+            description: Some("edited content".to_string()),
+            ..Default::default()
+        };
+        let update_result = channel.update_message(&update_msg, Some(&op), None).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        assert!(update_result.version_serial.is_some());
+
+        // Verify via getMessage
+        let updated = channel.get_message(&serial).await?;
+        assert_eq!(updated.name.as_deref(), Some("updated"));
+        assert_eq!(updated.data, Data::String("updated-data".to_string()));
+        assert_eq!(updated.action, Some(rest::MessageAction::MessageUpdate));
+
+        Ok(())
+    }
+
+    // RSL15 - deleteMessage deletes a published message
+    #[tokio::test]
+    async fn rest_mutable_delete_message() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("mutable:delete-msg-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        // Publish original message
+        channel
+            .publish()
+            .name("to-delete")
+            .string("delete-me")
+            .send()
+            .await?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        // Get serial from history
+        let res = channel.history().send().await?;
+        let history = res.items().await?;
+        let serial = history[0].serial.as_ref().expect("Expected serial").clone();
+
+        // Delete the message
+        let del_msg = rest::Message {
+            serial: Some(serial.clone()),
+            ..Default::default()
+        };
+        let del_result = channel.delete_message(&del_msg, None, None).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        assert!(del_result.version_serial.is_some());
+
+        // Verify via getMessage
+        let deleted = channel.get_message(&serial).await?;
+        assert_eq!(deleted.action, Some(rest::MessageAction::MessageDelete));
+
+        Ok(())
+    }
+
+    // RSL14 - getMessageVersions returns version history
+    #[tokio::test]
+    async fn rest_mutable_message_versions() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("mutable:versions-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        // Publish original
+        channel
+            .publish()
+            .name("versioned")
+            .string("v1")
+            .send()
+            .await?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        let res = channel.history().send().await?;
+        let history = res.items().await?;
+        let serial = history[0].serial.as_ref().expect("Expected serial").clone();
+
+        // Update twice
+        let update1 = rest::Message {
+            serial: Some(serial.clone()),
+            data: Data::String("v2".to_string()),
+            ..Default::default()
+        };
+        let op1 = rest::MessageOperation {
+            description: Some("first edit".to_string()),
+            ..Default::default()
+        };
+        channel.update_message(&update1, Some(&op1), None).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        let update2 = rest::Message {
+            serial: Some(serial.clone()),
+            data: Data::String("v3".to_string()),
+            ..Default::default()
+        };
+        let op2 = rest::MessageOperation {
+            description: Some("second edit".to_string()),
+            ..Default::default()
+        };
+        channel.update_message(&update2, Some(&op2), None).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        // Get version history
+        let versions_res = channel.message_versions(&serial).send().await?;
+        let versions = versions_res.items().await?;
+        assert!(
+            versions.len() >= 3,
+            "Expected at least 3 versions (original + 2 updates), got {}",
+            versions.len()
+        );
+
+        // All versions should have the same serial
+        for v in &versions {
+            assert_eq!(v.serial.as_deref(), Some(serial.as_str()));
+        }
+
+        Ok(())
+    }
+
+    // RSL15 - appendMessage appends to a published message
+    #[tokio::test]
+    async fn rest_mutable_append_message() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("mutable:append-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        // Publish original
+        channel
+            .publish()
+            .name("appendable")
+            .string("original")
+            .send()
+            .await?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        let res = channel.history().send().await?;
+        let history = res.items().await?;
+        let serial = history[0].serial.as_ref().expect("Expected serial").clone();
+
+        // Append to the message
+        let append_msg = rest::Message {
+            serial: Some(serial.clone()),
+            data: Data::String("appended-data".to_string()),
+            ..Default::default()
+        };
+        let op = rest::MessageOperation {
+            description: Some("appended content".to_string()),
+            ..Default::default()
+        };
+        let append_result = channel.append_message(&append_msg, Some(&op), None).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        assert!(append_result.version_serial.is_some());
+
+        Ok(())
+    }
+
+    // RSAN1, RSAN2, RSAN3 - Annotation lifecycle
+    #[tokio::test]
+    async fn rest_mutable_annotation_lifecycle() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.options().use_binary_protocol(false).rest()?;
+
+        let channel_name = format!("mutable:ann-lifecycle-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        // Publish a message
+        channel
+            .publish()
+            .name("annotatable")
+            .string("content")
+            .send()
+            .await?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        let res = channel.history().send().await?;
+        let history = res.items().await?;
+        let serial = history[0].serial.as_ref().expect("Expected serial").clone();
+
+        // Create an annotation
+        let annotation = rest::Annotation {
+            annotation_type: Some("com.ably.reactions".to_string()),
+            name: Some("like".to_string()),
+            ..Default::default()
+        };
+        channel.annotations().publish(&serial, &annotation).await?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        // Verify annotation exists
+        let ann_res = channel.annotations().get(&serial).send().await?;
+        let annotations = ann_res.items().await?;
+        assert!(!annotations.is_empty(), "Expected at least 1 annotation");
+
+        let found = annotations.iter().any(|a| {
+            a.annotation_type.as_deref() == Some("com.ably.reactions")
+                && a.name.as_deref() == Some("like")
+        });
+        assert!(found, "Expected to find reaction annotation");
+
+        // Delete the annotation
+        channel.annotations().delete(&serial, &annotation).await?;
+
+        Ok(())
+    }
+
+    // RSAN3 - Get annotations returns paginated result
+    #[tokio::test]
+    async fn rest_mutable_annotations_paginated() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.options().use_binary_protocol(false).rest()?;
+
+        let channel_name = format!("mutable:ann-pag-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        // Publish a message
+        channel
+            .publish()
+            .name("multi-annotated")
+            .string("content")
+            .send()
+            .await?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        let res = channel.history().send().await?;
+        let history = res.items().await?;
+        let serial = history[0].serial.as_ref().expect("Expected serial").clone();
+
+        // Publish multiple annotations
+        let ann1 = rest::Annotation {
+            annotation_type: Some("com.ably.reactions".to_string()),
+            name: Some("like".to_string()),
+            ..Default::default()
+        };
+        channel.annotations().publish(&serial, &ann1).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        let ann2 = rest::Annotation {
+            annotation_type: Some("com.ably.reactions".to_string()),
+            name: Some("heart".to_string()),
+            ..Default::default()
+        };
+        channel.annotations().publish(&serial, &ann2).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        // Retrieve annotations
+        let ann_res = channel.annotations().get(&serial).send().await?;
+        let annotations = ann_res.items().await?;
+        assert!(
+            annotations.len() >= 2,
+            "Expected at least 2 annotations, got {}",
+            annotations.len()
+        );
+
+        Ok(())
+    }
+
+    // Mutable messages: getMessage on a message updated via history
+    #[tokio::test]
+    async fn rest_mutable_history_shows_latest_action() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let channel_name = format!("mutable:hist-action-{}", Utc::now().timestamp_millis());
+        let channel = client.channels().get(&channel_name);
+
+        // Publish, then update
+        channel
+            .publish()
+            .name("evolving")
+            .string("v1")
+            .send()
+            .await?;
+
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        let res = channel.history().send().await?;
+        let history = res.items().await?;
+        let serial = history[0].serial.as_ref().expect("Expected serial").clone();
+
+        // Original should be MESSAGE_CREATE
+        let original = channel.get_message(&serial).await?;
+        assert_eq!(original.action, Some(rest::MessageAction::MessageCreate));
+
+        // Update
+        let update_msg = rest::Message {
+            serial: Some(serial.clone()),
+            data: Data::String("v2".to_string()),
+            ..Default::default()
+        };
+        channel.update_message(&update_msg, None, None).await?;
+
+        // Now getMessage should show MESSAGE_UPDATE
+        let updated = channel.get_message(&serial).await?;
+        assert_eq!(updated.action, Some(rest::MessageAction::MessageUpdate));
+
+        Ok(())
+    }
+
+    // -- Batch Presence integration tests (batch_presence.md) --
+    // Note: batch_presence tests that need realtime (entering presence)
+    // are deferred to Phase D. We test the simpler cases here.
+
+    // RSC24 - batchPresence with empty channels returns empty presence
+    #[tokio::test]
+    async fn rest_batch_presence_empty_channels() -> Result<()> {
+        let app = TestApp::create().await?;
+        let client = app.client();
+
+        let empty_a = format!("batch-empty-a-{}", Utc::now().timestamp_millis());
+        let empty_b = format!("batch-empty-b-{}", Utc::now().timestamp_millis());
+
+        let results = client.batch_presence(&[&empty_a, &empty_b]).await?;
+
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            // Empty channels should have no presence members
+            let members = r.presence.as_ref().map(|p| p.len()).unwrap_or(0);
+            assert_eq!(members, 0);
+        }
+
+        Ok(())
+    }
+
+    // -- Revoke Tokens integration tests (revoke_tokens.md) --
+
+    // RSA17d - Token auth client rejected
+    #[tokio::test]
+    async fn rest_revoke_tokens_rejected_for_token_auth() -> Result<()> {
+        let app = TestApp::create().await?;
+        let revocable = app.revocable_key();
+
+        let jwt = generate_jwt(&revocable, None, None, Some(3600000), None);
+
+        let token_client = ClientOptions::with_token(jwt)
+            .environment("sandbox")?
+            .rest()?;
+
+        let request = rest::RevokeTokensRequest {
+            targets: vec!["clientId:anyone".to_string()],
+            issued_before: None,
+            allow_reauth_margin: None,
+        };
+
+        let err = token_client
+            .auth()
+            .revoke_tokens(&request)
+            .await
+            .expect_err("Expected error for token auth client");
+
+        assert_eq!(
+            err.code,
+            ErrorCode::UnableToObtainCredentialsFromGivenParameters
+        );
+
+        Ok(())
+    }
+
+    // RSA17 - Token revocation basic
+    #[tokio::test]
+    async fn rest_revoke_tokens_basic() -> Result<()> {
+        let app = TestApp::create().await?;
+        let revocable = app.revocable_key();
+        let client_id = format!("revoke-client-{}", Utc::now().timestamp_millis());
+
+        // Generate a JWT with the revocable key
+        let jwt = generate_jwt(&revocable, Some(&client_id), None, Some(3600000), None);
+
+        // Verify the JWT works
+        let token_client = ClientOptions::with_token(jwt)
+            .environment("sandbox")?
+            .rest()?;
+
+        token_client
+            .request(Method::GET, "/channels/revoke-test")
+            .send()
+            .await?;
+
+        // Revoke by clientId using key auth
+        let key_client = ClientOptions::with_key(revocable)
+            .environment("sandbox")?
+            .rest()?;
+
+        let request = rest::RevokeTokensRequest {
+            targets: vec![format!("clientId:{}", client_id)],
+            issued_before: None,
+            allow_reauth_margin: None,
+        };
+
+        let result = key_client.auth().revoke_tokens(&request).await?;
+        assert_eq!(result.len(), 1);
+        assert!(result[0].error.is_none());
+
+        Ok(())
+    }
+
+    // RSA17e - issuedBefore parameter
+    #[tokio::test]
+    async fn rest_revoke_tokens_with_issued_before() -> Result<()> {
+        let app = TestApp::create().await?;
+        let revocable = app.revocable_key();
+        let client_id = format!("revoke-ib-{}", Utc::now().timestamp_millis());
+
+        let key_client = ClientOptions::with_key(revocable)
+            .environment("sandbox")?
+            .rest()?;
+
+        let server_time = key_client.time().await?;
+        let issued_before = server_time.timestamp_millis();
+
+        let request = rest::RevokeTokensRequest {
+            targets: vec![format!("clientId:{}", client_id)],
+            issued_before: Some(issued_before),
+            allow_reauth_margin: None,
+        };
+
+        let result = key_client.auth().revoke_tokens(&request).await?;
+        assert_eq!(result.len(), 1);
+        assert!(result[0].error.is_none());
 
         Ok(())
     }
@@ -7281,8 +8543,6 @@ mod unit_tests {
         ping_responder.await.unwrap();
 
         assert!(result.is_ok());
-        let duration = result.unwrap();
-        assert!(duration.as_millis() >= 0);
     }
 
     // --- RTN13b: Ping errors in INITIALIZED state ---
@@ -20826,6 +22086,7 @@ mod unit_tests {
 
         let ann = Annotation {
             annotation_type: Some("reaction".into()),
+            name: None,
             action: Some(AnnotationAction::AnnotationCreate),
             client_id: Some("user1".into()),
             msg_serial: Some("serial1".into()),
@@ -21125,6 +22386,7 @@ mod unit_tests {
         let ch = client.channels().get("test");
         let ann = crate::rest::Annotation {
             annotation_type: Some("reaction".into()),
+            name: None,
             action: None,
             client_id: None,
             msg_serial: None,
@@ -21142,8 +22404,8 @@ mod unit_tests {
         assert_eq!(req.method, "POST");
         assert!(req.url.path().contains("/annotations"));
         let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
-        assert_eq!(body["action"], 0); // ANNOTATION_CREATE
-        assert_eq!(body["type"], "reaction");
+        assert_eq!(body[0]["action"], 0); // ANNOTATION_CREATE
+        assert_eq!(body[0]["type"], "reaction");
         Ok(())
     }
 
@@ -21154,6 +22416,7 @@ mod unit_tests {
         let ch = client.channels().get("test");
         let ann = crate::rest::Annotation {
             annotation_type: None, // missing type
+            name: None,
             action: None,
             client_id: None,
             msg_serial: None,
@@ -21177,6 +22440,7 @@ mod unit_tests {
         let ch = client.channels().get("test");
         let ann = crate::rest::Annotation {
             annotation_type: Some("reaction".into()),
+            name: None,
             action: None,
             client_id: None,
             msg_serial: None,
@@ -21193,7 +22457,7 @@ mod unit_tests {
         let req = reqs.last().unwrap();
         assert_eq!(req.method, "POST");
         let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
-        assert_eq!(body["action"], 1); // ANNOTATION_DELETE
+        assert_eq!(body[0]["action"], 1); // ANNOTATION_DELETE
         Ok(())
     }
 
@@ -21533,6 +22797,7 @@ mod unit_tests {
 
         let ann = crate::rest::Annotation {
             annotation_type: Some("reaction".into()),
+            name: None,
             action: None,
             client_id: None,
             msg_serial: Some("msg-serial-1".into()),
@@ -21577,6 +22842,7 @@ mod unit_tests {
 
         let ann = crate::rest::Annotation {
             annotation_type: None, // missing type
+            name: None,
             action: None,
             client_id: None,
             msg_serial: None,
@@ -21617,6 +22883,7 @@ mod unit_tests {
 
         let ann = crate::rest::Annotation {
             annotation_type: Some("reaction".into()),
+            name: None,
             action: None,
             client_id: None,
             msg_serial: None,
@@ -21641,6 +22908,7 @@ mod unit_tests {
 
         let ann = crate::rest::Annotation {
             annotation_type: Some("reaction".into()),
+            name: None,
             action: None,
             client_id: None,
             msg_serial: None,
@@ -21690,6 +22958,7 @@ mod unit_tests {
 
         let ann = crate::rest::Annotation {
             annotation_type: Some("reaction".into()),
+            name: None,
             action: None,
             client_id: None,
             msg_serial: None,

@@ -229,6 +229,7 @@ impl ClientOptions {
         let environment = environment.into();
 
         self.rest_host = format!("{}-rest.ably.io", environment);
+        self.realtime_host = format!("{}-realtime.ably.io", environment);
 
         // Generate the fallback hosts.
         self.fallback_hosts = vec![
@@ -410,6 +411,15 @@ impl ClientOptions {
         let rest_url = self.rest_url()?;
         let http_client = self.build_http_client()?;
         Ok(rest::Rest::create(http_client, self, rest_url))
+    }
+
+    /// Returns a Realtime client using the ClientOptions.
+    ///
+    /// # Errors
+    ///
+    /// This method fails if the ClientOptions are not valid.
+    pub fn realtime(self) -> Result<crate::realtime::Realtime> {
+        crate::realtime::Realtime::new(&self)
     }
 
     /// Build the default headers for HTTP requests.
