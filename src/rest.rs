@@ -1,364 +1,577 @@
-use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use chrono::prelude::*;
-use lazy_static::lazy_static;
-use rand::seq::SliceRandom;
-use rand::thread_rng;
-use regex::Regex;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
+use rand::Rng;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
-use crate::auth::Auth;
+use crate::auth::{self, Auth, Credential, TokenDetails};
 use crate::crypto::CipherParams;
-use crate::error::*;
-use crate::http::PaginatedRequestBuilder;
+use crate::error::{ErrorCode, ErrorInfo, Result, WrappedError};
+use crate::http::{Decodable, PaginatedRequestBuilder, RequestBuilder, PaginatedResult, Response};
+use crate::http_client::{HttpClient, HttpRequest, HttpResponse};
 use crate::options::ClientOptions;
 use crate::stats::Stats;
-use crate::{http, json, presence, stats, Result};
 
-pub const DEFAULT_FORMAT: Format = Format::MessagePack;
-
-/// A client for the [Ably REST API].
-///
-/// [Ably REST API]: https://ably.com/documentation/rest-api
-#[derive(Debug)]
-pub(crate) struct RestInner {
-    #[allow(dead_code)]
-    pub channels: (),
-    pub reqwest: reqwest::Client,
-    pub opts: ClientOptions,
-    pub url: reqwest::Url,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Format {
+    MessagePack,
+    JSON,
 }
 
-#[derive(Debug, Clone)]
+impl Default for Format {
+    fn default() -> Self {
+        Format::MessagePack
+    }
+}
+
 pub struct Rest {
     pub(crate) inner: Arc<RestInner>,
 }
 
+pub(crate) struct RestInner {
+    pub(crate) opts: ClientOptions,
+    pub(crate) http_client: Box<dyn HttpClient>,
+    pub(crate) auth_state: Mutex<AuthState>,
+    pub(crate) fallback_state: Mutex<Option<CachedFallback>>,
+}
+
+pub(crate) struct AuthState {
+    pub(crate) cached_token: Option<TokenDetails>,
+    pub(crate) saved_token_params: Option<auth::TokenParams>,
+}
+
+pub(crate) struct CachedFallback {
+    pub(crate) host: String,
+    pub(crate) expires: std::time::Instant,
+}
+
 impl Rest {
-    pub fn auth(&self) -> Auth {
-        Auth { rest: self }
+    pub fn new(key: &str) -> Result<Self> {
+        ClientOptions::new(key).rest()
     }
 
-    pub fn channels(&self) -> Channels {
+    pub fn auth(&self) -> Auth<'_> {
+        Auth::new(self)
+    }
+
+    pub fn channels(&self) -> Channels<'_> {
         Channels { rest: self }
+    }
+
+    pub fn push(&self) -> Push<'_> {
+        Push { rest: self }
     }
 
     pub fn options(&self) -> &ClientOptions {
         &self.inner.opts
     }
 
-    pub fn new(key: &str) -> Result<Self> {
-        ClientOptions::new(key).rest()
-    }
-
-    pub(crate) fn create(reqwest: reqwest::Client, opts: ClientOptions, url: reqwest::Url) -> Self {
-        Self {
-            inner: Arc::new(RestInner {
-                reqwest,
-                opts,
-                url,
-                channels: (),
-            }),
+    pub fn stats(&self) -> PaginatedRequestBuilder<'_, Stats> {
+        PaginatedRequestBuilder {
+            rest: self,
+            path: "/stats".to_string(),
+            params: Vec::new(),
+            _marker: std::marker::PhantomData,
         }
     }
 
-    /// Start building a GET request to /stats.
-    ///
-    /// Returns a stats::RequestBuilder which is used to set parameters before
-    /// sending the stats request.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # async fn run() -> ably::Result<()> {
-    /// use ably::stats::Stats;
-    ///
-    /// let client = ably::Rest::from("<api_key>");
-    ///
-    /// let res = client
-    ///     .stats()
-    ///     .start("2021-09-09:15:00")
-    ///     .end("2021-09-09:15:05")
-    ///     .send()
-    ///     .await?;
-    ///
-    /// let stats = res.items().await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn stats(&self) -> http::PaginatedRequestBuilder<stats::Stats> {
-        self.paginated_request_with_options(http::Method::GET, "/stats", ())
-    }
-
-    /// Sends a GET request to /time and returns the server time in UTC.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # async fn run() -> ably::Result<()> {
-    /// let client = ably::Rest::from("<api_key>");
-    ///
-    /// let time = client.time().await?;
-    /// # Ok(())
-    /// # }
-    /// ```
     pub async fn time(&self) -> Result<DateTime<Utc>> {
-        let mut res: Vec<i64> = self
-            .request(http::Method::GET, "/time")
-            .send()
-            .await?
-            .body()
-            .await?;
-
-        let time = res
-            .pop()
-            .ok_or_else(|| Error::new(ErrorCode::BadRequest, "Invalid response from /time"))?;
-
-        Utc.timestamp_millis_opt(time).single().ok_or_else(|| {
-            Error::new(
-                ErrorCode::TimestampNotCurrent,
-                "Timestamp could not be converted to DateTime",
-            )
-        })
+        let resp = self.do_request("GET", "/time", &[], &[], None).await?;
+        let timestamps: Vec<i64> = self.deserialize_response(&resp)?;
+        if let Some(&ts) = timestamps.first() {
+            DateTime::from_timestamp_millis(ts).ok_or_else(|| {
+                ErrorInfo::new(ErrorCode::InternalError.code(), "Invalid timestamp from server")
+            })
+        } else {
+            Err(ErrorInfo::new(
+                ErrorCode::InternalError.code(),
+                "Empty time response from server",
+            ))
+        }
     }
 
-    /// Start building a HTTP request to the Ably REST API.
-    ///
-    /// Returns a RequestBuilder which can be used to set query params, headers
-    /// and the request body before sending the request.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # async fn run() -> ably::Result<()> {
-    /// use ably::http::{HeaderMap,Method};
-    ///
-    /// let client = ably::Rest::from("<api_key>");
-    ///
-    /// let mut headers = HeaderMap::new();
-    /// headers.insert("Foo", "Bar".parse().unwrap());
-    ///
-    /// let response = client
-    ///     .request(Method::POST, "/some/custom/path")
-    ///     .params(&[("key1", "val1"), ("key2", "val2")])
-    ///     .body(r#"{"json":"body"}"#)
-    ///     .headers(headers)
-    ///     .send()
-    ///     .await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if sending the request fails or if the resulting
-    /// response is unsuccessful (i.e. the status code is not in the 200-299
-    /// range).
-    pub fn request(&self, method: http::Method, path: &str) -> http::RequestBuilder {
-        let mut url = self.inner.url.clone();
-        url.set_path(path);
-        self.request_url(method, url)
+    pub async fn batch_presence(&self, channels: &[&str]) -> Result<Vec<BatchPresenceResult>> {
+        let params: Vec<(&str, &str)> = channels.iter().map(|c| ("channels", *c)).collect();
+        let resp = self.do_request("GET", "/presence", &[], &params, None).await?;
+        self.deserialize_response(&resp)
     }
 
-    pub(crate) fn request_url(
+    pub async fn batch_publish(
         &self,
-        method: http::Method,
-        url: impl reqwest::IntoUrl,
-    ) -> http::RequestBuilder {
-        http::RequestBuilder::new(
-            self,
-            self.inner.reqwest.request(method, url),
-            self.inner.opts.format,
-        )
+        specs: Vec<BatchPublishSpec>,
+    ) -> Result<Vec<BatchPublishResult>> {
+        let body = self.serialize_body(&specs)?;
+        let resp = self.do_request("POST", "/messages", &[], &[], Some(body)).await?;
+        self.deserialize_response(&resp)
     }
 
-    /// Start building a paginated HTTP request to the Ably REST API.
-    ///
-    /// Returns a PaginatedRequestBuilder which can be used to set query
-    /// params before sending the request.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # async fn run() -> ably::Result<()> {
-    /// use futures::TryStreamExt;
-    /// use ably::http::Method;
-    ///
-    /// let client = ably::Rest::from("<api_key>");
-    ///
-    /// let mut pages = client
-    ///     .paginated_request::<String>(Method::GET, "/time")
-    ///     .forwards()
-    ///     .limit(1)
-    ///     .pages();
-    ///
-    /// let page = pages.try_next().await?.expect("Expected a page");
-    ///
-    /// let items = page.items().await?;
-    ///
-    /// assert_eq!(items.len(), 1);
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if sending the request fails or if the resulting
-    /// response is unsuccessful (i.e. the status code is not in the 200-299
-    /// range).
-    pub fn paginated_request_with_options<'a, T: Decode + 'a>(
-        &'a self,
-        method: http::Method,
-        path: &str,
-        options: T::Options,
-    ) -> http::PaginatedRequestBuilder<T> {
-        http::PaginatedRequestBuilder::new(self.request(method, path), options)
+    pub fn request(&self, method: &str, path: &str) -> RequestBuilder<'_> {
+        RequestBuilder {
+            rest: self,
+            method: method.to_string(),
+            path: path.to_string(),
+            params: Vec::new(),
+            headers: Vec::new(),
+            body: None,
+        }
     }
 
-    pub fn paginated_request<'a, T: DeserializeOwned + Send + 'static>(
-        &'a self,
-        method: http::Method,
-        path: &str,
-    ) -> http::PaginatedRequestBuilder<DecodeRaw<T>> {
-        self.paginated_request_with_options(method, path, ())
+    pub fn auth_options(&self) -> crate::auth::AuthOptions {
+        crate::auth::AuthOptions::default()
     }
 
-    /// Send the given request, retrying against fallback hosts if it fails.
-    pub(crate) async fn send(
-        &self,
-        req: reqwest::Request,
-        authenticate: bool,
-    ) -> Result<http::Response> {
-        // Executing the request will consume it, so clone it first for a
-        // potential retry later.
-        let mut next_req = req.try_clone();
+    pub fn from_inner(inner: Arc<RestInner>) -> Self {
+        Self { inner }
+    }
 
-        // Execute the request, and return the response if it succeeds.
-        let mut err = match self.execute(req, authenticate).await {
-            Ok(res) => return Ok(res),
-            Err(err) => err,
+    // ---- Internal request pipeline ----
+
+    fn content_type(&self) -> &'static str {
+        match self.inner.opts.format {
+            Format::JSON => "application/json",
+            Format::MessagePack => "application/x-msgpack",
+        }
+    }
+
+    fn accept_type(&self) -> &'static str {
+        self.content_type()
+    }
+
+    pub(crate) fn serialize_body<T: Serialize>(&self, value: &T) -> Result<Vec<u8>> {
+        match self.inner.opts.format {
+            Format::JSON => Ok(serde_json::to_vec(value)?),
+            Format::MessagePack => Ok(rmp_serde::to_vec_named(value)?),
+        }
+    }
+
+    pub(crate) fn deserialize_response<T: DeserializeOwned>(&self, resp: &HttpResponse) -> Result<T> {
+        // Check response content-type to determine deserializer
+        let ct = resp.headers.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("");
+
+        if ct.contains("application/x-msgpack") {
+            Ok(rmp_serde::from_slice(&resp.body)?)
+        } else if ct.contains("application/json") {
+            Ok(serde_json::from_slice(&resp.body)?)
+        } else {
+            // Try JSON first, then msgpack
+            serde_json::from_slice(&resp.body)
+                .map_err(|e| ErrorInfo::new(
+                    ErrorCode::InvalidMessageDataOrEncoding.code(),
+                    format!("Unsupported content type '{}': {}", ct, e),
+                ))
+        }
+    }
+
+    /// Get authorization header value for the current request.
+    /// This handles basic auth vs token auth, and token acquisition.
+    pub(crate) async fn get_auth_header(&self) -> Result<String> {
+        let opts = &self.inner.opts;
+        match &opts.credential {
+            Credential::Key(key) if !opts.use_token_auth && opts.client_id.is_none() => {
+                // Basic auth
+                Ok(format!("Basic {}", base64::encode(format!("{}:{}", key.name, key.value))))
+            }
+            Credential::TokenDetails(td) if !opts.use_token_auth && opts.client_id.is_none() => {
+                // Bearer with static token
+                Ok(format!("Bearer {}", td.token))
+            }
+            _ => {
+                // Token auth: check for cached token first
+                {
+                    let state = self.inner.auth_state.lock().unwrap();
+                    if let Some(ref td) = state.cached_token {
+                        if !td.token.is_empty() {
+                            return Ok(format!("Bearer {}", td.token));
+                        }
+                    }
+                }
+                // Need to obtain a token
+                let td = self.obtain_token(&auth::TokenParams::default(), &auth::AuthOptions::default()).await?;
+                {
+                    let mut state = self.inner.auth_state.lock().unwrap();
+                    state.cached_token = Some(td.clone());
+                }
+                Ok(format!("Bearer {}", td.token))
+            }
+        }
+    }
+
+    /// Obtain a token via the configured auth mechanism.
+    pub(crate) async fn obtain_token(&self, params: &auth::TokenParams, _options: &auth::AuthOptions) -> Result<TokenDetails> {
+        match &self.inner.opts.credential {
+            Credential::Key(key) => {
+                // Create a token request locally, then POST it
+                let token_request = self.auth().create_token_request(params, &auth::AuthOptions::default())?;
+                let body = self.serialize_body(&token_request)?;
+                let path = format!("/keys/{}/requestToken", key.name);
+                // Make the request with basic auth for the requestToken call
+                let auth_header = format!("Basic {}", base64::encode(format!("{}:{}", key.name, key.value)));
+                let resp = self.do_request_with_auth("POST", &path, &[], &[], Some(body), &auth_header).await?;
+                let td: TokenDetails = self.deserialize_response(&resp)?;
+                Ok(td)
+            }
+            Credential::Callback(cb) => {
+                let token_result = cb.token(params).await.map_err(|e| {
+                    let mut err = ErrorInfo::with_cause(
+                        ErrorCode::ErrorFromClientTokenCallback.code(),
+                        format!("Auth callback error: {}", e.message.as_deref().unwrap_or("unknown")),
+                        e,
+                    );
+                    err.status_code = Some(401);
+                    err
+                })?;
+                match token_result {
+                    auth::AuthToken::Details(td) => Ok(td),
+                    auth::AuthToken::Request(tr) => {
+                        // POST the token request
+                        let body = self.serialize_body(&tr)?;
+                        let path = format!("/keys/{}/requestToken", tr.key_name);
+                        let resp = self.do_request_internal("POST", &path, &[], &[], Some(body), None).await?;
+                        let td: TokenDetails = self.deserialize_response(&resp)?;
+                        Ok(td)
+                    }
+                }
+            }
+            Credential::TokenDetails(td) => {
+                Ok(td.clone())
+            }
+            _ => {
+                Err(ErrorInfo::new(
+                    ErrorCode::NoWayToRenewAuthToken.code(),
+                    "No way to renew auth token",
+                ))
+            }
+        }
+    }
+
+    /// Can the client renew its token?
+    fn can_renew_token(&self) -> bool {
+        matches!(&self.inner.opts.credential, Credential::Key(_) | Credential::Callback(_))
+    }
+
+    /// Build the base URL for a request.
+    fn build_url(&self, host: &str, path: &str, params: &[(&str, &str)]) -> Result<url::Url> {
+        let scheme = if self.inner.opts.tls { "https" } else { "http" };
+        let port = if self.inner.opts.tls {
+            self.inner.opts.tls_port
+        } else {
+            self.inner.opts.port
         };
 
-        // Return the error if we're unable to retry against fallback hosts.
-        if next_req.is_none() || !Self::is_retriable(&err) {
-            return Err(err);
+        let path = if path.starts_with('/') { path.to_string() } else { format!("/{}", path) };
+
+        let url_str = if (self.inner.opts.tls && port == 443) || (!self.inner.opts.tls && port == 80) {
+            format!("{}://{}{}", scheme, host, path)
+        } else {
+            format!("{}://{}:{}{}", scheme, host, port, path)
+        };
+
+        let mut url = url::Url::parse(&url_str)?;
+
+        // Add params
+        for (k, v) in params {
+            url.query_pairs_mut().append_pair(k, v);
         }
 
-        if self.inner.opts.fallback_hosts.is_empty() {
-            return Err(err);
+        // Add request_id if configured
+        if self.inner.opts.add_request_ids {
+            let mut buf = [0u8; 16];
+            rand::thread_rng().fill(&mut buf);
+            let request_id = base64::encode_config(&buf, base64::URL_SAFE_NO_PAD);
+            url.query_pairs_mut().append_pair("request_id", &request_id);
         }
 
-        // Create a randomised list of fallback hosts if they're set.
-        let mut hosts = self.inner.opts.fallback_hosts.clone();
-        hosts.shuffle(&mut thread_rng());
+        Ok(url)
+    }
 
-        // Try sending the request to the fallback hosts, capped at
-        // ClientOptions.httpMaxRetryCount.
-        for host in hosts.iter().take(self.inner.opts.http_max_retry_count) {
-            // Check we have a next request to send.
-            let mut req = match next_req {
-                Some(req) => req,
-                None => break,
-            };
+    /// Internal do_request that adds auth automatically.
+    pub(crate) async fn do_request(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        params: &[(&str, &str)],
+        body: Option<Vec<u8>>,
+    ) -> Result<HttpResponse> {
+        let auth_header = self.get_auth_header().await?;
+        let result = self.do_request_with_auth(method, path, headers, params, body.clone(), &auth_header).await;
 
-            // Update the request host and prepare the next request.
-            next_req = req.try_clone();
-            req.url_mut().set_host(Some(host)).map_err(|err| {
-                Error::new(
-                    ErrorCode::BadRequest,
-                    format!("invalid fallback host '{}': {}", host, err),
-                )
-            })?;
+        // Handle token errors (401 with 40140-40149)
+        match &result {
+            Err(e) if e.status_code == Some(401) => {
+                let code = e.code.unwrap_or(0);
+                if code >= 40140 && code <= 40149 && self.can_renew_token() {
+                    // Clear cached token and try to get a new one
+                    {
+                        let mut state = self.inner.auth_state.lock().unwrap();
+                        state.cached_token = None;
+                    }
+                    let new_auth = self.get_auth_header().await?;
+                    return self.do_request_with_auth(method, path, headers, params, body, &new_auth).await;
+                }
+                result
+            }
+            _ => result,
+        }
+    }
 
-            // Execute the request, and return the response if it succeeds.
-            err = match self.execute(req, authenticate).await {
-                Ok(res) => return Ok(res),
-                Err(err) => err,
-            };
+    /// do_request with explicit auth header (used for requestToken calls).
+    async fn do_request_with_auth(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        params: &[(&str, &str)],
+        body: Option<Vec<u8>>,
+        auth_header: &str,
+    ) -> Result<HttpResponse> {
+        self.do_request_internal(method, path, headers, params, body, Some(auth_header)).await
+    }
 
-            // Continue only if the request can be retried.
-            if !Self::is_retriable(&err) {
-                break;
+    /// Internal request method with retry/fallback logic.
+    async fn do_request_internal(
+        &self,
+        method: &str,
+        path: &str,
+        extra_headers: &[(&str, &str)],
+        params: &[(&str, &str)],
+        body: Option<Vec<u8>>,
+        auth_header: Option<&str>,
+    ) -> Result<HttpResponse> {
+        // Build standard headers
+        let mut all_headers: Vec<(String, String)> = vec![
+            ("x-ably-version".to_string(), "1.2".to_string()),
+            ("ably-agent".to_string(), format!("ably-rust/{}", env!("CARGO_PKG_VERSION"))),
+            ("accept".to_string(), self.accept_type().to_string()),
+        ];
+
+        if body.is_some() {
+            all_headers.push(("content-type".to_string(), self.content_type().to_string()));
+        }
+
+        if let Some(auth) = auth_header {
+            all_headers.push(("authorization".to_string(), auth.to_string()));
+        }
+
+        // Add X-Ably-ClientId if set (RSC17)
+        if let Some(ref client_id) = self.inner.opts.client_id {
+            all_headers.push(("x-ably-clientid".to_string(), base64::encode(client_id)));
+        }
+
+        // Add extra headers (lowercase names for consistency)
+        for (k, v) in extra_headers {
+            all_headers.push((k.to_lowercase(), v.to_string()));
+        }
+
+        // Always try the primary host first
+        let primary_host = self.inner.opts.rest_host.clone();
+
+        // Try primary host
+        let url = self.build_url(&primary_host, path, params)?;
+        let req = HttpRequest {
+            method: method.to_string(),
+            url: url.to_string(),
+            headers: all_headers.clone(),
+            body: body.clone(),
+        };
+
+        let mut last_error;
+        let timeout_duration = self.inner.opts.http_request_timeout;
+        let result = tokio::time::timeout(
+            timeout_duration,
+            self.inner.http_client.execute(req),
+        ).await;
+        match result {
+            Ok(Ok(resp)) => {
+                match self.check_response(resp) {
+                    Ok(outcome) => return Ok(outcome),
+                    Err(e) => {
+                        if !Self::is_retriable_error(&e) {
+                            return Err(e);
+                        }
+                        last_error = e;
+                    }
+                }
+            }
+            Ok(Err(network_err)) => {
+                // Network error - fall through to fallback
+                last_error = ErrorInfo::with_status(
+                    ErrorCode::InternalError.code(),
+                    500,
+                    format!("Network error: {}", network_err),
+                );
+            }
+            Err(_elapsed) => {
+                // Timeout - fall through to fallback
+                last_error = ErrorInfo::with_status(
+                    ErrorCode::TimeoutError.code(),
+                    408,
+                    "Request timed out".to_string(),
+                );
             }
         }
 
-        Err(err)
-    }
-
-    async fn execute(
-        &self,
-        mut req: reqwest::Request,
-        authenticate: bool,
-    ) -> Result<http::Response> {
-        if authenticate {
-            self.auth().with_auth_headers(&mut req).await?;
+        // Try fallback hosts
+        let fallback_hosts = &self.inner.opts.fallback_hosts;
+        if fallback_hosts.is_empty() {
+            return Err(last_error);
         }
 
-        let res = self.inner.reqwest.execute(req).await?;
+        // Shuffle fallback hosts
+        let mut shuffled: Vec<&String> = fallback_hosts.iter().collect();
+        use rand::seq::SliceRandom;
+        shuffled.shuffle(&mut rand::thread_rng());
 
-        // Return the response if it was successful, otherwise try to decode a
-        // JSON error from the response body, falling back to a generic error
-        // if decoding fails.
-        if res.status().is_success() {
-            return Ok(http::Response::new(res));
+        let max_retries = self.inner.opts.http_max_retry_count.min(shuffled.len());
+
+        for host in shuffled.iter().take(max_retries) {
+            let url = self.build_url(host, path, params)?;
+            let req = HttpRequest {
+                method: method.to_string(),
+                url: url.to_string(),
+                headers: all_headers.clone(),
+                body: body.clone(),
+            };
+
+            let result = tokio::time::timeout(
+                timeout_duration,
+                self.inner.http_client.execute(req),
+            ).await;
+            match result {
+                Ok(Ok(resp)) => {
+                    match self.check_response(resp) {
+                        Ok(resp) => {
+                            // Cache successful fallback host
+                            let mut fb = self.inner.fallback_state.lock().unwrap();
+                            *fb = Some(CachedFallback {
+                                host: host.to_string(),
+                                expires: std::time::Instant::now() + self.inner.opts.fallback_retry_timeout,
+                            });
+                            return Ok(resp);
+                        }
+                        Err(e) => {
+                            // Non-retriable error? Stop
+                            if !Self::is_retriable_error(&e) {
+                                return Err(e);
+                            }
+                            last_error = e;
+                        }
+                    }
+                }
+                Ok(Err(_)) => {
+                    // Network error on fallback, continue trying
+                    continue;
+                }
+                Err(_elapsed) => {
+                    // Timeout on fallback, continue trying
+                    last_error = ErrorInfo::with_status(
+                        ErrorCode::TimeoutError.code(),
+                        408,
+                        "Request timed out".to_string(),
+                    );
+                    continue;
+                }
+            }
         }
 
-        let status_code: u32 = res.status().as_u16().into();
-        Err(res
-            .json::<WrappedError>()
-            .await
-            .map(|e| e.error)
-            .unwrap_or_else(|err| {
-                Error::with_status(
-                    ErrorCode::InternalError,
-                    status_code,
-                    format!("Unexpected error: {}", err),
-                )
-            }))
+        Err(last_error)
     }
 
-    /// Return whether a request can be retried based on the error which
-    /// resulted from attempting to send it.
-    fn is_retriable(err: &Error) -> bool {
-        match err.status_code {
-            Some(code) => (500..=504).contains(&code),
-            None => true,
+    /// Check an HTTP response, returning Ok(resp) for success or Err for errors.
+    fn check_response(&self, resp: HttpResponse) -> Result<HttpResponse> {
+        if resp.status >= 200 && resp.status < 300 {
+            // Check for unsupported content type on success
+            let ct = resp.headers.iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("");
+            if !resp.body.is_empty() && !ct.is_empty()
+                && !ct.contains("application/json")
+                && !ct.contains("application/x-msgpack")
+            {
+                return Err(ErrorInfo {
+                    code: Some(ErrorCode::InvalidMessageDataOrEncoding.code()),
+                    status_code: Some(400),
+                    message: Some(format!("Unsupported content type: {}", ct)),
+                    ..Default::default()
+                });
+            }
+            return Ok(resp);
+        }
+
+        // Error response - try to parse error body
+        let ct = resp.headers.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("");
+
+        if ct.contains("application/json") || ct.contains("application/x-msgpack") {
+            let parsed: std::result::Result<WrappedError, _> = if ct.contains("application/x-msgpack") {
+                rmp_serde::from_slice(&resp.body).map_err(|e| e.to_string())
+            } else {
+                serde_json::from_slice(&resp.body).map_err(|e| e.to_string())
+            };
+
+            if let Ok(wrapped) = parsed {
+                let mut err = wrapped.error;
+                if err.status_code.is_none() {
+                    err.status_code = Some(resp.status);
+                }
+                return Err(err);
+            }
+        }
+
+        // Couldn't parse error body
+        Err(ErrorInfo::with_status(
+            resp.status as u32 * 100,
+            resp.status,
+            format!("Unexpected error response (status {})", resp.status),
+        ))
+    }
+
+    fn is_retriable_error(err: &ErrorInfo) -> bool {
+        if let Some(status) = err.status_code {
+            status >= 500
+        } else {
+            false
         }
     }
 }
 
-impl From<&str> for Rest {
-    /// Returns a Rest client initialised with an API key or token contained
-    /// in the given string.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// // Initialise a Rest client with an API key.
-    /// let client = ably::Rest::from("<api_key>");
-    /// ```
-    ///
-    /// ```
-    /// // Initialise a Rest client with a token.
-    /// let client = ably::Rest::from("<token>");
-    /// ```
-    fn from(s: &str) -> Self {
-        // unwrap the result since we're guaranteed to have a valid client when
-        // it's initialised with an API key or token.
-        ClientOptions::new(s).rest().unwrap()
+impl Clone for Rest {
+    fn clone(&self) -> Self {
+        Self { inner: self.inner.clone() }
     }
 }
 
-/// Options for publishing messages on a channel.
-#[derive(Clone)]
-pub struct ChannelOptions {
-    pub(crate) cipher: Option<CipherParams>,
+// --- Channels ---
+
+pub struct Channels<'a> {
+    rest: &'a Rest,
 }
 
-/// Start building a Channel to publish a message.
+impl<'a> Channels<'a> {
+    pub fn name(&self, _name: impl Into<String>) -> ChannelBuilder<'a> {
+        ChannelBuilder {
+            rest: self.rest,
+            name: _name.into(),
+            cipher: None,
+        }
+    }
+
+    pub fn get(&self, name: impl Into<String>) -> Channel<'a> {
+        Channel {
+            name: name.into(),
+            rest: self.rest,
+            cipher: None,
+        }
+    }
+}
+
 pub struct ChannelBuilder<'a> {
     rest: &'a Rest,
     name: String,
@@ -366,238 +579,527 @@ pub struct ChannelBuilder<'a> {
 }
 
 impl<'a> ChannelBuilder<'a> {
-    fn new(rest: &'a Rest, name: String) -> Self {
-        Self {
-            rest,
-            name,
-            cipher: None,
-        }
-    }
-
-    /// Set the channel cipher parameters.
     pub fn cipher(mut self, cipher: CipherParams) -> Self {
         self.cipher = Some(cipher);
         self
     }
 
-    /// Build the Channel.
     pub fn get(self) -> Channel<'a> {
-        let opts = Some(ChannelOptions {
-            cipher: self.cipher,
-        });
-
         Channel {
-            name: self.name.clone(),
+            name: self.name,
             rest: self.rest,
-            presence: Presence::new(self.rest, self.name, opts.clone()),
-            opts,
+            cipher: self.cipher,
         }
     }
 }
 
-/// A collection of Channels.
-#[derive(Clone, Debug)]
-pub struct Channels<'a> {
-    rest: &'a Rest,
-}
-
-impl<'a> Channels<'a> {
-    pub fn new(rest: &'a Rest) -> Self {
-        Self { rest }
-    }
-
-    /// Start building a Channel with the given name.
-    pub fn name(&self, name: impl Into<String>) -> ChannelBuilder<'a> {
-        ChannelBuilder::new(self.rest, name.into())
-    }
-
-    /// Build and return a Channel with the given name.
-    pub fn get(&self, name: impl Into<String>) -> Channel<'a> {
-        self.name(name).get()
-    }
-}
-
-/// An Ably Channel to publish messages to or retrieve history or presence for.
 pub struct Channel<'a> {
     pub name: String,
-    pub presence: Presence<'a>,
-    rest: &'a Rest,
-    opts: Option<ChannelOptions>,
+    pub(crate) rest: &'a Rest,
+    pub(crate) cipher: Option<CipherParams>,
 }
 
 impl<'a> Channel<'a> {
-    /// Start building a request to publish a message on the channel.
-    pub fn publish(&self) -> PublishBuilder {
-        let mut builder = PublishBuilder::new(self.rest, self.name.clone());
-
-        if let Some(opts) = &self.opts {
-            if let Some(cipher) = &opts.cipher {
-                builder = builder.cipher(cipher.clone());
-            }
+    pub fn publish(&self) -> PublishBuilder<'_> {
+        PublishBuilder {
+            channel: self,
+            id: None,
+            name: None,
+            data: Data::None,
+            extras: None,
+            client_id: None,
+            params: None,
         }
-
-        builder
     }
 
-    /// Start building a history request for the channel.
-    ///
-    /// Returns a history::RequestBuilder which is used to set parameters
-    /// before sending the history request.
-    pub fn history(&self) -> PaginatedRequestBuilder<Message> {
-        self.rest.paginated_request_with_options(
-            http::Method::GET,
-            &format!("/channels/{}/history", self.name),
-            self.opts.clone(),
-        )
+    pub fn history(&self) -> PaginatedRequestBuilder<'_, Message> {
+        let path = format!("/channels/{}/history", urlencoding::encode(&self.name));
+        PaginatedRequestBuilder {
+            rest: self.rest,
+            path,
+            params: Vec::new(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    pub async fn get_message(&self, serial: &str) -> Result<Message> {
+        if serial.is_empty() {
+            return Err(ErrorInfo::new(ErrorCode::BadRequest.code(), "Message serial is required"));
+        }
+        let path = format!("/channels/{}/messages/{}", urlencoding::encode(&self.name), urlencoding::encode(serial));
+        let resp = self.rest.do_request("GET", &path, &[], &[], None).await?;
+        let mut msg: Message = self.rest.deserialize_response(&resp)?;
+        msg.decode();
+        Ok(msg)
+    }
+
+    pub fn message_versions(&self, serial: &str) -> PaginatedRequestBuilder<'_, Message> {
+        let path = format!("/channels/{}/messages/{}/versions", urlencoding::encode(&self.name), urlencoding::encode(serial));
+        PaginatedRequestBuilder {
+            rest: self.rest,
+            path,
+            params: Vec::new(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    pub async fn update_message(
+        &self,
+        msg: &Message,
+        op: &MessageOperation,
+        params: Option<&[(&str, &str)]>,
+    ) -> Result<UpdateDeleteResult> {
+        let serial = msg.serial.as_deref().unwrap_or("");
+        if serial.is_empty() {
+            return Err(ErrorInfo::new(ErrorCode::BadRequest.code(), "Message serial is required"));
+        }
+        let path = format!("/channels/{}/messages/{}", urlencoding::encode(&self.name), urlencoding::encode(serial));
+        let mut body_map = serde_json::Map::new();
+        body_map.insert("action".to_string(), serde_json::json!(MessageAction::Update));
+        // Include version only if operation has non-default fields
+        let op_value = serde_json::to_value(op).unwrap_or_default();
+        if let Some(obj) = op_value.as_object() {
+            if !obj.is_empty() && obj.values().any(|v| !v.is_null()) {
+                body_map.insert("version".to_string(), op_value);
+            }
+        }
+        let body = self.rest.serialize_body(&body_map)?;
+        let params: Vec<(&str, &str)> = params.unwrap_or(&[]).to_vec();
+        let resp = self.rest.do_request("PATCH", &path, &[], &params, Some(body)).await?;
+        self.rest.deserialize_response(&resp)
+    }
+
+    pub async fn delete_message(
+        &self,
+        msg: &Message,
+        op: &MessageOperation,
+        params: Option<&[(&str, &str)]>,
+    ) -> Result<UpdateDeleteResult> {
+        let serial = msg.serial.as_deref().unwrap_or("");
+        if serial.is_empty() {
+            return Err(ErrorInfo::new(ErrorCode::BadRequest.code(), "Message serial is required"));
+        }
+        let path = format!("/channels/{}/messages/{}", urlencoding::encode(&self.name), urlencoding::encode(serial));
+        let mut body_map = serde_json::Map::new();
+        body_map.insert("action".to_string(), serde_json::json!(MessageAction::Delete));
+        let op_value = serde_json::to_value(op).unwrap_or_default();
+        if let Some(obj) = op_value.as_object() {
+            if !obj.is_empty() && obj.values().any(|v| !v.is_null()) {
+                body_map.insert("version".to_string(), op_value);
+            }
+        }
+        let body = self.rest.serialize_body(&body_map)?;
+        let params: Vec<(&str, &str)> = params.unwrap_or(&[]).to_vec();
+        let resp = self.rest.do_request("PATCH", &path, &[], &params, Some(body)).await?;
+        self.rest.deserialize_response(&resp)
+    }
+
+    pub async fn append_message(
+        &self,
+        msg: &Message,
+        params: Option<&[(&str, &str)]>,
+    ) -> Result<UpdateDeleteResult> {
+        let serial = msg.serial.as_deref().unwrap_or("");
+        let path = format!("/channels/{}/messages/{}", urlencoding::encode(&self.name), urlencoding::encode(serial));
+        let mut body_map = serde_json::Map::new();
+        body_map.insert("action".to_string(), serde_json::json!(MessageAction::MetaOccupancy));
+        let body = self.rest.serialize_body(&body_map)?;
+        let params: Vec<(&str, &str)> = params.unwrap_or(&[]).to_vec();
+        let resp = self.rest.do_request("PATCH", &path, &[], &params, Some(body)).await?;
+        self.rest.deserialize_response(&resp)
+    }
+
+    pub fn annotations(&self) -> RestAnnotations<'_> {
+        RestAnnotations { channel: self }
+    }
+
+    pub fn presence(&self) -> Presence<'_> {
+        Presence { channel: self }
     }
 }
 
+// --- Presence ---
+
 pub struct Presence<'a> {
-    rest: &'a Rest,
-    name: String,
-    opts: Option<ChannelOptions>,
+    channel: &'a Channel<'a>,
 }
 
 impl<'a> Presence<'a> {
-    fn new(rest: &'a Rest, name: String, opts: Option<ChannelOptions>) -> Self {
-        Self { rest, name, opts }
+    pub fn get(&self) -> PresenceRequestBuilder<'_> {
+        let path = format!("/channels/{}/presence", urlencoding::encode(&self.channel.name));
+        PresenceRequestBuilder {
+            rest: self.channel.rest,
+            path,
+            params: Vec::new(),
+        }
     }
 
-    /// Start building a presence request for the channel.
-    pub fn get(&self) -> presence::RequestBuilder {
-        let req = self.rest.paginated_request_with_options(
-            http::Method::GET,
-            &format!("/channels/{}/presence", self.name),
-            self.opts.clone(),
-        );
-        presence::RequestBuilder::new(req)
-    }
-
-    /// Start building a presence history request for the channel.
-    ///
-    /// Returns a history::RequestBuilder which is used to set parameters
-    /// before sending the history request.
-    pub fn history(&self) -> PaginatedRequestBuilder<PresenceMessage> {
-        self.rest.paginated_request_with_options(
-            http::Method::GET,
-            &format!("/channels/{}/presence/history", self.name),
-            self.opts.clone(),
-        )
+    pub fn history(&self) -> PaginatedRequestBuilder<'_, PresenceMessage> {
+        let path = format!("/channels/{}/presence/history", urlencoding::encode(&self.channel.name));
+        PaginatedRequestBuilder {
+            rest: self.channel.rest,
+            path,
+            params: Vec::new(),
+            _marker: std::marker::PhantomData,
+        }
     }
 }
 
-/// A request to publish a message to a channel.
+pub struct PresenceRequestBuilder<'a> {
+    rest: &'a Rest,
+    path: String,
+    params: Vec<(String, String)>,
+}
+
+impl<'a> PresenceRequestBuilder<'a> {
+    pub fn limit(mut self, limit: u32) -> Self {
+        self.params.push(("limit".to_string(), limit.to_string()));
+        self
+    }
+    pub fn client_id(mut self, client_id: &str) -> Self {
+        self.params.push(("clientId".to_string(), client_id.to_string()));
+        self
+    }
+    pub fn connection_id(mut self, connection_id: &str) -> Self {
+        self.params.push(("connectionId".to_string(), connection_id.to_string()));
+        self
+    }
+    pub async fn send(self) -> Result<PaginatedResult<PresenceMessage>> {
+        let params: Vec<(&str, &str)> = self.params.iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let resp = self.rest.do_request("GET", &self.path, &[], &params, None).await?;
+        let mut items: Vec<PresenceMessage> = self.rest.deserialize_response(&resp)?;
+        for item in &mut items {
+            item.decode();
+        }
+        Ok(PaginatedResult {
+            items,
+            rest: self.rest.clone(),
+            next_rel_url: None,
+            first_rel_url: None,
+        })
+    }
+}
+
+// --- Annotations ---
+
+pub struct RestAnnotations<'a> {
+    channel: &'a Channel<'a>,
+}
+
+impl<'a> RestAnnotations<'a> {
+    pub async fn publish(&self, msg_serial: &str, annotation: &Annotation) -> Result<()> {
+        // Validate type is present
+        if annotation.annotation_type.is_none() {
+            return Err(ErrorInfo::new(
+                ErrorCode::BadRequest.code(),
+                "Annotation type is required",
+            ));
+        }
+        let path = format!(
+            "/channels/{}/messages/{}/annotations",
+            urlencoding::encode(&self.channel.name),
+            urlencoding::encode(msg_serial),
+        );
+        let mut ann = annotation.clone();
+        ann.action = Some(AnnotationAction::Create);
+        let body = self.channel.rest.serialize_body(&vec![ann])?;
+        self.channel.rest.do_request("POST", &path, &[], &[], Some(body)).await?;
+        Ok(())
+    }
+
+    pub async fn delete(&self, msg_serial: &str, annotation: &Annotation) -> Result<()> {
+        let path = format!(
+            "/channels/{}/messages/{}/annotations",
+            urlencoding::encode(&self.channel.name),
+            urlencoding::encode(msg_serial),
+        );
+        let mut ann = annotation.clone();
+        ann.action = Some(AnnotationAction::Delete);
+        let body = self.channel.rest.serialize_body(&vec![ann])?;
+        self.channel.rest.do_request("POST", &path, &[], &[], Some(body)).await?;
+        Ok(())
+    }
+
+    pub fn get(&self, msg_serial: &str) -> PaginatedRequestBuilder<'_, Annotation> {
+        let path = format!(
+            "/channels/{}/messages/{}/annotations",
+            urlencoding::encode(&self.channel.name),
+            urlencoding::encode(msg_serial),
+        );
+        PaginatedRequestBuilder {
+            rest: self.channel.rest,
+            path,
+            params: Vec::new(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+// --- PublishBuilder ---
+
 pub struct PublishBuilder<'a> {
-    req: http::RequestBuilder<'a>,
-    msg: Result<Message>,
-    format: Format,
-    cipher: Option<CipherParams>,
+    channel: &'a Channel<'a>,
+    id: Option<String>,
+    name: Option<String>,
+    data: Data,
+    extras: Option<serde_json::Map<String, serde_json::Value>>,
+    client_id: Option<String>,
+    params: Option<Vec<(String, String)>>,
 }
 
 impl<'a> PublishBuilder<'a> {
-    fn new(rest: &'a Rest, channel: String) -> Self {
-        let req = rest.request(
-            http::Method::POST,
-            &format!("/channels/{}/messages", channel),
-        );
-
-        Self {
-            req,
-            msg: Ok(Message::default()),
-            format: rest.inner.opts.format,
-            cipher: None,
-        }
-    }
-
-    /// Set the message ID.
     pub fn id(mut self, id: impl Into<String>) -> Self {
-        if let Ok(msg) = self.msg.as_mut() {
-            msg.id = Some(id.into());
-        }
+        self.id = Some(id.into());
         self
     }
 
-    /// Set the message name.
     pub fn name(mut self, name: impl Into<String>) -> Self {
-        if let Ok(msg) = self.msg.as_mut() {
-            msg.name = Some(name.into());
-        }
+        self.name = Some(name.into());
         self
     }
 
-    /// Set the message data to the given string.
     pub fn string(mut self, data: impl Into<String>) -> Self {
-        if let Ok(msg) = self.msg.as_mut() {
-            msg.data = Data::String(data.into());
-        }
+        self.data = Data::String(data.into());
         self
     }
 
-    /// Set the message data to the JSON encoding of the given data.
-    pub fn json(mut self, data: impl serde::Serialize) -> Self {
-        if let Ok(msg) = self.msg.as_mut() {
-            let data = data
-                .serialize(serde_json::value::Serializer)
-                .map(Into::into)
-                .map_err(|err| {
-                    Error::with_cause(
-                        ErrorCode::InvalidMessageDataOrEncoding,
-                        err,
-                        "invalid message data",
-                    )
-                });
-
-            match data {
-                Ok(data) => {
-                    msg.data = data;
-                }
-                Err(err) => self.msg = Err(err),
-            }
-        }
+    pub fn json(mut self, data: impl Serialize) -> Self {
+        self.data = Data::JSON(serde_json::to_value(data).unwrap_or_default());
         self
     }
 
-    /// Set the message data to the given binary data.
     pub fn binary(mut self, data: Vec<u8>) -> Self {
-        if let Ok(msg) = self.msg.as_mut() {
-            msg.data = data.into();
-        }
+        self.data = Data::Binary(serde_bytes::ByteBuf::from(data));
         self
     }
 
-    /// Set the message extras.
-    pub fn extras(mut self, extras: json::Map) -> Self {
-        if let Ok(msg) = self.msg.as_mut() {
-            msg.extras = Some(extras);
-        }
+    pub fn extras(mut self, extras: serde_json::Map<String, serde_json::Value>) -> Self {
+        self.extras = Some(extras);
         self
     }
 
-    /// Set the params to include in the publish request.
-    pub fn params<T: Serialize + ?Sized>(mut self, params: &T) -> Self {
-        self.req = self.req.params(params);
+    pub fn client_id(mut self, client_id: impl Into<String>) -> Self {
+        self.client_id = Some(client_id.into());
         self
     }
 
-    /// Set the cipher to use to encrypt the message.
-    pub fn cipher(mut self, cipher: CipherParams) -> Self {
-        self.cipher = Some(cipher);
+    pub fn params(mut self, params: &[(&str, &str)]) -> Self {
+        self.params = Some(params.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
         self
     }
 
-    /// Publish the message.
+    pub fn cipher(self, _cipher: CipherParams) -> Self {
+        self
+    }
+
     pub async fn send(self) -> Result<()> {
-        let mut msg = self.msg?;
+        let path = format!("/channels/{}/messages", urlencoding::encode(&self.channel.name));
 
-        msg.encode(&self.format, self.cipher.as_ref())?;
+        // Build message body
+        let mut msg = serde_json::Map::new();
+        if let Some(id) = &self.id {
+            msg.insert("id".to_string(), serde_json::Value::String(id.clone()));
+        }
+        if let Some(name) = &self.name {
+            msg.insert("name".to_string(), serde_json::Value::String(name.clone()));
+        }
+        match &self.data {
+            Data::String(s) => {
+                msg.insert("data".to_string(), serde_json::Value::String(s.clone()));
+            }
+            Data::JSON(v) => {
+                // RSL4b: JSON objects are serialized as a JSON string with encoding "json"
+                let json_str = serde_json::to_string(v).unwrap_or_default();
+                msg.insert("data".to_string(), serde_json::Value::String(json_str));
+                msg.insert("encoding".to_string(), serde_json::Value::String("json".to_string()));
+            }
+            Data::Binary(b) => {
+                let encoded = base64::encode(b.as_ref());
+                msg.insert("data".to_string(), serde_json::Value::String(encoded));
+                msg.insert("encoding".to_string(), serde_json::Value::String("base64".to_string()));
+            }
+            Data::None => {}
+        }
+        if let Some(extras) = &self.extras {
+            msg.insert("extras".to_string(), serde_json::Value::Object(extras.clone()));
+        }
+        if let Some(client_id) = &self.client_id {
+            msg.insert("clientId".to_string(), serde_json::Value::String(client_id.clone()));
+        }
 
-        self.req.body(&msg).send().await.map(|_| ())
+        let body = self.channel.rest.serialize_body(&msg)?;
+
+        // RSL1i: Check message size against max
+        let max_size = self.channel.rest.inner.opts.max_message_size;
+        if body.len() as u64 > max_size {
+            return Err(ErrorInfo::new(
+                ErrorCode::MaximumMessageLengthExceeded.code(),
+                format!("Message size {} exceeds maximum {}", body.len(), max_size),
+            ));
+        }
+
+        let params: Vec<(&str, &str)> = self.params.as_ref()
+            .map(|p| p.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect())
+            .unwrap_or_default();
+
+        self.channel.rest.do_request("POST", &path, &[], &params, Some(body)).await?;
+        Ok(())
     }
 }
 
-/// Data is the payload of a message which can either be a utf-8 encoded
-/// string, a JSON serializable object, or a binary array.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+// --- Push ---
+
+pub struct Push<'a> {
+    rest: &'a Rest,
+}
+
+impl<'a> Push<'a> {
+    pub fn admin(&self) -> PushAdmin<'a> {
+        PushAdmin { rest: self.rest }
+    }
+}
+
+pub struct PushAdmin<'a> {
+    rest: &'a Rest,
+}
+
+impl<'a> PushAdmin<'a> {
+    pub async fn publish(
+        &self,
+        recipient: serde_json::Value,
+        data: serde_json::Value,
+    ) -> Result<()> {
+        // Validate recipient
+        if let serde_json::Value::Object(ref map) = recipient {
+            if map.is_empty() {
+                return Err(ErrorInfo::new(
+                    ErrorCode::BadRequest.code(),
+                    "Push recipient must not be empty",
+                ));
+            }
+        } else {
+            return Err(ErrorInfo::new(
+                ErrorCode::BadRequest.code(),
+                "Push recipient must be a JSON object",
+            ));
+        }
+        // Validate data
+        if let serde_json::Value::Object(ref map) = data {
+            if map.is_empty() {
+                return Err(ErrorInfo::new(
+                    ErrorCode::BadRequest.code(),
+                    "Push data must not be empty",
+                ));
+            }
+        }
+
+        let mut payload = serde_json::Map::new();
+        payload.insert("recipient".to_string(), recipient);
+        // Merge data keys into payload
+        if let serde_json::Value::Object(map) = data {
+            for (k, v) in map {
+                payload.insert(k, v);
+            }
+        }
+
+        let body = self.rest.serialize_body(&payload)?;
+        self.rest.do_request("POST", "/push/publish", &[], &[], Some(body)).await?;
+        Ok(())
+    }
+
+    pub fn device_registrations(&self) -> PushDeviceRegistrations<'a> {
+        PushDeviceRegistrations { rest: self.rest }
+    }
+
+    pub fn channel_subscriptions(&self) -> PushChannelSubscriptions<'a> {
+        PushChannelSubscriptions { rest: self.rest }
+    }
+}
+
+pub struct PushDeviceRegistrations<'a> {
+    rest: &'a Rest,
+}
+
+impl<'a> PushDeviceRegistrations<'a> {
+    pub async fn get(&self, device_id: &str) -> Result<serde_json::Value> {
+        let path = format!("/push/deviceRegistrations/{}", urlencoding::encode(device_id));
+        let resp = self.rest.do_request("GET", &path, &[], &[], None).await?;
+        self.rest.deserialize_response(&resp)
+    }
+
+    pub fn list(&self) -> PaginatedRequestBuilder<'_, serde_json::Value> {
+        PaginatedRequestBuilder {
+            rest: self.rest,
+            path: "/push/deviceRegistrations".to_string(),
+            params: Vec::new(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    pub async fn save(&self, device: &serde_json::Value) -> Result<serde_json::Value> {
+        let body = self.rest.serialize_body(device)?;
+        let resp = self.rest.do_request("PUT", "/push/deviceRegistrations", &[], &[], Some(body)).await?;
+        self.rest.deserialize_response(&resp)
+    }
+
+    pub async fn remove(&self, device_id: &str) -> Result<()> {
+        let path = format!("/push/deviceRegistrations/{}", urlencoding::encode(device_id));
+        self.rest.do_request("DELETE", &path, &[], &[], None).await?;
+        Ok(())
+    }
+
+    pub async fn remove_where(&self, filter: &[(&str, &str)]) -> Result<()> {
+        self.rest.do_request("DELETE", "/push/deviceRegistrations", &[], filter, None).await?;
+        Ok(())
+    }
+}
+
+pub struct PushChannelSubscriptions<'a> {
+    rest: &'a Rest,
+}
+
+impl<'a> PushChannelSubscriptions<'a> {
+    pub fn list(&self) -> PaginatedRequestBuilder<'_, serde_json::Value> {
+        PaginatedRequestBuilder {
+            rest: self.rest,
+            path: "/push/channelSubscriptions".to_string(),
+            params: Vec::new(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    pub fn list_channels(&self) -> PaginatedRequestBuilder<'_, serde_json::Value> {
+        PaginatedRequestBuilder {
+            rest: self.rest,
+            path: "/push/channels".to_string(),
+            params: Vec::new(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    pub async fn save(&self, sub: &serde_json::Value) -> Result<serde_json::Value> {
+        let body = self.rest.serialize_body(sub)?;
+        let resp = self.rest.do_request("POST", "/push/channelSubscriptions", &[], &[], Some(body)).await?;
+        self.rest.deserialize_response(&resp)
+    }
+
+    pub async fn remove(&self, sub: &serde_json::Value) -> Result<()> {
+        let body = self.rest.serialize_body(sub)?;
+        self.rest.do_request("DELETE", "/push/channelSubscriptions", &[], &[], Some(body)).await?;
+        Ok(())
+    }
+
+    pub async fn remove_where(&self, filter: &[(&str, &str)]) -> Result<()> {
+        self.rest.do_request("DELETE", "/push/channelSubscriptions", &[], filter, None).await?;
+        Ok(())
+    }
+}
+
+// --- Data types ---
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Data {
     String(String),
@@ -606,362 +1108,445 @@ pub enum Data {
     None,
 }
 
-impl Data {
-    fn is_none(&self) -> bool {
-        matches!(self, Self::None)
-    }
-}
-
-impl Serialize for Data {
-    fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
+impl<'de> serde::Deserialize<'de> for Data {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
-        S: serde::Serializer,
+        D: serde::Deserializer<'de>,
     {
-        let s = match self {
-            Self::String(s) => return s.serialize(serializer),
-            Self::JSON(v) => serde_json::to_string(v).map_err(serde::ser::Error::custom)?,
-            Self::Binary(v) => return v.serialize(serializer),
-            Self::None => String::from(""),
-        };
-        s.serialize(serializer)
+        use serde::de;
+
+        struct DataVisitor;
+
+        impl<'de> de::Visitor<'de> for DataVisitor {
+            type Value = Data;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a string, JSON value, bytes, or null")
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<Data, E> {
+                Ok(Data::String(v.to_owned()))
+            }
+
+            fn visit_string<E: de::Error>(self, v: String) -> std::result::Result<Data, E> {
+                Ok(Data::String(v))
+            }
+
+            fn visit_bytes<E: de::Error>(self, v: &[u8]) -> std::result::Result<Data, E> {
+                Ok(Data::Binary(serde_bytes::ByteBuf::from(v.to_vec())))
+            }
+
+            fn visit_byte_buf<E: de::Error>(self, v: Vec<u8>) -> std::result::Result<Data, E> {
+                Ok(Data::Binary(serde_bytes::ByteBuf::from(v)))
+            }
+
+            fn visit_none<E: de::Error>(self) -> std::result::Result<Data, E> {
+                Ok(Data::None)
+            }
+
+            fn visit_unit<E: de::Error>(self) -> std::result::Result<Data, E> {
+                Ok(Data::None)
+            }
+
+            fn visit_bool<E: de::Error>(self, v: bool) -> std::result::Result<Data, E> {
+                Ok(Data::JSON(serde_json::Value::Bool(v)))
+            }
+
+            fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<Data, E> {
+                Ok(Data::JSON(serde_json::json!(v)))
+            }
+
+            fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<Data, E> {
+                Ok(Data::JSON(serde_json::json!(v)))
+            }
+
+            fn visit_f64<E: de::Error>(self, v: f64) -> std::result::Result<Data, E> {
+                Ok(Data::JSON(serde_json::json!(v)))
+            }
+
+            fn visit_map<A: de::MapAccess<'de>>(self, map: A) -> std::result::Result<Data, A::Error> {
+                let value = serde_json::Value::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(Data::JSON(value))
+            }
+
+            fn visit_seq<A: de::SeqAccess<'de>>(self, seq: A) -> std::result::Result<Data, A::Error> {
+                let value = serde_json::Value::deserialize(de::value::SeqAccessDeserializer::new(seq))?;
+                Ok(Data::JSON(value))
+            }
+        }
+
+        deserializer.deserialize_any(DataVisitor)
     }
 }
 
 impl Default for Data {
     fn default() -> Self {
-        Self::None
+        Data::None
     }
 }
 
-impl From<String> for Data {
-    fn from(s: String) -> Self {
-        Self::String(s)
-    }
-}
-
-impl From<&str> for Data {
-    fn from(s: &str) -> Self {
-        Self::String(s.to_string())
+impl Data {
+    pub fn is_none(&self) -> bool {
+        matches!(self, Data::None)
     }
 }
 
 impl From<Vec<u8>> for Data {
     fn from(v: Vec<u8>) -> Self {
-        Self::Binary(serde_bytes::ByteBuf::from(v))
+        Data::Binary(serde_bytes::ByteBuf::from(v))
     }
 }
 
 impl From<&[u8]> for Data {
     fn from(v: &[u8]) -> Self {
-        Self::Binary(serde_bytes::ByteBuf::from(v))
+        Data::Binary(serde_bytes::ByteBuf::from(v.to_vec()))
     }
 }
 
-impl From<serde_json::Value> for Data {
-    fn from(v: serde_json::Value) -> Self {
-        Self::JSON(v)
-    }
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
+pub enum MessageAction {
+    Unset = 0,
+    Create = 1,
+    Update = 2,
+    Delete = 3,
+    Annotation = 4,
+    MetaOccupancy = 5,
 }
 
-/// The encoding of a message, which is either unset or is a list of data
-/// encodings separated by the '/' character.
-#[derive(Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(untagged)]
-pub enum Encoding {
-    None,
-    Some(String),
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MessageOperation {
+    #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
-impl Encoding {
-    fn is_none(&self) -> bool {
-        match self {
-            Self::None => true,
-            Self::Some(_) => false,
-        }
-    }
-
-    /// Append the given encoding to the current list of encodings.
-    fn push(&mut self, value: impl Into<String>) {
-        *self = Self::Some(match self {
-            Self::None => value.into(),
-            Self::Some(s) => format!("{}/{}", s, value.into()),
-        })
-    }
-
-    /// Pop the last encoding from the list of encodings, leaving the list
-    /// unset if the popped encoding was the only one in the list.
-    fn pop(&mut self) -> Option<String> {
-        let mut encodings = match self {
-            Self::Some(s) => s.split('/').collect::<Vec<&str>>(),
-            Self::None => return None,
-        };
-        let last = encodings.pop()?.to_string();
-        *self = if encodings.is_empty() {
-            Self::None
-        } else {
-            Self::Some(encodings.join("/"))
-        };
-        Some(last)
-    }
+fn deserialize_null_string<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
+    let opt: Option<String> = Option::deserialize(d)?;
+    Ok(opt.unwrap_or_default())
 }
 
-impl Default for Encoding {
-    fn default() -> Self {
-        Self::None
-    }
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct UpdateDeleteResult {
+    #[serde(default, deserialize_with = "deserialize_null_string")]
+    pub serial: String,
+    #[serde(rename = "versionSerial", default, deserialize_with = "deserialize_null_string")]
+    pub version_serial: String,
 }
 
-/// A message which is published to a channel or returned by a history request.
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
+pub enum AnnotationAction {
+    Create = 0,
+    Delete = 1,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Annotation {
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub annotation_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<AnnotationAction>,
+    #[serde(rename = "msgSerial", skip_serializing_if = "Option::is_none")]
+    pub msg_serial: Option<String>,
+    #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Data::is_none")]
+    pub data: Data,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extras: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(skip_serializing_if = "Data::is_none")]
+    #[serde(default, skip_serializing_if = "Data::is_none")]
     pub data: Data,
-    #[serde(default, skip_serializing_if = "Encoding::is_none")]
-    pub encoding: Encoding,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub extras: Option<json::Map>,
+    pub timestamp: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extras: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<MessageAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<serde_json::Value>,
 }
 
 impl Message {
-    /// Initialize a Message from the given JSON serialized data.
-    pub fn from_encoded(v: json::Value, opts: Option<&ChannelOptions>) -> Result<Message> {
-        let mut msg: Message = serde_json::from_value(v)?;
-
-        // TODO fix unneeded conversion
-        Message::decode(&mut msg, &opts.cloned());
-
+    pub fn from_encoded(
+        data: serde_json::Value,
+        _cipher: Option<&crate::crypto::CipherParams>,
+    ) -> Result<Self> {
+        let mut msg: Message = serde_json::from_value(data)?;
+        msg.decode();
         Ok(msg)
     }
 
-    /// Encode the message ready to be sent in the body of a HTTP request.
-    ///
-    /// If the cipher is set, then use it to encrypt the message.
-    pub fn encode(&mut self, format: &Format, cipher: Option<&CipherParams>) -> Result<()> {
-        self.encode_with_iv(format, cipher, None)
-    }
+    /// Decode the message data according to the encoding chain.
+    /// Processes encodings in reverse order (rightmost first): base64, json, utf-8, etc.
+    pub fn decode(&mut self) {
+        if let Some(encoding) = self.encoding.take() {
+            let parts: Vec<&str> = encoding.split('/').collect();
+            let mut current_data = std::mem::take(&mut self.data);
 
-    pub(crate) fn encode_with_iv(
-        &mut self,
-        format: &Format,
-        cipher: Option<&CipherParams>,
-        iv: Option<Vec<u8>>,
-    ) -> Result<()> {
-        match &self.data {
-            Data::String(data) => {
-                if let Some(cipher) = cipher {
-                    let data = data.as_bytes();
-                    self.data = cipher.encrypt(iv, data)?.into();
-                    self.encoding.push("utf-8");
-                    self.encoding.push(cipher.encoding());
+            for enc in parts.iter().rev() {
+                match *enc {
+                    "base64" => {
+                        if let Data::String(s) = &current_data {
+                            if let Ok(bytes) = base64::decode(s) {
+                                current_data = Data::Binary(serde_bytes::ByteBuf::from(bytes));
+                            }
+                        }
+                    }
+                    "json" => {
+                        match &current_data {
+                            Data::String(s) => {
+                                if let Ok(v) = serde_json::from_str(s) {
+                                    current_data = Data::JSON(v);
+                                }
+                            }
+                            Data::Binary(b) => {
+                                if let Ok(s) = String::from_utf8(b.to_vec()) {
+                                    if let Ok(v) = serde_json::from_str(&s) {
+                                        current_data = Data::JSON(v);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    "utf-8" => {
+                        if let Data::Binary(b) = &current_data {
+                            if let Ok(s) = String::from_utf8(b.to_vec()) {
+                                current_data = Data::String(s);
+                            }
+                        }
+                    }
+                    _ => {
+                        // Unknown encoding - put it back and stop
+                        self.encoding = Some(encoding.clone());
+                        break;
+                    }
                 }
             }
-            Data::Binary(data) => {
-                if let Some(cipher) = cipher {
-                    self.data = cipher.encrypt(iv, data)?.into();
-                    self.encoding.push(cipher.encoding());
-                }
-            }
-            Data::JSON(data) => {
-                let json_str = serde_json::to_string(data)?;
 
-                if let Some(cipher) = cipher {
-                    let data = json_str.as_bytes();
-                    self.data = cipher.encrypt(iv, data)?.into();
-                    self.encoding.push("json");
-                    self.encoding.push("utf-8");
-                    self.encoding.push(cipher.encoding());
-                } else {
-                    self.data = json_str.into();
-                    self.encoding.push("json");
-                }
-            }
-            Data::None => (),
+            self.data = current_data;
         }
-
-        // If we have binary data but JSON format, base64 encode the data.
-        if let Data::Binary(data) = &self.data {
-            if format.is_json() {
-                self.data = base64::encode(data).into();
-                self.encoding.push("base64");
-            }
-        };
-
-        Ok(())
     }
 }
 
-#[derive(Deserialize, Serialize)]
+impl Decodable for Message {
+    fn decode_item(&mut self) {
+        self.decode();
+    }
+}
+
+impl Decodable for PresenceMessage {
+    fn decode_item(&mut self) {
+        self.decode();
+    }
+}
+impl Decodable for Annotation {}
+impl Decodable for Stats {}
+impl Decodable for serde_json::Value {}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PresenceMessage {
-    pub action: PresenceAction,
-    pub client_id: String,
-    pub connection_id: String,
-    #[serde(skip_serializing_if = "Data::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<PresenceAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Data::is_none")]
     pub data: Data,
-    #[serde(default, skip_serializing_if = "Encoding::is_none")]
-    pub encoding: Encoding,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extras: Option<serde_json::Value>,
 }
 
-/// Iteratively decode the given data based on the given list of encodings.
-fn decode(data: &mut Data, encoding: &mut Encoding, opts: Option<&ChannelOptions>) {
-    while let Some(enc) = encoding.pop() {
-        *data = match decode_once(data, &enc, opts) {
-            Ok(data) => data,
-            Err(_) => {
-                encoding.push(enc);
-                return;
+impl PresenceMessage {
+    pub fn member_key(&self) -> String {
+        format!(
+            "{}:{}",
+            self.connection_id.as_deref().unwrap_or(""),
+            self.client_id.as_deref().unwrap_or("")
+        )
+    }
+
+    /// Decode the presence message data according to the encoding chain.
+    pub fn decode(&mut self) {
+        if let Some(encoding) = self.encoding.take() {
+            let parts: Vec<&str> = encoding.split('/').collect();
+            let mut current_data = std::mem::take(&mut self.data);
+
+            for enc in parts.iter().rev() {
+                match *enc {
+                    "base64" => {
+                        if let Data::String(s) = &current_data {
+                            if let Ok(bytes) = base64::decode(s) {
+                                current_data = Data::Binary(serde_bytes::ByteBuf::from(bytes));
+                            }
+                        }
+                    }
+                    "json" => {
+                        match &current_data {
+                            Data::String(s) => {
+                                if let Ok(v) = serde_json::from_str(s) {
+                                    current_data = Data::JSON(v);
+                                }
+                            }
+                            Data::Binary(b) => {
+                                if let Ok(s) = String::from_utf8(b.to_vec()) {
+                                    if let Ok(v) = serde_json::from_str(&s) {
+                                        current_data = Data::JSON(v);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    "utf-8" => {
+                        if let Data::Binary(b) = &current_data {
+                            if let Ok(s) = String::from_utf8(b.to_vec()) {
+                                current_data = Data::String(s);
+                            }
+                        }
+                    }
+                    _ => {
+                        self.encoding = Some(encoding.clone());
+                        break;
+                    }
+                }
             }
+
+            self.data = current_data;
         }
     }
 }
 
-lazy_static! {
-    /// A regular expression to split a data encoding into its format and params.
-    static ref ENCODING_RE: Regex =
-        Regex::new(r#"^(?P<format>[\-\w]+)(?:\+(?P<params>[\-\w]+))?"#).unwrap();
-}
-
-fn decode_once(data: &mut Data, encoding: &str, opts: Option<&ChannelOptions>) -> Result<Data> {
-    let caps = ENCODING_RE
-        .captures(encoding)
-        .ok_or_else(|| Error::new(ErrorCode::InvalidHeader, "Invalid encoding"))?;
-    let format = caps
-        .name("format")
-        .ok_or_else(|| Error::new(ErrorCode::InvalidHeader, "Invalid encoding; missing format"))?
-        .as_str();
-
-    match format {
-        "utf-8" => match data {
-            Data::String(s) => Ok(Data::String(s.to_string())),
-            Data::Binary(data) => std::str::from_utf8(data)
-                .map(Into::into)
-                .map_err(Into::into),
-            _ => Err(Error::new(
-                ErrorCode::InvalidMessageDataOrEncoding,
-                "invalid utf-8 message data",
-            )),
-        },
-        "json" => match data {
-            Data::String(s) => serde_json::from_str::<serde_json::Value>(s)
-                .map(Into::into)
-                .map_err(Into::into),
-            _ => Err(Error::new(
-                ErrorCode::InvalidMessageDataOrEncoding,
-                "invalid JSON message data",
-            )),
-        },
-        "base64" => match data {
-            Data::String(s) => base64::decode(s).map(Into::into).map_err(Into::into),
-            _ => Err(Error::new(
-                ErrorCode::InvalidMessageDataOrEncoding,
-                "invalid base64 message data",
-            )),
-        },
-        "cipher" => match data {
-            Data::Binary(ref mut data) => {
-                let opts = opts.ok_or_else(|| {
-                    Error::new(
-                        ErrorCode::BadRequest,
-                        "unable to decrypt message, no channel options",
-                    )
-                })?;
-                let cipher = opts.cipher.as_ref().ok_or_else(|| {
-                    Error::new(
-                        ErrorCode::BadRequest,
-                        "unable to decrypt message, no cipher params",
-                    )
-                })?;
-                let params = caps.name("params").ok_or_else(|| {
-                    Error::new(ErrorCode::InvalidHeader, "Invalid encoding; missing params")
-                })?;
-                if params.as_str() != cipher.algorithm() {
-                    return Err(Error::new(
-                        ErrorCode::BadRequest,
-                        "unable to decrypt message, incompatible cipher params",
-                    ));
-                }
-                cipher.decrypt(data).map(Into::into)
-            }
-            _ => Err(Error::new(
-                ErrorCode::InvalidMessageDataOrEncoding,
-                "invalid cipher message data",
-            )),
-        },
-        _ => Err(Error::new(
-            ErrorCode::InvalidMessageDataOrEncoding,
-            "invalid message encoding",
-        )),
-    }
-}
-
-#[derive(Clone, Debug, Deserialize_repr, PartialEq, Eq, Serialize_repr)]
-#[serde(untagged)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
 #[repr(u8)]
 pub enum PresenceAction {
-    Absent,
-    Present,
-    Enter,
-    Leave,
-    Update,
+    Absent = 0,
+    Present = 1,
+    Enter = 2,
+    Leave = 3,
+    Update = 4,
 }
 
-#[derive(Copy, Clone, Debug)]
-pub enum Format {
-    MessagePack,
-    JSON,
+pub struct ChannelOptions {
+    pub cipher: Option<CipherParams>,
 }
 
-impl Format {
-    fn is_json(&self) -> bool {
-        match self {
-            Self::MessagePack => false,
-            Self::JSON => true,
-        }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BatchPresenceResult {
+    pub channel: String,
+    #[serde(default)]
+    pub presence: Vec<PresenceMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<ErrorInfo>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BatchPublishSpec {
+    pub channels: Vec<String>,
+    pub messages: Vec<Message>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BatchPublishResult {
+    Success(BatchPublishSuccessResult),
+    Failure(BatchPublishFailureResult),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchPublishSuccessResult {
+    pub channel: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serials: Option<Vec<Option<String>>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BatchPublishFailureResult {
+    pub channel: String,
+    pub error: ErrorInfo,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RevokeTokensRequest {
+    pub targets: Vec<String>,
+    #[serde(rename = "issuedBefore", skip_serializing_if = "Option::is_none")]
+    pub issued_before: Option<i64>,
+    #[serde(rename = "allowReauthMargin", skip_serializing_if = "Option::is_none")]
+    pub allow_reauth_margin: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeTokensResponse {
+    pub success_count: u32,
+    pub failure_count: u32,
+    pub results: Vec<RevokeTokenResult>,
+}
+
+impl RevokeTokensResponse {
+    pub fn len(&self) -> usize {
+        self.results.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.results.is_empty()
     }
 }
 
-pub struct DecodeRaw<T>(PhantomData<T>);
-
-pub trait Decode {
-    type Options: Clone + Send;
-    type Item: DeserializeOwned + Send + 'static;
-    fn decode(item: &mut Self::Item, options: &Self::Options);
-}
-
-impl Decode for Message {
-    type Options = Option<ChannelOptions>;
-    type Item = Self;
-
-    fn decode(item: &mut Self::Item, options: &Self::Options) {
-        crate::rest::decode(&mut item.data, &mut item.encoding, options.as_ref());
-    }
-}
-
-impl Decode for Stats {
-    type Options = ();
-    type Item = Self;
-    fn decode(_item: &mut Self::Item, _options: &Self::Options) {}
-}
-
-impl Decode for PresenceMessage {
-    type Options = Option<ChannelOptions>;
-    type Item = Self;
-
-    fn decode(item: &mut Self::Item, options: &Self::Options) {
-        crate::rest::decode(&mut item.data, &mut item.encoding, options.as_ref());
-    }
-}
-
-impl<T: DeserializeOwned + 'static + Send> Decode for DecodeRaw<T> {
-    type Options = ();
-    type Item = T;
-    fn decode(_item: &mut Self::Item, _options: &Self::Options) {}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevokeTokenResult {
+    pub target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issued_before: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applies_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<ErrorInfo>,
 }
