@@ -1,52 +1,104 @@
-use futures::stream::Stream;
+use std::collections::HashMap;
 
-use crate::{http, rest, Result};
+use crate::rest::{PresenceAction, PresenceMessage};
 
-/// A type alias for a PaginatedRequestBuilder which uses a MessageItemHandler
-/// to handle pages of presence messages returned from a presence request.
-pub type PaginatedRequestBuilder<'a> = http::PaginatedRequestBuilder<'a, rest::PresenceMessage>;
-
-/// A type alias for a PaginatedResult which uses a MessageItemHandler to
-/// handle pages of presence messages returned from a presence request.
-pub type PaginatedResult = http::PaginatedResult<rest::PresenceMessage>;
-
-/// A builder to construct a REST presence request.
-pub struct RequestBuilder<'a> {
-    inner: PaginatedRequestBuilder<'a>,
+pub(crate) struct PresenceMap {
+    pub(crate) members: HashMap<String, PresenceMessage>,
 }
 
-impl<'a> RequestBuilder<'a> {
-    pub fn new(inner: PaginatedRequestBuilder<'a>) -> Self {
-        Self { inner }
+impl PresenceMap {
+    pub fn new() -> Self {
+        Self { members: HashMap::new() }
     }
 
-    /// Limit the number of results per page.
-    pub fn limit(mut self, limit: u32) -> Self {
-        self.inner = self.inner.limit(limit);
-        self
+    pub fn put(&mut self, msg: &PresenceMessage) -> Option<PresenceMessage> {
+        let key = msg.member_key();
+        match msg.action {
+            Some(PresenceAction::Leave | PresenceAction::Absent) => self.members.remove(&key),
+            _ => self.members.insert(key, msg.clone()),
+        }
     }
 
-    /// Set the client_id query param.
-    pub fn client_id(mut self, client_id: &str) -> Self {
-        self.inner = self.inner.params(&[("clientId", client_id.to_string())]);
-        self
+    pub fn get(&self, key: &str) -> Option<&PresenceMessage> {
+        self.members.get(key)
     }
 
-    /// Set the connection_id query param.
-    pub fn connection_id(mut self, connection_id: &str) -> Self {
-        self.inner = self
-            .inner
-            .params(&[("connectionId", connection_id.to_string())]);
-        self
+    pub fn values(&self) -> Vec<&PresenceMessage> {
+        self.members.values().collect()
     }
 
-    /// Request a stream of pages of presence messages.
-    pub fn pages(self) -> impl Stream<Item = Result<PaginatedResult>> + 'a {
-        self.inner.pages()
+    pub fn len(&self) -> usize {
+        self.members.len()
     }
 
-    /// Retrieve the first page of presence messages.
-    pub async fn send(self) -> Result<PaginatedResult> {
-        self.inner.send().await
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.members.clear();
+    }
+
+    pub fn start_sync(&mut self) {
+        // stub
+    }
+
+    pub fn end_sync(&mut self) -> Vec<PresenceMessage> {
+        Vec::new()
+    }
+
+    pub fn sync_in_progress(&self) -> bool {
+        false
+    }
+
+    pub fn is_sync_complete_static(_channel_serial: &Option<String>) -> bool {
+        // If no channel serial, sync is considered complete
+        match _channel_serial {
+            None => true,
+            Some(s) => !s.contains(':'),
+        }
+    }
+
+    pub fn remove(&mut self, key: &str) -> Option<PresenceMessage> {
+        self.members.remove(key)
+    }
+}
+
+pub(crate) struct LocalPresenceMap {
+    pub(crate) members: HashMap<String, PresenceMessage>,
+}
+
+impl LocalPresenceMap {
+    pub fn new() -> Self {
+        Self { members: HashMap::new() }
+    }
+
+    pub fn put(&mut self, msg: &PresenceMessage) -> Option<PresenceMessage> {
+        let key = msg.member_key();
+        self.members.insert(key, msg.clone())
+    }
+
+    pub fn remove(&mut self, key: &str) -> Option<PresenceMessage> {
+        self.members.remove(key)
+    }
+
+    pub fn get(&self, key: &str) -> Option<&PresenceMessage> {
+        self.members.get(key)
+    }
+
+    pub fn values(&self) -> Vec<&PresenceMessage> {
+        self.members.values().collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.members.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.members.clear();
     }
 }
