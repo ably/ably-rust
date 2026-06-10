@@ -177,7 +177,7 @@ impl<'a> Auth<'a> {
             Credential::Key(k) => k.clone(),
             _ => {
                 return Err(ErrorInfo::with_status(
-                    ErrorCode::UnableToObtainCredentialsFromGivenParameters.code(),
+                    ErrorCode::TokenAuthCannotRevokeTokens.code(),
                     401,
                     "API key required to revoke tokens".to_string(),
                 ));

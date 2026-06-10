@@ -100,21 +100,6 @@ impl Display for ErrorInfo {
     }
 }
 
-impl From<reqwest::Error> for ErrorInfo {
-    fn from(err: reqwest::Error) -> Self {
-        match err.status() {
-            Some(s) => ErrorInfo::with_status(
-                ErrorCode::new(s.as_u16() as u32)
-                    .map(|c| c.code())
-                    .unwrap_or(0),
-                s.as_u16(),
-                format!("Unexpected HTTP status: {}", s),
-            ),
-            None => ErrorInfo::new(ErrorCode::BadRequest.code(), format!("Unexpected HTTP error: {}", err)),
-        }
-    }
-}
-
 impl From<url::ParseError> for ErrorInfo {
     fn from(err: url::ParseError) -> Self {
         ErrorInfo::new(ErrorCode::BadRequest.code(), format!("invalid URL: {}", err))
@@ -231,6 +216,7 @@ pub enum ErrorCode {
     InvalidTokenFormat = 40145,
     ConnectionBlockedLimitsExceeded = 40150,
     OperationNotPermittedWithProvidedCapability = 40160,
+    TokenAuthCannotRevokeTokens = 40162,
     ErrorFromClientTokenCallback = 40170,
     NoWayToRenewAuthToken = 40171,
     Forbidden = 40300,

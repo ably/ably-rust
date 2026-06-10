@@ -39,14 +39,14 @@ use crate::crypto::CipherParams;
     /// Helper to create a Rest client with a mock HTTP backend.
     fn mock_client(mock: MockHttpClient) -> crate::Rest {
         ClientOptions::new("appId.keyId:keySecret")
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap()
     }
 
 
     /// Helper to get captured requests from a client with a mock backend.
     fn get_mock(_client: &crate::Rest) -> &MockHttpClient {
-        _client.inner.http_client.as_any().downcast_ref::<MockHttpClient>().unwrap()
+        _client.inner.mock_handle.as_ref().unwrap()
     }
 
 
@@ -54,7 +54,7 @@ use crate::crypto::CipherParams;
     fn mock_client_json(mock: MockHttpClient) -> crate::Rest {
         ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap()
     }
 
@@ -454,32 +454,6 @@ use crate::crypto::CipherParams;
     }
 
 
-    // ===============================================================
-    // Batch 1: REST Types & Simple Attributes
-    // ===============================================================
-
-    // UTS: rest/unit/types/mutable_message_types.md — MOP2a
-    // (mop2_message_operation_fields at line 23779 covers MOP2a)
-
-    // UTS: rest/unit/types/mutable_message_types.md — TM2s1
-    // (tm2s_message_version_populated at line 23752 covers TM2s1)
-
-    // UTS: rest/unit/types/options_types.md
-    #[test]
-    fn ao2_auth_options_attributes() {
-        let opts = crate::auth::AuthOptions {
-            token: None,
-            headers: Some(Vec::<(String, String)>::new()),
-            method: Some("GET".to_string()),
-            params: None,
-        };
-        assert!(opts.token.is_none());
-        assert!(opts.headers.is_some());
-        assert_eq!(opts.method.as_deref(), Some("GET"));
-        assert!(opts.params.is_none());
-    }
-
-
     // UTS: realtime/unit/channels/channel_annotations.md — RTAN3a
     #[tokio::test]
     async fn rtan3a_rest_annotations_get_request() -> Result<()> {
@@ -586,31 +560,6 @@ use crate::crypto::CipherParams;
         assert!(!warned.load(Ordering::SeqCst), "Should not warn when not attached");
 
         Ok(())
-    }
-
-
-    // ---------------------------------------------------------------
-    // AO2a — ClientOptions with auth_url sets Credential::Url
-    // ---------------------------------------------------------------
-    #[test]
-    fn ao2a_client_options_with_auth_url() {
-        let opts = ClientOptions::with_auth_url("https://example.com/auth");
-        match &opts.credential {
-            crate::auth::Credential::Url(u) => {
-                assert_eq!(u, "https://example.com/auth");
-            }
-            other => panic!("Expected Credential::Url, got: {:?}", other),
-        }
-    }
-
-
-    // ---------------------------------------------------------------
-    // AO2b — AuthOptions default method is GET
-    // ---------------------------------------------------------------
-    #[test]
-    fn ao2b_auth_options_default_method_is_get() {
-        let auth_opts = crate::auth::AuthOptions::default();
-        assert_eq!(auth_opts.method.as_deref(), Some("GET"));
     }
 
 

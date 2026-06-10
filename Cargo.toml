@@ -19,17 +19,11 @@ include = [
 [dependencies]
 aes = "0.8.1"
 async-trait = "0.1"
-atty = "0.2.14"
 base64 = "0.13.0"
-block-modes = "0.9.1"
 cipher = "0.4.3"
 chrono = { version = "0.4.19", features = ["serde"] }
-futures = "0.3.21"
 hmac = "0.12.1"
-lazy_static = "1.4.0"
-mime = "0.3.16"
 rand = "0.8.5"
-regex = "1.5.5"
 reqwest = { version = "0.11.10", features = ["json"] }
 rmp-serde = "1.1.0"
 serde = { version = "1.0.137", features = ["derive"] }
@@ -46,6 +40,7 @@ num-traits = "0.2.15"
 num-derive = "0.3.3"
 
 [dev-dependencies]
+futures = "0.3.21"
 tokio = { version = "1.18.2", features = ["full"] }
 http = "0.2"
 jsonwebtoken = "9"

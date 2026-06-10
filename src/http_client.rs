@@ -19,10 +19,6 @@ pub(crate) trait HttpClient: Send + Sync {
         &self,
         request: HttpRequest,
     ) -> std::result::Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>>;
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        panic!("as_any not implemented for this HttpClient")
-    }
 }
 
 pub(crate) struct ReqwestHttpClient {

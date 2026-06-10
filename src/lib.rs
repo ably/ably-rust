@@ -34,28 +34,35 @@ pub use protocol::{
     ChannelMode,
 };
 
+// REST unit tests
 #[cfg(test)]
-mod tests_annotations;
+mod tests_rest_unit_client;
 #[cfg(test)]
-mod tests_auth;
+mod tests_rest_unit_auth;
 #[cfg(test)]
-mod tests_channel;
+mod tests_rest_unit_channel;
 #[cfg(test)]
-mod tests_connection;
+mod tests_rest_unit_presence;
 #[cfg(test)]
-mod tests_misc;
+mod tests_rest_unit_push;
 #[cfg(test)]
-mod tests_presence_rt;
+mod tests_rest_unit_types;
 #[cfg(test)]
-mod tests_push;
+mod tests_rest_unit_misc;
+
+// REST integration tests
 #[cfg(test)]
-mod tests_realtime_misc;
+mod tests_rest_integration;
+
+// Realtime unit tests
 #[cfg(test)]
-mod tests_rest_channels;
+mod tests_realtime_unit_annotations;
 #[cfg(test)]
-mod tests_rest_core;
+mod tests_realtime_unit_channel;
 #[cfg(test)]
-mod tests_rest_presence;
+mod tests_realtime_unit_client;
 #[cfg(test)]
-mod tests_types;
+mod tests_realtime_unit_connection;
+#[cfg(test)]
+mod tests_realtime_unit_presence;
 

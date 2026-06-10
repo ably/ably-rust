@@ -244,8 +244,19 @@ impl ClientOptions {
         client: Box<dyn crate::http_client::HttpClient>,
     ) -> Result<rest::Rest> {
         self.validate_for_rest()?;
-        self.http_client = None; // ignore any previously set http_client
+        self.http_client = None;
         self.build_rest(client)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rest_with_mock(
+        self,
+        mock: crate::mock_http::MockHttpClient,
+    ) -> Result<rest::Rest> {
+        let handle = mock.clone();
+        let mut rest = self.rest_with_http_client(Box::new(mock))?;
+        std::sync::Arc::get_mut(&mut rest.inner).unwrap().mock_handle = Some(handle);
+        Ok(rest)
     }
 
     fn validate_for_rest(&self) -> Result<()> {
@@ -289,6 +300,8 @@ impl ClientOptions {
                 saved_token_params: None,
             }),
             fallback_state: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            mock_handle: None,
         };
         Ok(rest::Rest {
             inner: std::sync::Arc::new(inner),

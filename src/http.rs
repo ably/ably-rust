@@ -5,8 +5,7 @@ use crate::error::{ErrorInfo, ErrorCode, Result};
 use crate::http_client::HttpResponse;
 use crate::rest::Rest;
 
-/// Trait for types that need post-deserialization processing (e.g., message decoding).
-pub trait Decodable {
+pub(crate) trait Decodable {
     fn decode_item(&mut self) {}
 }
 
@@ -17,6 +16,7 @@ pub struct RequestBuilder<'a> {
     pub(crate) params: Vec<(String, String)>,
     pub(crate) headers: Vec<(String, String)>,
     pub(crate) body: Option<Vec<u8>>,
+    pub(crate) build_error: Option<ErrorInfo>,
 }
 
 impl<'a> RequestBuilder<'a> {
@@ -30,7 +30,7 @@ impl<'a> RequestBuilder<'a> {
     pub fn body(mut self, body: &impl Serialize) -> Self {
         match self.rest.serialize_body(body) {
             Ok(b) => self.body = Some(b),
-            Err(_) => {} // silently ignore serialization errors at build time
+            Err(e) => self.build_error = Some(e),
         }
         self
     }
@@ -43,6 +43,9 @@ impl<'a> RequestBuilder<'a> {
     }
 
     pub async fn send(self) -> Result<Response> {
+        if let Some(err) = self.build_error {
+            return Err(err);
+        }
         let params: Vec<(&str, &str)> = self.params.iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
@@ -69,7 +72,7 @@ pub struct PaginatedRequestBuilder<'a, T> {
     pub(crate) _marker: std::marker::PhantomData<T>,
 }
 
-impl<'a, T: DeserializeOwned + Decodable + 'a> PaginatedRequestBuilder<'a, T> {
+impl<'a, T> PaginatedRequestBuilder<'a, T> {
     pub fn start(mut self, interval: &str) -> Self {
         self.params.push(("start".to_string(), interval.to_string()));
         self
@@ -101,11 +104,9 @@ impl<'a, T: DeserializeOwned + Decodable + 'a> PaginatedRequestBuilder<'a, T> {
         }
         self
     }
+}
 
-    pub fn pages(self) -> Self {
-        self
-    }
-
+impl<'a, T: DeserializeOwned + Decodable + 'a> PaginatedRequestBuilder<'a, T> {
     pub async fn send(self) -> Result<PaginatedResult<T>> {
         let params: Vec<(&str, &str)> = self.params.iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
@@ -126,6 +127,7 @@ impl<'a, T: DeserializeOwned + Decodable + 'a> PaginatedRequestBuilder<'a, T> {
             rest: self.rest.clone(),
             next_rel_url,
             first_rel_url,
+            base_path: self.path,
         })
     }
 }
@@ -180,6 +182,7 @@ pub struct PaginatedResult<T> {
     pub(crate) rest: Rest,
     pub(crate) next_rel_url: Option<String>,
     pub(crate) first_rel_url: Option<String>,
+    pub(crate) base_path: String,
 }
 
 impl<T> PaginatedResult<T> {
@@ -215,7 +218,17 @@ impl<T: DeserializeOwned + Decodable> PaginatedResult<T> {
 
     async fn fetch_page(self, url: &str) -> Result<PaginatedResult<T>> {
         let parsed = url::Url::parse(url).or_else(|_| {
-            let base = url::Url::parse("https://placeholder.invalid").unwrap();
+            // Relative URL — resolve against the original request path
+            let base_dir = if self.base_path.ends_with('/') {
+                self.base_path.clone()
+            } else {
+                match self.base_path.rfind('/') {
+                    Some(idx) => self.base_path[..=idx].to_string(),
+                    None => "/".to_string(),
+                }
+            };
+            let base_url = format!("https://placeholder.invalid{}", base_dir);
+            let base = url::Url::parse(&base_url).unwrap();
             base.join(url)
         }).map_err(|e| {
             ErrorInfo::new(ErrorCode::InternalError.code(), format!("Invalid pagination URL: {}", e))
@@ -228,6 +241,7 @@ impl<T: DeserializeOwned + Decodable> PaginatedResult<T> {
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
 
+        let base_path = self.base_path.clone();
         let resp = self.rest.do_request("GET", &path, &[], &param_refs, None).await?;
         let (next_rel_url, first_rel_url) = parse_link_headers(&resp.headers);
         let mut items: Vec<T> = self.rest.deserialize_response(&resp)?;
@@ -240,11 +254,12 @@ impl<T: DeserializeOwned + Decodable> PaginatedResult<T> {
             rest: self.rest,
             next_rel_url,
             first_rel_url,
+            base_path,
         })
     }
 }
 
-fn parse_link_headers(headers: &[(String, String)]) -> (Option<String>, Option<String>) {
+pub(crate) fn parse_link_headers(headers: &[(String, String)]) -> (Option<String>, Option<String>) {
     let mut next = None;
     let mut first = None;
 

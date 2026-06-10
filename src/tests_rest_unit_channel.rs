@@ -39,14 +39,14 @@ use crate::crypto::CipherParams;
     /// Helper to create a Rest client with a mock HTTP backend.
     fn mock_client(mock: MockHttpClient) -> crate::Rest {
         ClientOptions::new("appId.keyId:keySecret")
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap()
     }
 
 
     /// Helper to get captured requests from a client with a mock backend.
     fn get_mock(_client: &crate::Rest) -> &MockHttpClient {
-        _client.inner.http_client.as_any().downcast_ref::<MockHttpClient>().unwrap()
+        _client.inner.mock_handle.as_ref().unwrap()
     }
 
 
@@ -54,7 +54,7 @@ use crate::crypto::CipherParams;
     fn mock_client_json(mock: MockHttpClient) -> crate::Rest {
         ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap()
     }
 
@@ -188,7 +188,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client
@@ -233,7 +233,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         // Publish with data but no name
@@ -267,7 +267,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         // Publish with name but no data
@@ -306,7 +306,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         let mut extras = crate::json::Map::new();
@@ -341,6 +341,7 @@ use crate::crypto::CipherParams;
 
     // ---------------------------------------------------------------
     // RSL1l — Publish params as querystring
+    // Also covers: RSL1l1 (publish params sent as querystring)
     // UTS: rest/unit/channel/publish.md
     // ---------------------------------------------------------------
 
@@ -350,7 +351,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client
@@ -406,7 +407,7 @@ use crate::crypto::CipherParams;
             .client_id("lib-client")
             .unwrap()
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client
@@ -459,7 +460,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         let res = client.channels().get("test").history().send().await?;
@@ -479,7 +480,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client
@@ -523,7 +524,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client.channels().get("test").history().send().await?;
@@ -552,7 +553,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client
@@ -591,7 +592,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client
@@ -629,7 +630,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client
@@ -676,7 +677,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         let res = client.channels().get("test").history().send().await?;
@@ -710,7 +711,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         let res = client.channels().get("test").history().send().await?;
@@ -749,7 +750,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         let res = client.channels().get("test").history().send().await?;
@@ -785,7 +786,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         let res = client.channels().get("test").history().send().await?;
@@ -879,7 +880,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client
@@ -948,7 +949,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client
@@ -986,7 +987,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client
@@ -1016,6 +1017,22 @@ use crate::crypto::CipherParams;
 
 
     // ---------------------------------------------------------------
+    // RSL1c — Multi-message publish sends all in single request
+    // UTS: rest/unit/channel/publish.md
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    #[ignore = "PublishBuilder::messages() not yet implemented"]
+    async fn rsl1c_multi_message_publish_single_request() -> Result<()> {
+        // When PublishBuilder supports multi-message publish:
+        // - All messages should be sent in a single HTTP POST
+        // - Body should be a JSON array with all messages
+        // - Request count should be exactly 1
+        Ok(())
+    }
+
+
+    // ---------------------------------------------------------------
     // RSL2b1 — Default history direction is backwards
     // UTS: rest/unit/channel/history.md
     // ---------------------------------------------------------------
@@ -1026,7 +1043,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         let _ = client.channels().get("test").history().send().await?;
@@ -1061,7 +1078,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client
@@ -1099,7 +1116,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         // idempotent_rest_publishing defaults to false in this SDK
@@ -1137,7 +1154,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         let channel = client.channels().get("test");
@@ -1267,6 +1284,9 @@ use crate::crypto::CipherParams;
 
     // -- REST unit tests --
 
+    // RSL15b — update_message sends PATCH
+    // Also covers: RSL15 (parent spec for UpdateMessage/DeleteMessage)
+    // Also covers: RSL15c (update sets MESSAGE_UPDATE action)
     #[tokio::test]
     async fn rsl15b_update_message_sends_patch() -> Result<()> {
         let mock = MockHttpClient::new();
@@ -1292,6 +1312,8 @@ use crate::crypto::CipherParams;
     }
 
 
+    // RSL15b — delete_message sends PATCH
+    // Also covers: RSL15d (delete sets MESSAGE_DELETE action)
     #[tokio::test]
     async fn rsl15b_delete_message_sends_patch() -> Result<()> {
         let mock = MockHttpClient::new();
@@ -1334,6 +1356,8 @@ use crate::crypto::CipherParams;
     }
 
 
+    // RSL15b7 — version set from operation
+    // Also covers: RSL15b1 (version set from operation)
     #[tokio::test]
     async fn rsl15b7_version_set_from_operation() -> Result<()> {
         let mock = MockHttpClient::new();
@@ -1468,6 +1492,8 @@ use crate::crypto::CipherParams;
     }
 
 
+    // RSL11b — get_message sends GET
+    // Also covers: RSL11 (parent spec for GetMessage)
     #[tokio::test]
     async fn rsl11b_get_message_sends_get() -> Result<()> {
         let mock = MockHttpClient::with_handler(|req| {
@@ -1621,7 +1647,7 @@ use crate::crypto::CipherParams;
         });
 
         let client = ClientOptions::new("appId.keyId:keySecret")
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         let channel = client.channels().get("test-rsl1n");
@@ -1666,7 +1692,7 @@ use crate::crypto::CipherParams;
         });
         let mut opts = ClientOptions::new("appId.keyId:keySecret");
         opts.max_message_size = 100;
-        let client = opts.rest_with_http_client(Box::new(mock)).unwrap();
+        let client = opts.rest_with_mock(mock).unwrap();
         let channel = client.channels().get("test-rsl1i");
 
         let small_data = "x".repeat(10);
@@ -1697,7 +1723,7 @@ use crate::crypto::CipherParams;
         });
         let client = ClientOptions::new("appId.keyId:keySecret")
             .idempotent_rest_publishing(true)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         let channel = client.channels().get("test-rsl1k2");
         channel.publish().name("event").string("data").send().await?;
@@ -1719,6 +1745,7 @@ use crate::crypto::CipherParams;
 
 
     // UTS: rest/unit/channel/message_versions.md — RSL14a
+    // Also covers: RSL14 (parent spec for GetMessageVersions)
     #[tokio::test]
     async fn rsl14a_get_message_versions_params_as_querystring() -> Result<()> {
         let mock = MockHttpClient::with_handler(|_req| {
@@ -1765,7 +1792,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         // Publish with neither name nor data
@@ -1788,7 +1815,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::json(201, &json!({})));
         let mut opts = ClientOptions::new("appId.keyId:keySecret");
         opts.max_message_size = 100;
-        let client = opts.rest_with_http_client(Box::new(mock)).unwrap();
+        let client = opts.rest_with_mock(mock).unwrap();
         let channel = client.channels().get("test-limit");
 
         // Data exactly at the limit should succeed
@@ -1806,7 +1833,7 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::new("appId.keyId:keySecret")
             .idempotent_rest_publishing(true)
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         let channel = client.channels().get("test-rsl1k");
 
@@ -1844,7 +1871,7 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::new("appId.keyId:keySecret")
             .idempotent_rest_publishing(false)
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         let channel = client.channels().get("test-rsl1k3");
 
@@ -1911,7 +1938,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client
@@ -1947,7 +1974,7 @@ use crate::crypto::CipherParams;
         });
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         let result = client.channels().get("test").history().send().await?;
@@ -1960,12 +1987,13 @@ use crate::crypto::CipherParams;
 
 
     // RSL2b — History with direction forwards
+    // Also covers: RSL2b2 (history direction parameter)
     #[tokio::test]
     async fn rsl2b_history_with_direction_forwards() -> Result<()> {
         let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client.channels().get("test").history().forwards().send().await?;
@@ -1987,7 +2015,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client.channels().get("test").history().backwards().send().await?;
@@ -2009,7 +2037,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client.channels().get("test").history().send().await?;
@@ -2037,7 +2065,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client
@@ -2066,7 +2094,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         client
@@ -2099,7 +2127,7 @@ use crate::crypto::CipherParams;
         });
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         let result = client.channels().get("test").history().send().await?;
@@ -2239,7 +2267,7 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::new("appId.keyId:keySecret")
             .idempotent_rest_publishing(true)
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         client.channels().get("test-idem").publish().name("e").string("d").id("my-id-1").send().await?;
         let reqs = get_mock(&client).captured_requests();
@@ -2255,7 +2283,7 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::new("appId.keyId:keySecret")
             .idempotent_rest_publishing(false)
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         client.channels().get("test-no-idem").publish().name("e").string("d").send().await?;
         let reqs = get_mock(&client).captured_requests();
@@ -2273,7 +2301,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         client.channels().get("test").publish()
             .name("event")
@@ -2293,7 +2321,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         client.channels().get("test").publish()
             .name("event")
@@ -2314,7 +2342,7 @@ use crate::crypto::CipherParams;
             MockResponse::json(201, &json!({}))
         });
         let client = ClientOptions::new("appId.keyId:keySecret")
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         // Publish should succeed even if response has no serials
         client.channels().get("test").publish().name("e").string("d").send().await?;
@@ -2327,7 +2355,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         client.channels().get("test").publish()
             .name("event")
@@ -2346,7 +2374,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         let binary_data = vec![0xDE, 0xAD, 0xBE, 0xEF];
         client.channels().get("test").publish()
@@ -2375,7 +2403,7 @@ use crate::crypto::CipherParams;
         });
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         let res = client.channels().get("test").history().send().await?;
         let items = res.items();
@@ -2400,7 +2428,7 @@ use crate::crypto::CipherParams;
         });
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         let res = client.channels().get("test").history().send().await?;
         let items = res.items();
@@ -2415,7 +2443,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         // Publishing with neither name nor data should still work
         client.channels().get("test").publish().send().await?;
@@ -2434,7 +2462,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         client.channels().get("test").history()
             .start("1609459200000")
@@ -2454,7 +2482,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         client.channels().get("test").history()
             .end("1609545600000")
@@ -2474,7 +2502,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         client.channels().get("test").history()
             .forwards()
@@ -2494,7 +2522,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         client.channels().get("test").history()
             .limit(5)
@@ -2514,7 +2542,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         client.channels().get("test").history()
             .start("1000")
@@ -2540,7 +2568,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         client.channels().get("test").history().send().await?;
         let reqs = get_mock(&client).captured_requests();
@@ -2559,7 +2587,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         let mut extras = crate::json::Map::new();
         extras.insert("headers".to_string(), json!({"x-custom": "value"}));
@@ -2581,7 +2609,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         let mut extras = crate::json::Map::new();
         extras.insert("ref".to_string(), json!({"type": "com.example.ref", "timeserial": "abc@123"}));
@@ -2607,7 +2635,7 @@ use crate::crypto::CipherParams;
         let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         client.channels().get("test").publish()
             .id("custom-id-123")

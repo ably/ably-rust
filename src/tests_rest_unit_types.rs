@@ -39,14 +39,14 @@ use crate::crypto::CipherParams;
     /// Helper to create a Rest client with a mock HTTP backend.
     fn mock_client(mock: MockHttpClient) -> crate::Rest {
         ClientOptions::new("appId.keyId:keySecret")
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap()
     }
 
 
     /// Helper to get captured requests from a client with a mock backend.
     fn get_mock(_client: &crate::Rest) -> &MockHttpClient {
-        _client.inner.http_client.as_any().downcast_ref::<MockHttpClient>().unwrap()
+        _client.inner.mock_handle.as_ref().unwrap()
     }
 
 
@@ -54,7 +54,7 @@ use crate::crypto::CipherParams;
     fn mock_client_json(mock: MockHttpClient) -> crate::Rest {
         ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap()
     }
 
@@ -177,7 +177,7 @@ use crate::crypto::CipherParams;
     fn test_client_for_auth() -> crate::Rest {
         let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(200));
         ClientOptions::new("aaaaaa.bbbbbb:cccccc")
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap()
     }
 
@@ -202,7 +202,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         let res = client.channels().get("test").history().send().await?;
@@ -228,7 +228,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         let res = client.channels().get("test").history().send().await?;
@@ -345,7 +345,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         // Get first page
@@ -393,7 +393,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         let page1 = client
@@ -474,7 +474,7 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
 
         let channel = client.channels().get("test");
@@ -1288,7 +1288,7 @@ use crate::crypto::CipherParams;
             .log_handler(move |_level, message| {
                 logs.lock().unwrap().push(message.to_string());
             })
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         client.time().await?;
 
@@ -1313,7 +1313,7 @@ use crate::crypto::CipherParams;
             .log_handler(move |_level, message| {
                 logs.lock().unwrap().push(message.to_string());
             })
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         client.time().await?;
 
@@ -1338,7 +1338,7 @@ use crate::crypto::CipherParams;
             .log_handler(move |_level, message| {
                 logs.lock().unwrap().push(message.to_string());
             })
-            .rest_with_http_client(Box::new(mock))
+            .rest_with_mock(mock)
             .unwrap();
         client.time().await?;
 
@@ -1455,6 +1455,8 @@ use crate::crypto::CipherParams;
     // TD: TokenDetails type validation
     // ===============================================================
 
+    // TD1 — TokenDetails attributes
+    // Also covers: TD5 (TokenDetails clientId attribute)
     #[test]
     fn td1_token_details_attributes() {
         use crate::auth::{TokenDetails, TokenMetadata};
@@ -2547,5 +2549,118 @@ use crate::crypto::CipherParams;
     fn to_client_options_request_timeout_depth() {
         let opts = ClientOptions::new("appId.keyId:keySecret");
         assert_eq!(opts.http_request_timeout, std::time::Duration::from_secs(10));
+    }
+
+
+    // ========================================================================
+    // AO2 — AuthOptions type tests
+    // UTS: rest/unit/types/options_types.md
+    // ========================================================================
+
+    // AO2 — AuthOptions attributes
+    #[test]
+    fn ao2_auth_options_attributes() {
+        let opts = crate::auth::AuthOptions {
+            token: None,
+            headers: Some(Vec::<(String, String)>::new()),
+            method: Some("GET".to_string()),
+            params: None,
+        };
+        assert!(opts.token.is_none());
+        assert!(opts.headers.is_some());
+        assert_eq!(opts.method.as_deref(), Some("GET"));
+        assert!(opts.params.is_none());
+    }
+
+    // AO2a — ClientOptions with auth_url sets Credential::Url
+    #[test]
+    fn ao2a_client_options_with_auth_url() {
+        let opts = ClientOptions::with_auth_url("https://example.com/auth");
+        match &opts.credential {
+            crate::auth::Credential::Url(u) => {
+                assert_eq!(u, "https://example.com/auth");
+            }
+            other => panic!("Expected Credential::Url, got: {:?}", other),
+        }
+    }
+
+    // AO2b — AuthOptions default method is GET
+    #[test]
+    fn ao2b_auth_options_default_method_is_get() {
+        let auth_opts = crate::auth::AuthOptions::default();
+        assert_eq!(auth_opts.method.as_deref(), Some("GET"));
+    }
+
+
+    // ========================================================================
+    // TK6 — TokenParams with all attributes combined
+    // UTS: rest/unit/types/token_types.md
+    // ========================================================================
+
+    #[test]
+    fn tk6_token_params_all_attributes() {
+        use chrono::TimeZone;
+
+        let params = crate::auth::TokenParams {
+            ttl: Some(7200000),
+            capability: Some("{\"*\":[\"*\"]}".to_string()),
+            client_id: Some("full-client".to_string()),
+            timestamp: Some(chrono::Utc.timestamp_millis_opt(1234567890000).unwrap()),
+            nonce: Some("full-nonce".to_string()),
+        };
+        assert_eq!(params.ttl, Some(7200000));
+        assert_eq!(params.capability.as_deref(), Some("{\"*\":[\"*\"]}"));
+        assert_eq!(params.client_id.as_deref(), Some("full-client"));
+        assert!(params.timestamp.is_some());
+        assert_eq!(params.nonce.as_deref(), Some("full-nonce"));
+
+        let json = serde_json::to_value(&params).unwrap();
+        assert_eq!(json["ttl"], 7200000);
+        assert_eq!(json["capability"], "{\"*\":[\"*\"]}");
+        assert_eq!(json["clientId"], "full-client");
+        assert_eq!(json["nonce"], "full-nonce");
+    }
+
+
+    // ========================================================================
+    // TM2s2 — version.timestamp defaults to message timestamp when absent
+    // UTS: rest/unit/types/mutable_message_types.md
+    // ========================================================================
+
+    #[test]
+    #[ignore = "version defaulting from message fields not yet implemented"]
+    fn tm2s2_version_timestamp_defaults_to_message_timestamp() {
+        let msg: Message = serde_json::from_value(json!({
+            "serial": "msg-serial-1",
+            "timestamp": 1700000000000_i64,
+            "name": "test",
+            "data": "hello"
+        })).unwrap();
+
+        // When version is absent from wire, SDK should initialize it with
+        // serial from TM2r and timestamp from TM2f
+        let version = msg.version.as_ref().expect("version should be initialized");
+        let version_obj = version.as_object().expect("version should be an object");
+        assert_eq!(version_obj.get("serial").and_then(|v| v.as_str()), Some("msg-serial-1"));
+        assert_eq!(version_obj.get("timestamp").and_then(|v| v.as_i64()), Some(1700000000000));
+    }
+
+
+    // ========================================================================
+    // TP5 — PresenceMessage size calculation
+    // UTS: rest/unit/types/presence_message_types.md
+    // ========================================================================
+
+    #[test]
+    #[ignore = "PresenceMessage::size() not yet implemented"]
+    fn tp5_presence_message_size() {
+        // TP5: Size includes clientId + data + extras (same formula as TM6)
+        let _msg = PresenceMessage {
+            action: Some(PresenceAction::Enter),
+            client_id: Some("user-1".into()),
+            data: Data::String("hello".into()),
+            ..Default::default()
+        };
+        // When implemented: assert_eq!(msg.size(), 11); // "user-1" (6) + "hello" (5)
     }
 

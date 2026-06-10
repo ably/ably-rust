@@ -65,20 +65,32 @@ impl MockResponse {
 
 type Handler = Box<dyn Fn(&CapturedRequest) -> MockResponse + Send + Sync>;
 
-pub(crate) struct MockHttpClient {
+struct MockHttpClientInner {
     handler: Option<Handler>,
     queue: Mutex<Vec<MockResponse>>,
     requests: Mutex<Vec<CapturedRequest>>,
     response_delay: Mutex<Option<std::time::Duration>>,
 }
 
+pub(crate) struct MockHttpClient {
+    inner: Arc<MockHttpClientInner>,
+}
+
+impl Clone for MockHttpClient {
+    fn clone(&self) -> Self {
+        Self { inner: self.inner.clone() }
+    }
+}
+
 impl MockHttpClient {
     pub fn new() -> Self {
         Self {
-            handler: None,
-            queue: Mutex::new(Vec::new()),
-            requests: Mutex::new(Vec::new()),
-            response_delay: Mutex::new(None),
+            inner: Arc::new(MockHttpClientInner {
+                handler: None,
+                queue: Mutex::new(Vec::new()),
+                requests: Mutex::new(Vec::new()),
+                response_delay: Mutex::new(None),
+            }),
         }
     }
 
@@ -86,32 +98,34 @@ impl MockHttpClient {
         handler: impl Fn(&CapturedRequest) -> MockResponse + Send + Sync + 'static,
     ) -> Self {
         Self {
-            handler: Some(Box::new(handler)),
-            queue: Mutex::new(Vec::new()),
-            requests: Mutex::new(Vec::new()),
-            response_delay: Mutex::new(None),
+            inner: Arc::new(MockHttpClientInner {
+                handler: Some(Box::new(handler)),
+                queue: Mutex::new(Vec::new()),
+                requests: Mutex::new(Vec::new()),
+                response_delay: Mutex::new(None),
+            }),
         }
     }
 
     pub fn queue_response(&self, response: MockResponse) {
-        self.queue.lock().unwrap().push(response);
+        self.inner.queue.lock().unwrap().push(response);
     }
 
     pub fn captured_requests(&self) -> Vec<CapturedRequest> {
-        self.requests.lock().unwrap().clone()
+        self.inner.requests.lock().unwrap().clone()
     }
 
     pub fn request_count(&self) -> usize {
-        self.requests.lock().unwrap().len()
+        self.inner.requests.lock().unwrap().len()
     }
 
     pub fn reset(&self) {
-        self.requests.lock().unwrap().clear();
-        self.queue.lock().unwrap().clear();
+        self.inner.requests.lock().unwrap().clear();
+        self.inner.queue.lock().unwrap().clear();
     }
 
     pub fn set_response_delay(&self, delay: std::time::Duration) {
-        *self.response_delay.lock().unwrap() = Some(delay);
+        *self.inner.response_delay.lock().unwrap() = Some(delay);
     }
 }
 
@@ -121,8 +135,7 @@ impl HttpClient for MockHttpClient {
         &self,
         request: HttpRequest,
     ) -> std::result::Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
-        // Apply response delay if set
-        let delay = self.response_delay.lock().unwrap().clone();
+        let delay = self.inner.response_delay.lock().unwrap().clone();
         if let Some(d) = delay {
             tokio::time::sleep(d).await;
         }
@@ -136,10 +149,10 @@ impl HttpClient for MockHttpClient {
             body: request.body.clone(),
         };
 
-        let response = if let Some(handler) = &self.handler {
+        let response = if let Some(handler) = &self.inner.handler {
             handler(&captured)
         } else {
-            let mut queue = self.queue.lock().unwrap();
+            let mut queue = self.inner.queue.lock().unwrap();
             if queue.is_empty() {
                 MockResponse::empty(200)
             } else {
@@ -147,7 +160,7 @@ impl HttpClient for MockHttpClient {
             }
         };
 
-        self.requests.lock().unwrap().push(captured);
+        self.inner.requests.lock().unwrap().push(captured);
 
         if response.network_error {
             return Err("simulated network error".into());
@@ -158,9 +171,5 @@ impl HttpClient for MockHttpClient {
             headers: response.headers,
             body: response.body,
         })
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }

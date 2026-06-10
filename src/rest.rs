@@ -34,6 +34,8 @@ pub(crate) struct RestInner {
     pub(crate) http_client: Box<dyn HttpClient>,
     pub(crate) auth_state: Mutex<AuthState>,
     pub(crate) fallback_state: Mutex<Option<CachedFallback>>,
+    #[cfg(test)]
+    pub(crate) mock_handle: Option<crate::mock_http::MockHttpClient>,
 }
 
 pub(crate) struct AuthState {
@@ -114,14 +116,15 @@ impl Rest {
             params: Vec::new(),
             headers: Vec::new(),
             body: None,
+            build_error: None,
         }
     }
 
-    pub fn auth_options(&self) -> crate::auth::AuthOptions {
+    pub(crate) fn auth_options(&self) -> crate::auth::AuthOptions {
         crate::auth::AuthOptions::default()
     }
 
-    pub fn from_inner(inner: Arc<RestInner>) -> Self {
+    pub(crate) fn from_inner(inner: Arc<RestInner>) -> Self {
         Self { inner }
     }
 
@@ -157,12 +160,11 @@ impl Rest {
         } else if ct.contains("application/json") {
             Ok(serde_json::from_slice(&resp.body)?)
         } else {
-            // Try JSON first, then msgpack
             serde_json::from_slice(&resp.body)
-                .map_err(|e| ErrorInfo::new(
+                .or_else(|_| rmp_serde::from_slice(&resp.body).map_err(|e| ErrorInfo::new(
                     ErrorCode::InvalidMessageDataOrEncoding.code(),
-                    format!("Unsupported content type '{}': {}", ct, e),
-                ))
+                    format!("Failed to deserialize response (content-type '{}'): {}", ct, e),
+                )))
         }
     }
 
@@ -175,8 +177,7 @@ impl Rest {
                 // Basic auth
                 Ok(format!("Basic {}", base64::encode(format!("{}:{}", key.name, key.value))))
             }
-            Credential::TokenDetails(td) if !opts.use_token_auth && opts.client_id.is_none() => {
-                // Bearer with static token
+            Credential::TokenDetails(td) => {
                 Ok(format!("Bearer {}", td.token))
             }
             _ => {
@@ -344,7 +345,7 @@ impl Rest {
     ) -> Result<HttpResponse> {
         // Build standard headers
         let mut all_headers: Vec<(String, String)> = vec![
-            ("x-ably-version".to_string(), "1.2".to_string()),
+            ("x-ably-version".to_string(), "6".to_string()),
             ("ably-agent".to_string(), format!("ably-rust/{}", env!("CARGO_PKG_VERSION"))),
             ("accept".to_string(), self.accept_type().to_string()),
         ];
@@ -367,11 +368,18 @@ impl Rest {
             all_headers.push((k.to_lowercase(), v.to_string()));
         }
 
-        // Always try the primary host first
         let primary_host = self.inner.opts.rest_host.clone();
 
-        // Try primary host
-        let url = self.build_url(&primary_host, path, params)?;
+        // RSC15f: Check for a cached successful fallback host
+        let first_host = {
+            let fb = self.inner.fallback_state.lock().unwrap();
+            match &*fb {
+                Some(cached) if cached.expires > std::time::Instant::now() => cached.host.clone(),
+                _ => primary_host.clone(),
+            }
+        };
+
+        let url = self.build_url(&first_host, path, params)?;
         let req = HttpRequest {
             method: method.to_string(),
             url: url.to_string(),
@@ -387,10 +395,11 @@ impl Rest {
         ).await;
         match result {
             Ok(Ok(resp)) => {
+                let retriable = Self::is_retriable_response(&resp);
                 match self.check_response(resp) {
                     Ok(outcome) => return Ok(outcome),
                     Err(e) => {
-                        if !Self::is_retriable_error(&e) {
+                        if !retriable && !Self::is_retriable_error(&e) {
                             return Err(e);
                         }
                         last_error = e;
@@ -415,20 +424,32 @@ impl Rest {
             }
         }
 
-        // Try fallback hosts
+        // Build the retry host list.
+        // If we used a cached fallback as first_host, include primary in the retry list.
         let fallback_hosts = &self.inner.opts.fallback_hosts;
-        if fallback_hosts.is_empty() {
+        use rand::seq::SliceRandom;
+        let mut retry_hosts: Vec<String> = Vec::new();
+        if first_host != primary_host {
+            // Cached fallback failed — clear the cache and try primary first
+            {
+                let mut fb = self.inner.fallback_state.lock().unwrap();
+                *fb = None;
+            }
+            retry_hosts.push(primary_host.clone());
+        }
+        let mut remaining: Vec<&String> = fallback_hosts.iter()
+            .filter(|h| h.as_str() != first_host)
+            .collect();
+        remaining.shuffle(&mut rand::thread_rng());
+        retry_hosts.extend(remaining.into_iter().cloned());
+
+        if retry_hosts.is_empty() {
             return Err(last_error);
         }
 
-        // Shuffle fallback hosts
-        let mut shuffled: Vec<&String> = fallback_hosts.iter().collect();
-        use rand::seq::SliceRandom;
-        shuffled.shuffle(&mut rand::thread_rng());
+        let max_retries = self.inner.opts.http_max_retry_count.min(retry_hosts.len());
 
-        let max_retries = self.inner.opts.http_max_retry_count.min(shuffled.len());
-
-        for host in shuffled.iter().take(max_retries) {
+        for host in retry_hosts.iter().take(max_retries) {
             let url = self.build_url(host, path, params)?;
             let req = HttpRequest {
                 method: method.to_string(),
@@ -443,6 +464,7 @@ impl Rest {
             ).await;
             match result {
                 Ok(Ok(resp)) => {
+                    let retriable = Self::is_retriable_response(&resp);
                     match self.check_response(resp) {
                         Ok(resp) => {
                             // Cache successful fallback host
@@ -454,8 +476,7 @@ impl Rest {
                             return Ok(resp);
                         }
                         Err(e) => {
-                            // Non-retriable error? Stop
-                            if !Self::is_retriable_error(&e) {
+                            if !retriable && !Self::is_retriable_error(&e) {
                                 return Err(e);
                             }
                             last_error = e;
@@ -531,6 +552,21 @@ impl Rest {
             resp.status,
             format!("Unexpected error response (status {})", resp.status),
         ))
+    }
+
+    fn is_retriable_response(resp: &HttpResponse) -> bool {
+        if resp.status >= 500 {
+            return true;
+        }
+        // RSC15l4: CloudFront errors (status >= 400 with Server: CloudFront) are retriable
+        if resp.status >= 400 {
+            let is_cloudfront = resp.headers.iter()
+                .any(|(k, v)| k.eq_ignore_ascii_case("server") && v.contains("CloudFront"));
+            if is_cloudfront {
+                return true;
+            }
+        }
+        false
     }
 
     fn is_retriable_error(err: &ErrorInfo) -> bool {
@@ -769,6 +805,7 @@ impl<'a> PresenceRequestBuilder<'a> {
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
         let resp = self.rest.do_request("GET", &self.path, &[], &params, None).await?;
+        let (next_rel_url, first_rel_url) = crate::http::parse_link_headers(&resp.headers);
         let mut items: Vec<PresenceMessage> = self.rest.deserialize_response(&resp)?;
         for item in &mut items {
             item.decode();
@@ -776,8 +813,9 @@ impl<'a> PresenceRequestBuilder<'a> {
         Ok(PaginatedResult {
             items,
             rest: self.rest.clone(),
-            next_rel_url: None,
-            first_rel_url: None,
+            next_rel_url,
+            first_rel_url,
+            base_path: self.path,
         })
     }
 }
@@ -1039,8 +1077,15 @@ impl<'a> PushDeviceRegistrations<'a> {
     }
 
     pub async fn save(&self, device: &serde_json::Value) -> Result<serde_json::Value> {
+        let device_id = device["id"]
+            .as_str()
+            .ok_or_else(|| ErrorInfo::new(ErrorCode::BadRequest.code(), "Device id is required"))?;
+        let path = format!(
+            "/push/deviceRegistrations/{}",
+            urlencoding::encode(device_id)
+        );
         let body = self.rest.serialize_body(device)?;
-        let resp = self.rest.do_request("PUT", "/push/deviceRegistrations", &[], &[], Some(body)).await?;
+        let resp = self.rest.do_request("PUT", &path, &[], &[], Some(body)).await?;
         self.rest.deserialize_response(&resp)
     }
 
@@ -1086,8 +1131,20 @@ impl<'a> PushChannelSubscriptions<'a> {
     }
 
     pub async fn remove(&self, sub: &serde_json::Value) -> Result<()> {
-        let body = self.rest.serialize_body(sub)?;
-        self.rest.do_request("DELETE", "/push/channelSubscriptions", &[], &[], Some(body)).await?;
+        let mut params: Vec<(&str, &str)> = Vec::new();
+        let channel = sub["channel"].as_str().unwrap_or("");
+        let device_id = sub["deviceId"].as_str().unwrap_or("");
+        let client_id = sub["clientId"].as_str().unwrap_or("");
+        if !channel.is_empty() {
+            params.push(("channel", channel));
+        }
+        if !device_id.is_empty() {
+            params.push(("deviceId", device_id));
+        }
+        if !client_id.is_empty() {
+            params.push(("clientId", client_id));
+        }
+        self.rest.do_request("DELETE", "/push/channelSubscriptions", &[], &params, None).await?;
         Ok(())
     }
 
