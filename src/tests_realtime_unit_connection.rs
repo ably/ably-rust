@@ -229,32 +229,7 @@ use crate::crypto::CipherParams;
     // UTS: realtime/unit/connection/auto_connect_test.md
     // ---------------------------------------------------------------
 
-    #[tokio::test]
-    async fn rtn3_auto_connect_true() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
 
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected(
-                "connection-id",
-                "connection-key",
-            ));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-
-        // autoConnect defaults to true — do NOT call connect()
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret").use_binary_protocol(false),
-            transport,
-        )
-        .unwrap();
-
-        let connected = await_state(&client.connection, ConnectionState::Connected, 5000).await;
-        assert!(connected, "should auto-connect");
-        assert_eq!(client.connection.id(), Some("connection-id".to_string()));
-    }
 
 
     // ---------------------------------------------------------------
@@ -262,29 +237,7 @@ use crate::crypto::CipherParams;
     // UTS: realtime/unit/connection/auto_connect_test.md
     // ---------------------------------------------------------------
 
-    #[tokio::test]
-    async fn rtn3_auto_connect_false() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::ConnectionState;
-        use crate::realtime::Realtime;
 
-        let mock = MockWebSocket::new();
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .use_binary_protocol(false)
-                .auto_connect(false),
-            transport,
-        )
-        .unwrap();
-
-        // Brief wait to confirm no connection attempt
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        assert_eq!(client.connection.state(), ConnectionState::Initialized);
-        assert_eq!(mock.connection_count(), 0);
-    }
 
 
     // ---------------------------------------------------------------
@@ -292,38 +245,7 @@ use crate::crypto::CipherParams;
     // UTS: realtime/unit/connection/auto_connect_test.md
     // ---------------------------------------------------------------
 
-    #[tokio::test]
-    async fn rtn3_explicit_connect_after_auto_connect_false() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
 
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected(
-                "connection-id",
-                "connection-key",
-            ));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .use_binary_protocol(false)
-                .auto_connect(false),
-            transport,
-        )
-        .unwrap();
-
-        assert_eq!(client.connection.state(), ConnectionState::Initialized);
-        assert_eq!(mock.connection_count(), 0);
-
-        client.connect();
-
-        let connected = await_state(&client.connection, ConnectionState::Connected, 5000).await;
-        assert!(connected, "should connect after explicit connect()");
-        assert_eq!(mock.connection_count(), 1);
-    }
 
 
     // ---------------------------------------------------------------
@@ -331,36 +253,7 @@ use crate::crypto::CipherParams;
     // UTS: realtime/unit/connection/connection_id_key_test.md
     // ---------------------------------------------------------------
 
-    #[tokio::test]
-    async fn rtn8a_connection_id_unset_until_connected() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
 
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending
-                .respond_with_success(ProtocolMessage::connected("unique-conn-id-1", "conn-key-1"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .use_binary_protocol(false)
-                .auto_connect(false),
-            transport,
-        )
-        .unwrap();
-
-        // Before connecting, id should be None
-        assert!(client.connection.id().is_none());
-
-        client.connect();
-        let connected = await_state(&client.connection, ConnectionState::Connected, 5000).await;
-        assert!(connected);
-
-        assert_eq!(client.connection.id(), Some("unique-conn-id-1".to_string()));
-    }
 
 
     // ---------------------------------------------------------------
@@ -368,35 +261,7 @@ use crate::crypto::CipherParams;
     // UTS: realtime/unit/connection/connection_id_key_test.md
     // ---------------------------------------------------------------
 
-    #[tokio::test]
-    async fn rtn9a_connection_key_unset_until_connected() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
 
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending
-                .respond_with_success(ProtocolMessage::connected("unique-conn-id-1", "conn-key-1"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .use_binary_protocol(false)
-                .auto_connect(false),
-            transport,
-        )
-        .unwrap();
-
-        assert!(client.connection.key().is_none());
-
-        client.connect();
-        let connected = await_state(&client.connection, ConnectionState::Connected, 5000).await;
-        assert!(connected);
-
-        assert_eq!(client.connection.key(), Some("conn-key-1".to_string()));
-    }
 
 
     // ---------------------------------------------------------------
@@ -404,55 +269,7 @@ use crate::crypto::CipherParams;
     // UTS: realtime/unit/connection/connection_id_key_test.md
     // ---------------------------------------------------------------
 
-    #[tokio::test]
-    async fn rtn8b_connection_id_unique_per_connection() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-        use std::sync::atomic::{AtomicU32, Ordering};
 
-        let count = std::sync::Arc::new(AtomicU32::new(0));
-        let count_clone = count.clone();
-
-        let mock = MockWebSocket::with_handler(move |pending| {
-            let n = count_clone.fetch_add(1, Ordering::SeqCst) + 1;
-            pending.respond_with_success(ProtocolMessage::connected(
-                &format!("conn-id-{}", n),
-                &format!("conn-key-{}", n),
-            ));
-        });
-
-        let inner = mock.inner();
-
-        let transport1 = std::sync::Arc::new(crate::mock_ws::MockTransport::new(inner.clone()));
-        let transport2 = std::sync::Arc::new(crate::mock_ws::MockTransport::new(inner));
-
-        let client1 = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .use_binary_protocol(false)
-                .auto_connect(false),
-            transport1,
-        )
-        .unwrap();
-
-        let client2 = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .use_binary_protocol(false)
-                .auto_connect(false),
-            transport2,
-        )
-        .unwrap();
-
-        client1.connect();
-        assert!(await_state(&client1.connection, ConnectionState::Connected, 5000).await);
-
-        client2.connect();
-        assert!(await_state(&client2.connection, ConnectionState::Connected, 5000).await);
-
-        assert_ne!(client1.connection.id(), client2.connection.id());
-        assert_eq!(client1.connection.id(), Some("conn-id-1".to_string()));
-        assert_eq!(client2.connection.id(), Some("conn-id-2".to_string()));
-    }
 
 
     // ---------------------------------------------------------------
@@ -460,55 +277,7 @@ use crate::crypto::CipherParams;
     // UTS: realtime/unit/connection/connection_id_key_test.md
     // ---------------------------------------------------------------
 
-    #[tokio::test]
-    async fn rtn9b_connection_key_unique_per_connection() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-        use std::sync::atomic::{AtomicU32, Ordering};
 
-        let count = std::sync::Arc::new(AtomicU32::new(0));
-        let count_clone = count.clone();
-
-        let mock = MockWebSocket::with_handler(move |pending| {
-            let n = count_clone.fetch_add(1, Ordering::SeqCst) + 1;
-            pending.respond_with_success(ProtocolMessage::connected(
-                &format!("conn-id-{}", n),
-                &format!("conn-key-{}", n),
-            ));
-        });
-
-        let inner = mock.inner();
-
-        let transport1 = std::sync::Arc::new(crate::mock_ws::MockTransport::new(inner.clone()));
-        let transport2 = std::sync::Arc::new(crate::mock_ws::MockTransport::new(inner));
-
-        let client1 = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .use_binary_protocol(false)
-                .auto_connect(false),
-            transport1,
-        )
-        .unwrap();
-
-        let client2 = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .use_binary_protocol(false)
-                .auto_connect(false),
-            transport2,
-        )
-        .unwrap();
-
-        client1.connect();
-        assert!(await_state(&client1.connection, ConnectionState::Connected, 5000).await);
-
-        client2.connect();
-        assert!(await_state(&client2.connection, ConnectionState::Connected, 5000).await);
-
-        assert_ne!(client1.connection.key(), client2.connection.key());
-        assert_eq!(client1.connection.key(), Some("conn-key-1".to_string()));
-        assert_eq!(client2.connection.key(), Some("conn-key-2".to_string()));
-    }
 
 
     // ---------------------------------------------------------------
@@ -516,35 +285,7 @@ use crate::crypto::CipherParams;
     // UTS: realtime/unit/connection/connection_id_key_test.md
     // ---------------------------------------------------------------
 
-    #[tokio::test]
-    async fn rtn8c_connection_id_null_after_close() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
 
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-id-1", "conn-key-1"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .use_binary_protocol(false)
-                .auto_connect(false),
-            transport,
-        )
-        .unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-        assert_eq!(client.connection.id(), Some("conn-id-1".to_string()));
-
-        client.close();
-        assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
-
-        assert!(client.connection.id().is_none());
-    }
 
 
     // ---------------------------------------------------------------
@@ -552,35 +293,7 @@ use crate::crypto::CipherParams;
     // UTS: realtime/unit/connection/connection_id_key_test.md
     // ---------------------------------------------------------------
 
-    #[tokio::test]
-    async fn rtn9c_connection_key_null_after_close() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
 
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-id-1", "conn-key-1"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .use_binary_protocol(false)
-                .auto_connect(false),
-            transport,
-        )
-        .unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-        assert_eq!(client.connection.key(), Some("conn-key-1".to_string()));
-
-        client.close();
-        assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
-
-        assert!(client.connection.key().is_none());
-    }
 
 
     // ---------------------------------------------------------------
@@ -588,40 +301,7 @@ use crate::crypto::CipherParams;
     // UTS: realtime/unit/connection/connection_id_key_test.md
     // ---------------------------------------------------------------
 
-    #[tokio::test]
-    async fn rtn8c_rtn9c_id_key_null_after_failed() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{action, ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
 
-        let mock = MockWebSocket::with_handler(|pending| {
-            let mut error_msg = ProtocolMessage::new(action::ERROR);
-            error_msg.error = Some(crate::error::ErrorInfo {
-                code: Some(80000),
-                status_code: Some(400),
-                message: Some("Fatal error".to_string()),
-                href: None,
-                ..Default::default()
-            });
-            pending.respond_with_error(error_msg);
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .use_binary_protocol(false)
-                .auto_connect(false),
-            transport,
-        )
-        .unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
-
-        assert!(client.connection.id().is_none());
-        assert!(client.connection.key().is_none());
-    }
 
 
     // ---------------------------------------------------------------
@@ -1663,150 +1343,13 @@ use crate::crypto::CipherParams;
     }
 
 
-    // --- RTN26a: whenState calls callback immediately if already in state ---
-    #[tokio::test]
-    async fn rtn26a_when_state_immediate() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
-            transport,
-        )
-        .unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        let invoked = std::sync::Arc::new(AtomicBool::new(false));
-        let invoked_clone = invoked.clone();
-        let was_null = std::sync::Arc::new(AtomicBool::new(false));
-        let was_null_clone = was_null.clone();
-
-        client
-            .connection
-            .when_state(ConnectionState::Connected, move |change| {
-                invoked_clone.store(true, Ordering::SeqCst);
-                let _ = change;
-                was_null_clone.store(true, Ordering::SeqCst);
-            });
-
-        // Give it a moment
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-        assert!(invoked.load(Ordering::SeqCst));
-        assert!(was_null.load(Ordering::SeqCst)); // Should be null (already in state)
-    }
 
 
-    // --- RTN26b: whenState waits for state transition ---
-    #[tokio::test]
-    async fn rtn26b_when_state_waits() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
-            transport,
-        )
-        .unwrap();
-
-        let invoked = std::sync::Arc::new(AtomicBool::new(false));
-        let invoked_clone = invoked.clone();
-        let was_some = std::sync::Arc::new(AtomicBool::new(false));
-        let was_some_clone = was_some.clone();
-
-        // Register BEFORE connecting
-        client
-            .connection
-            .when_state(ConnectionState::Connected, move |change| {
-                invoked_clone.store(true, Ordering::SeqCst);
-                let _ = &change;
-                was_some_clone.store(true, Ordering::SeqCst);
-            });
-
-        // Not yet invoked
-        assert!(!invoked.load(Ordering::SeqCst));
-
-        // Now connect
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-        assert!(invoked.load(Ordering::SeqCst));
-        assert!(was_some.load(Ordering::SeqCst)); // Should have StateChange (not null)
-    }
 
 
-    // --- RTN26b: whenState only fires once ---
-    #[tokio::test]
-    async fn rtn26b_when_state_fires_once() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-        use std::sync::atomic::{AtomicU32, Ordering};
 
-        let conn_count = std::sync::Arc::new(AtomicU32::new(0));
-        let conn_count_clone = conn_count.clone();
 
-        let mock = MockWebSocket::with_handler(move |pending| {
-            let n = conn_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
-            pending.respond_with_success(ProtocolMessage::connected(
-                &format!("conn-{}", n),
-                &format!("key-{}", n),
-            ));
-        });
 
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .disconnected_retry_timeout(std::time::Duration::from_millis(50)),
-            transport,
-        )
-        .unwrap();
-
-        let callback_count = std::sync::Arc::new(AtomicU32::new(0));
-        let callback_count_clone = callback_count.clone();
-
-        client
-            .connection
-            .when_state(ConnectionState::Connected, move |_| {
-                callback_count_clone.fetch_add(1, Ordering::SeqCst);
-            });
-
-        // First connect
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
-
-        // Disconnect and reconnect
-        {
-            let conns = mock.active_connections();
-            conns.last().unwrap().simulate_disconnect();
-        }
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-        // Still only invoked once
-        assert_eq!(callback_count.load(Ordering::SeqCst), 1);
-    }
 
 
     // --- RTN14e: DISCONNECTED to SUSPENDED after connectionStateTtl ---
@@ -5146,88 +4689,10 @@ use crate::crypto::CipherParams;
     }
 
 
-    // --- RTN26a: whenState with multiple calls ---
-    #[tokio::test]
-    async fn rtn26a_when_state_multiple_calls() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-        use std::sync::atomic::{AtomicU32, Ordering};
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
-            transport,
-        )
-        .unwrap();
-
-        let count1 = std::sync::Arc::new(AtomicU32::new(0));
-        let count2 = std::sync::Arc::new(AtomicU32::new(0));
-        let c1 = count1.clone();
-        let c2 = count2.clone();
-
-        client
-            .connection
-            .when_state(ConnectionState::Connected, move |_| {
-                c1.fetch_add(1, Ordering::SeqCst);
-            });
-        client
-            .connection
-            .when_state(ConnectionState::Connected, move |_| {
-                c2.fetch_add(1, Ordering::SeqCst);
-            });
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        assert_eq!(count1.load(Ordering::SeqCst), 1, "First whenState callback should fire");
-        assert_eq!(count2.load(Ordering::SeqCst), 1, "Second whenState callback should fire");
-    }
 
 
-    // --- RTN26a: whenState for a past state that won't recur ---
-    #[tokio::test]
-    async fn rtn26a_when_state_past_state() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-        use std::sync::atomic::{AtomicBool, Ordering};
 
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
-        });
 
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
-            transport,
-        )
-        .unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        // Register whenState for CONNECTING — which has already passed
-        let invoked = std::sync::Arc::new(AtomicBool::new(false));
-        let inv = invoked.clone();
-        client
-            .connection
-            .when_state(ConnectionState::Connecting, move |_| {
-                inv.store(true, Ordering::SeqCst);
-            });
-
-        // Give time for callback to fire (or not)
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        // whenState should NOT fire for a past state that is no longer current
-        assert!(!invoked.load(Ordering::SeqCst),
-            "whenState should not fire for a state that has already passed");
-    }
 
 
     // --- RTN8c: Connection ID and key null in SUSPENDED ---
@@ -5371,46 +4836,10 @@ use crate::crypto::CipherParams;
     // RTN depth — Connection depth
     // ===============================================================
 
-    #[tokio::test]
-    async fn rtn8_connection_id_initially_none_depth() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::ConnectionState;
-        use crate::realtime::Realtime;
-
-        let mock = MockWebSocket::new();
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .use_binary_protocol(false)
-                .auto_connect(false),
-            transport,
-        ).unwrap();
-
-        assert_eq!(client.connection.state(), ConnectionState::Initialized);
-        assert!(client.connection.id().is_none());
-    }
 
 
-    #[tokio::test]
-    async fn rtn9_connection_key_initially_none_depth() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::ConnectionState;
-        use crate::realtime::Realtime;
 
-        let mock = MockWebSocket::new();
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
 
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .use_binary_protocol(false)
-                .auto_connect(false),
-            transport,
-        ).unwrap();
-
-        assert_eq!(client.connection.state(), ConnectionState::Initialized);
-        assert!(client.connection.key().is_none());
-    }
 
 
     #[tokio::test]

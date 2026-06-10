@@ -20,6 +20,11 @@ use crate::rest::{
 pub struct Channels {}
 
 impl Channels {
+    pub(crate) fn new() -> Self {
+        // The handle registry and EnsureChannel wiring arrive in stage 5.4.
+        Self {}
+    }
+
     pub fn get(&self, _name: &str) -> Arc<RealtimeChannel> {
         todo!()
     }

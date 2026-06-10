@@ -306,7 +306,53 @@ impl ClientOptions {
     }
 
     pub fn realtime(self) -> Result<crate::realtime::Realtime> {
-        todo!()
+        crate::realtime::Realtime::new(&self)
+    }
+
+    /// Clone the options for embedding in a realtime client. Everything is
+    /// cloned except an injected HTTP client (test-only), which cannot be.
+    pub(crate) fn clone_for_realtime(&self) -> ClientOptions {
+        ClientOptions {
+            credential: self.credential.clone(),
+            tls: self.tls,
+            client_id: self.client_id.clone(),
+            use_token_auth: self.use_token_auth,
+            endpoint: self.endpoint.clone(),
+            environment: self.environment.clone(),
+            idempotent_rest_publishing: self.idempotent_rest_publishing,
+            fallback_hosts: self.fallback_hosts.clone(),
+            format: self.format,
+            query_time: self.query_time,
+            auth_method: self.auth_method.clone(),
+            auth_headers: self.auth_headers.clone(),
+            auth_params: self.auth_params.clone(),
+            default_token_params: self.default_token_params.clone(),
+            auto_connect: self.auto_connect,
+            rest_host: self.rest_host.clone(),
+            realtime_host: self.realtime_host.clone(),
+            primary_host: self.primary_host.clone(),
+            resolved_fallback_hosts: self.resolved_fallback_hosts.clone(),
+            port: self.port,
+            tls_port: self.tls_port,
+            echo_messages: self.echo_messages,
+            queue_messages: self.queue_messages,
+            transport_params: self.transport_params.clone(),
+            disconnected_retry_timeout: self.disconnected_retry_timeout,
+            suspended_retry_timeout: self.suspended_retry_timeout,
+            channel_retry_timeout: self.channel_retry_timeout,
+            http_open_timeout: self.http_open_timeout,
+            http_request_timeout: self.http_request_timeout,
+            realtime_request_timeout: self.realtime_request_timeout,
+            http_max_retry_count: self.http_max_retry_count,
+            http_max_retry_duration: self.http_max_retry_duration,
+            max_message_size: self.max_message_size,
+            max_frame_size: self.max_frame_size,
+            fallback_retry_timeout: self.fallback_retry_timeout,
+            add_request_ids: self.add_request_ids,
+            http_client: None,
+            log_level: self.log_level,
+            log_handler: self.log_handler.clone(),
+        }
     }
 
     pub(crate) fn rest_with_http_client(

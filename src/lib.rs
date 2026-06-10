@@ -14,6 +14,8 @@ pub(crate) mod transport;
 // Realtime modules
 pub mod realtime;
 pub mod channel;
+pub(crate) mod connection;
+pub(crate) mod ws_transport;
 
 // Test-only modules
 #[cfg(test)]
@@ -61,6 +63,10 @@ mod tests_proxy;
 // Design conformance ratchet (DESIGN.md Realtime §14)
 #[cfg(test)]
 mod tests_design_conformance;
+
+// Realtime unit tests (UTS-derived, stage 5.1+)
+#[cfg(test)]
+mod tests_realtime_uts_connection;
 
 // Realtime unit tests
 #[cfg(test)]

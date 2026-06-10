@@ -303,3 +303,43 @@ This pass added:
 - Test status: unit 768 pass / 440 fail (all realtime stubs) / 70 ignored;
   integration 62 pass / 15 ignored; proxy 8/8. All serial runs fully green.
 - Next: Phase 4 — realtime state design (DESIGN.md section, HUMAN REVIEW GATE).
+
+## Phase 5: Realtime Implementation
+
+### 5.1 Connection Foundation — DONE (2026-06-10)
+- src/connection.rs: the single-writer connection loop per DESIGN.md — LoopInput/
+  Command enums, ConnectionCtx (plain owned state, no locks), generation-guarded
+  spawned connect/reader/writer tasks, watch-before-broadcast emission, exhaustive
+  per-state command handling. RTN2 URL building (v=6, format, key/accessToken via
+  the shared REST auth layer, off-loop).
+- src/realtime.rs: thin handles — Realtime (new/with_mock/connect/close, embedded
+  Rest), Connection (snapshot reads, on_state_change, when_state w/ RTN26a/b
+  semantics, subscribe-before-snapshot-read race guard), RealtimeAuth delegating
+  to REST auth. ClientOptions::realtime() now works; clone_for_realtime added.
+- src/ws_transport.rs: production tokio-tungstenite transport (JSON text /
+  msgpack binary frames; unparseable frames skipped per RTN19 tolerance).
+- src/mock_ws.rs: full UTS mock_websocket.md implementation (handler + await
+  patterns, PendingConnection respond_with_success/refused/error, MockConnection
+  send_to_client(_and_close)/simulate_disconnect, client_messages,
+  await_message_from_client, await_client_close). Test-only locks.
+- Implemented behaviors: RTN3 (autoConnect), RTN4 ordered lifecycle events,
+  RTN4h additional-CONNECTED → Update, RTN8/RTN9 id/key incl. RTN8c/9c clearing,
+  RTN11 (re)connect semantics, RTN12a/d/f close paths (CLOSE on wire, await
+  CLOSED), RTN25 errorReason on fatal ERROR, RTN26 whenState. Failed connect
+  attempts rest at DISCONNECTED (retry timers are 5.2).
+- Tests (DESIGN §12, option 2): 20 UTS-derived tests in
+  tests_realtime_uts_connection.rs — ALL derived from uts/realtime/unit
+  pseudo-code (auto_connect/connection_id_key/when_state/error_reason files) +
+  features-spec lifecycle sequences; all passed first run. PLUS one live
+  integration test: real WsTransport against the nonprod sandbox — CONNECTED
+  with server-assigned id/key, clean close (passes, 2.5s).
+- Ported-test cross-check for this stage's ranges: 17 superseded ported tests
+  deleted (RTN3 x3, RTN8/9 x7, RTN26 x5, 2 vacuous depth duplicates); the
+  remaining ported connection tests stay pending their stages (~60 of them now
+  pass against the new loop, a free cross-check). rtn8c_id_key_null_in_suspended
+  retained for 5.2 (needs SUSPENDED).
+- §14.3 conformance line: lock inventory UNCHANGED (conformance tests green;
+  connection.rs and ws_transport.rs added to the ratchet scan at zero allowance).
+- Test status: 851 pass / 363 fail (remaining realtime stubs) / 70 ignored;
+  REST + proxy + integration unaffected.
+- Next: 5.2 connection failures, retries/backoff, resume, ping, heartbeat.

@@ -28,6 +28,8 @@ const REALTIME_MODULES: &[(&str, &str, usize)] = &[
     ("presence.rs", include_str!("presence.rs"), 0),
     ("transport.rs", include_str!("transport.rs"), 0),
     ("protocol.rs", include_str!("protocol.rs"), 0),
+    ("connection.rs", include_str!("connection.rs"), 0),
+    ("ws_transport.rs", include_str!("ws_transport.rs"), 0),
 ];
 
 /// Sync primitives that indicate shared mutable state outside the loop.

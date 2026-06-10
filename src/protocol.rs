@@ -4,8 +4,9 @@ use crate::error::ErrorInfo;
 
 // --- Public state types (re-exported via lib.rs) ---
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ConnectionState {
+    #[default]
     Initialized,
     Connecting,
     Connected,
