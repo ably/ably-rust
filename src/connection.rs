@@ -44,6 +44,11 @@ pub(crate) enum LoopInput {
         generation: Generation,
         event: TransportInput,
     },
+    /// RTN22: outcome of a server-requested token renewal (spawned task).
+    TokenReady {
+        generation: Generation,
+        result: Result<String>,
+    },
 }
 
 pub(crate) enum TransportInput {
@@ -59,6 +64,8 @@ pub(crate) enum Command {
     Ping {
         reply: oneshot::Sender<Result<Duration>>,
     },
+    /// RTC8: apply an externally obtained token to the live connection.
+    Reauth { access_token: String },
 }
 
 /// The connection-state snapshot observable by handles (DESIGN.md §4).
@@ -68,6 +75,8 @@ pub(crate) struct ConnectionSnapshot {
     pub id: Option<String>,
     pub key: Option<String>,
     pub error_reason: Option<ErrorInfo>,
+    /// RTN17: the host serving the current connection.
+    pub host: Option<String>,
 }
 
 /// RTB1a: backoff coefficient for the nth retry (1-indexed).
@@ -108,6 +117,10 @@ struct ConnectionCtx {
     generation: Generation,
     writer: Option<mpsc::UnboundedSender<ProtocolMessage>>,
 
+    /// RTN17: hosts remaining to try in the current connect cycle.
+    connect_hosts: Vec<String>,
+    /// RTN17: the host of the current attempt/connection.
+    current_host: Option<String>,
     /// RTN15b: the connection key used for resume on reconnects.
     resume_key: Option<String>,
     /// The id of the last successful connection (RTN15c6/c7 comparison).
@@ -181,6 +194,11 @@ impl ConnectionCtx {
             id: self.id.clone(),
             key: self.key.clone(),
             error_reason: self.error_reason.clone(),
+            host: if self.state == ConnectionState::Connected {
+                self.current_host.clone()
+            } else {
+                None
+            },
         });
     }
 
@@ -204,13 +222,41 @@ impl ConnectionCtx {
         max_idle + self.rest.inner.opts.realtime_request_timeout
     }
 
-    /// Begin a connection attempt: bump the generation (orphaning any
-    /// in-flight attempt or live transport) and spawn the connect task.
+    /// RTN17i: begin a fresh connect cycle — the primary domain first, then
+    /// the REC2 fallback domains in random order (RTN17j).
     fn start_connect(&mut self) {
+        let opts = &self.rest.inner.opts;
+        let mut fallbacks: Vec<String> = opts.resolved_fallback_hosts.clone();
+        use rand::seq::SliceRandom;
+        fallbacks.shuffle(&mut rand::thread_rng());
+        self.connect_hosts = fallbacks;
+        let primary = opts.primary_host.clone();
+        self.start_connect_to(primary);
+    }
+
+    /// RTN17: try the next fallback host in the current cycle, if any.
+    /// Returns false when the cycle is exhausted (RTN17g).
+    fn try_next_host(&mut self) -> bool {
+        if let Some(host) = if self.connect_hosts.is_empty() {
+            None
+        } else {
+            Some(self.connect_hosts.remove(0))
+        } {
+            self.start_connect_to(host);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Spawn a connect task for one host: bump the generation (orphaning any
+    /// in-flight attempt or live transport).
+    fn start_connect_to(&mut self, host: String) {
         self.generation += 1;
         self.writer = None;
         self.connect_deadline =
             Some(Instant::now() + self.rest.inner.opts.realtime_request_timeout);
+        self.current_host = Some(host.clone());
         let generation = self.generation;
         let rest = self.rest.clone();
         let factory = self.transport_factory.clone();
@@ -220,7 +266,7 @@ impl ConnectionCtx {
         let resume = self.resume_key.clone();
         let force_renewal = std::mem::take(&mut self.force_renewal_on_next_connect);
         tokio::spawn(async move {
-            let result = connect_task(rest, factory, resume, force_renewal).await;
+            let result = connect_task(rest, factory, host, resume, force_renewal).await;
             let _ = input_tx.send(LoopInput::ConnectAttempt { generation, result });
         });
     }
@@ -333,6 +379,12 @@ impl ConnectionCtx {
                 | ConnectionState::Closed
                 | ConnectionState::Failed => {}
             },
+            Command::Reauth { access_token } => {
+                // RTC8: apply an externally obtained token in place
+                if self.state == ConnectionState::Connected {
+                    self.send_auth(access_token);
+                }
+            }
             Command::Ping { reply } => {
                 // RTN13b: ping is only valid while CONNECTED
                 if self.state != ConnectionState::Connected {
@@ -375,7 +427,11 @@ impl ConnectionCtx {
                 // connect_deadline still applies to that wait (RTN14c).
             }
             Err(err) => {
-                self.enter_retry_state(Some(err));
+                // RTN17f: a host-unreachable failure tries the next fallback
+                // within the same CONNECTING phase
+                if !self.try_next_host() {
+                    self.enter_retry_state(Some(err));
+                }
             }
         }
     }
@@ -401,14 +457,18 @@ impl ConnectionCtx {
                     );
                     self.reconnect_immediately(Some(err));
                 }
-                // RTN14: failure while still connecting — scheduled retry
+                // RTN14/RTN17f: failure while still connecting — next
+                // fallback host, then a scheduled retry
                 ConnectionState::Connecting => {
                     let err = ErrorInfo::with_status(
                         ErrorCode::Disconnected.code(),
                         400,
                         "Connection to server unexpectedly closed",
                     );
-                    self.enter_retry_state(Some(err));
+                    self.drop_transport();
+                    if !self.try_next_host() {
+                        self.enter_retry_state(Some(err));
+                    }
                 }
                 _ => {}
             },
@@ -434,11 +494,53 @@ impl ConnectionCtx {
                     }
                 }
             }
+            action::AUTH => {
+                // RTN22: the server requests re-authentication. Obtain a fresh
+                // token off-loop and send AUTH back (RTC8); the connection
+                // stays CONNECTED throughout.
+                let generation = self.generation;
+                let rest = self.rest.clone();
+                let input_tx = self.input_tx.clone();
+                tokio::spawn(async move {
+                    rest.invalidate_cached_token();
+                    let result = match rest.get_auth_header().await {
+                        Ok(AuthHeader::Bearer(token)) => Ok(token),
+                        Ok(AuthHeader::Basic(_)) => Err(ErrorInfo::new(
+                            ErrorCode::InvalidCredentials.code(),
+                            "Server requested reauth but the client uses basic auth",
+                        )),
+                        Err(e) => Err(e),
+                    };
+                    let _ = input_tx.send(LoopInput::TokenReady { generation, result });
+                });
+            }
             _ => {
                 // Channel-scoped actions arrive in stages 5.4+; unknown
                 // actions are ignored (forwards compatibility)
             }
         }
+    }
+
+    /// RTN22/RTC8: a renewed token is ready — send AUTH over the live
+    /// transport. On failure, surface the error; the server will disconnect
+    /// us if the credentials lapse (RTN22a handles that path).
+    fn handle_token_ready(&mut self, result: Result<String>) {
+        if self.state != ConnectionState::Connected {
+            return;
+        }
+        match result {
+            Ok(token) => self.send_auth(token),
+            Err(err) => {
+                self.error_reason = Some(err.clone());
+                self.emit_update(Some(err));
+            }
+        }
+    }
+
+    fn send_auth(&mut self, access_token: String) {
+        let mut msg = ProtocolMessage::new(action::AUTH);
+        msg.auth = Some(serde_json::json!({ "accessToken": access_token }));
+        self.send_protocol(msg);
     }
 
     fn handle_connected(&mut self, pm: ProtocolMessage) {
@@ -469,6 +571,13 @@ impl ConnectionCtx {
                 self.connect_deadline = None;
                 self.renewed_this_cycle = false;
                 self.idle_deadline = Some(Instant::now() + self.idle_timeout());
+                // RTN17e: REST requests prefer the same fallback host as the
+                // realtime connection (brief REST-lock write; never awaited)
+                if let Some(host) = &self.current_host {
+                    if host != &self.rest.inner.opts.primary_host {
+                        self.rest.cache_fallback_host(host);
+                    }
+                }
                 self.transition(ConnectionState::Connected, reason);
             }
             ConnectionState::Connected => {
@@ -509,7 +618,18 @@ impl ConnectionCtx {
             // RTN15h3: non-token error — immediate resume attempt
             self.reconnect_immediately(pm.error);
         } else {
-            // During CONNECTING: scheduled retry (RTN14)
+            // RTN17f1: a 5xx DISCONNECTED while connecting qualifies for
+            // fallback; otherwise a scheduled retry (RTN14)
+            let is_5xx = pm
+                .error
+                .as_ref()
+                .and_then(|e| e.status_code)
+                .map(|s| (500..=504).contains(&s))
+                .unwrap_or(false);
+            self.drop_transport();
+            if is_5xx && self.try_next_host() {
+                return;
+            }
             self.enter_retry_state(pm.error);
         }
     }
@@ -576,7 +696,10 @@ impl ConnectionCtx {
                     408,
                     "Connection attempt timed out",
                 );
-                self.enter_retry_state(Some(err));
+                // RTN17f: a timeout qualifies for fallback
+                if !self.try_next_host() {
+                    self.enter_retry_state(Some(err));
+                }
             }
         }
 
@@ -671,22 +794,22 @@ fn state_event(state: ConnectionState) -> ConnectionEvent {
 async fn connect_task(
     rest: Rest,
     factory: Arc<dyn Transport>,
+    host: String,
     resume: Option<String>,
     force_renewal: bool,
 ) -> Result<Box<dyn TransportConnection>> {
     if force_renewal {
         rest.invalidate_cached_token();
     }
-    let url = build_connection_url(&rest, resume.as_deref()).await?;
+    let url = build_connection_url(&rest, &host, resume.as_deref()).await?;
     factory.connect(&url).await
 }
 
 /// RTN2: the realtime connection URL with auth and protocol params.
-async fn build_connection_url(rest: &Rest, resume: Option<&str>) -> Result<String> {
+async fn build_connection_url(rest: &Rest, host: &str, resume: Option<&str>) -> Result<String> {
     let opts = &rest.inner.opts;
     let scheme = if opts.tls { "wss" } else { "ws" };
     let port = if opts.tls { opts.tls_port } else { opts.port };
-    let host = &opts.primary_host;
 
     let mut url = url::Url::parse(&format!("{}://{}:{}/", scheme, host, port))?;
     {
@@ -805,6 +928,8 @@ pub(crate) fn spawn_connection_loop(
         details: None,
         generation: 0,
         writer: None,
+        connect_hosts: Vec::new(),
+        current_host: None,
         resume_key: None,
         last_connected_id: None,
         retry_count: 0,
@@ -836,6 +961,11 @@ pub(crate) fn spawn_connection_loop(
                     Some(LoopInput::Transport { generation, event }) => {
                         if generation == ctx.generation {
                             ctx.handle_transport(event);
+                        }
+                    }
+                    Some(LoopInput::TokenReady { generation, result }) => {
+                        if generation == ctx.generation {
+                            ctx.handle_token_ready(result);
                         }
                     }
                     None => break,

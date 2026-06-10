@@ -272,6 +272,16 @@ impl Rest {
         }
     }
 
+    /// RTN17e: remember a fallback host that the realtime connection
+    /// succeeded on, so REST requests prefer it too (RSC15f semantics).
+    pub(crate) fn cache_fallback_host(&self, host: &str) {
+        let mut fb = self.inner.fallback_state.lock().unwrap();
+        *fb = Some(CachedFallback {
+            host: host.to_string(),
+            expires: std::time::Instant::now() + self.inner.opts.fallback_retry_timeout,
+        });
+    }
+
     /// Invalidate the cached library token so the next acquisition renews it
     /// (used by realtime token-error recovery, RTN14b/RTN15h2; called from
     /// spawned connect tasks, never the connection loop).

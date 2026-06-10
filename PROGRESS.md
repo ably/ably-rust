@@ -371,3 +371,35 @@ This pass added:
 - §14.3 conformance: lock inventory UNCHANGED (ratchet green).
 - Test status: 891 pass / 336 fail (remaining stubs) / 70 ignored.
 - Next: 5.3 fallback hosts (RTN17) + realtime auth (RTN22/RTC8).
+
+### 5.3 Realtime Fallback Hosts + Auth — DONE (2026-06-10)
+- RTN17: host cycling is loop-driven state (connect_hosts/current_host in
+  ConnectionCtx) — each cycle tries the primary first (RTN17i), then the REC2
+  fallback domains in random order (RTN17h/j); qualifying failures (refused/
+  timeout/transport loss while connecting, 5xx DISCONNECTED per RTN17f/f1)
+  advance to the next host within the same CONNECTING phase; an exhausted or
+  empty set falls into the RTN14 retry cycle (RTN17g). Connection::host()
+  reports the connected host via the snapshot. RTN17e: a successful fallback
+  host is written into the embedded Rest's cached-fallback state so HTTP
+  requests prefer it (brief REST-lock write in the loop; never across await —
+  same class as the sanctioned REST locks).
+- DEFERRED (recorded): the RTN17j connectivity check (GET connectivityCheckUrl
+  before fallback) needs dual mock injection (WS + HTTP) in realtime unit
+  tests; planned alongside 5.6. Without it, fallback proceeds optimistically.
+- RTN22: server AUTH → off-loop token renewal task → TokenReady → client sends
+  AUTH with accessToken; connection stays CONNECTED; server's CONNECTED reply
+  surfaces as an UPDATE (RTN4h machinery). RTC8: RealtimeAuth::authorize()
+  obtains via REST then applies in place via Command::Reauth.
+- RTN14 isolation fix: the RTN14 retry tests now pin retry behavior with an
+  empty fallback set, since default options carry the 5 REC2 fallback domains.
+- Tests: 3 new UTS-derived (48 total in tests_realtime_uts_connection.rs, all
+  green; RTN22 full scenario incl. captured AUTH + token-2 + update-only
+  events). Ported cross-check: all 7 rtn17 tests ADOPTED (they pass verbatim
+  after the REC domain migration of realtime test files); 2 ported rtn22a
+  tests superseded (transient-state races; covered by rtn15h2); rtn22 x2
+  ported pass as adopted.
+- §14.3 conformance: lock inventory UNCHANGED (ratchet green; live test green).
+- Test status: 901 pass / 327 fail (remaining stubs: channels/messages/
+  presence/annotations + misc) / 70 ignored.
+- Next: 5.4 channel lifecycle (RTS, RTL2-5, RTL16) — ChannelCtx, EnsureChannel,
+  per-channel snapshots, attach/detach.

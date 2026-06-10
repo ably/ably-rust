@@ -1558,7 +1558,7 @@ use crate::crypto::CipherParams;
             "Should have tried primary + at least one fallback"
         );
         assert_eq!(
-            hosts[0], "realtime.ably.io",
+            hosts[0], "main.realtime.ably.net",
             "First attempt should be primary"
         );
         // Second attempt should be a fallback host
@@ -1608,9 +1608,9 @@ use crate::crypto::CipherParams;
 
         let hosts = captured_hosts.lock().unwrap();
         assert!(hosts.len() >= 2);
-        assert_eq!(hosts[0], "realtime.ably.io");
+        assert_eq!(hosts[0], "main.realtime.ably.net");
         assert_ne!(
-            hosts[1], "realtime.ably.io",
+            hosts[1], "main.realtime.ably.net",
             "Should try fallback, not primary again"
         );
     }
@@ -1664,7 +1664,7 @@ use crate::crypto::CipherParams;
 
         let hosts = captured_hosts.lock().unwrap();
         assert!(hosts.len() >= 2);
-        assert_eq!(hosts[0], "realtime.ably.io");
+        assert_eq!(hosts[0], "main.realtime.ably.net");
         assert!(
             hosts[1].contains("ably-realtime.com"),
             "Should try fallback after 5xx, got: {}",
@@ -1709,7 +1709,7 @@ use crate::crypto::CipherParams;
         let hosts = captured_hosts.lock().unwrap();
         // Only one host attempted before going to DISCONNECTED retry cycle
         assert_eq!(hosts.len(), 1, "Should only try primary, no fallbacks");
-        assert_eq!(hosts[0], "realtime.ably.io");
+        assert_eq!(hosts[0], "main.realtime.ably.net");
     }
 
 
@@ -1755,11 +1755,11 @@ use crate::crypto::CipherParams;
         // Fallback host should be one of [a-e].ably-realtime.com
         let fallback = &hosts[1];
         let valid_fallbacks = [
-            "a.ably-realtime.com",
-            "b.ably-realtime.com",
-            "c.ably-realtime.com",
-            "d.ably-realtime.com",
-            "e.ably-realtime.com",
+            "main.a.fallback.ably-realtime.com",
+            "main.b.fallback.ably-realtime.com",
+            "main.c.fallback.ably-realtime.com",
+            "main.d.fallback.ably-realtime.com",
+            "main.e.fallback.ably-realtime.com",
         ];
         assert!(
             valid_fallbacks.contains(&fallback.as_str()),
@@ -1769,51 +1769,7 @@ use crate::crypto::CipherParams;
     }
 
 
-    // RTN22a: DISCONNECTED with token error code triggers recovery
-    #[tokio::test]
-    async fn rtn22a_forced_disconnect_token_error() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{action, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
-        use crate::realtime::{await_state, Realtime};
 
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .fallback_hosts(vec![]),
-            transport,
-        )
-        .unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        // Server forcibly disconnects with token error
-        {
-            let conns = mock.active_connections();
-            let conn = conns.last().unwrap();
-            let mut msg = ProtocolMessage::new(action::DISCONNECTED);
-            msg.error = Some(ErrorInfo {
-                code: Some(40142),
-                status_code: Some(401),
-                message: Some("Token expired".to_string()),
-                href: None,
-                ..Default::default()
-            });
-            conn.send_to_client(msg);
-        }
-
-        // Client should transition to DISCONNECTED with the token error
-        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
-
-        let error = client.connection.error_reason();
-        assert!(error.is_some());
-        assert_eq!(error.unwrap().code, Some(40142));
-    }
 
 
     // --- Connection Auth (RTN2e) ---
@@ -2129,49 +2085,7 @@ use crate::crypto::CipherParams;
     }
 
 
-    #[tokio::test]
-    async fn rtn22a_forced_disconnect_triggers_token_recovery() {
-        // RTN22a: Server forcibly disconnects with token error (40140-40149),
-        // triggering token-error recovery (RTN15h).
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{action, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
-        use crate::realtime::{await_state, Realtime};
 
-        let callback = std::sync::Arc::new(TestAuthCallback::new("recovery-token"));
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let options = ClientOptions::with_auth_callback(callback.clone())
-            .auto_connect(false)
-            .fallback_hosts(vec![]);
-        let client = Realtime::with_mock(&options, transport).unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        // Server forcibly disconnects with token error
-        let conns = mock.active_connections();
-        let conn = conns.last().unwrap();
-        let mut msg = ProtocolMessage::new(action::DISCONNECTED);
-        msg.error = Some(ErrorInfo {
-            code: Some(40142),
-            status_code: Some(401),
-            message: Some("Token expired".to_string()),
-            href: None,
-            ..Default::default()
-        });
-        conn.send_to_client(msg);
-
-        // Client should transition to DISCONNECTED with the token error
-        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
-
-        let error = client.connection.error_reason();
-        assert!(error.is_some());
-        assert_eq!(error.unwrap().code, Some(40142));
-    }
 
 
     // ===============================================================

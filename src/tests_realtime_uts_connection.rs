@@ -725,6 +725,7 @@ async fn rtn14c_connect_attempt_times_out() {
     });
     let opts = default_opts()
         .auto_connect(false)
+        .fallback_hosts(vec![]) // isolate RTN14 retry from RTN17 cycling
         .realtime_request_timeout(std::time::Duration::from_secs(2));
     let client = client_with(&mock, opts);
     client.connect();
@@ -750,6 +751,7 @@ async fn rtn14d_retries_after_recoverable_failure() {
     });
     let opts = default_opts()
         .auto_connect(false)
+        .fallback_hosts(vec![]) // isolate RTN14 retry from RTN17 cycling
         .disconnected_retry_timeout(std::time::Duration::from_secs(1));
     let client = client_with(&mock, opts);
 
@@ -769,6 +771,7 @@ async fn rtn14e_disconnected_becomes_suspended_after_ttl() {
     });
     let opts = default_opts()
         .auto_connect(false)
+        .fallback_hosts(vec![]) // isolate RTN14 from RTN17 cycling
         .disconnected_retry_timeout(std::time::Duration::from_secs(1))
         .connection_state_ttl(std::time::Duration::from_secs(5));
     let client = client_with(&mock, opts);
@@ -796,6 +799,7 @@ async fn rtn14f_suspended_keeps_retrying_then_connects() {
     });
     let opts = default_opts()
         .auto_connect(false)
+        .fallback_hosts(vec![]) // isolate RTN14 from RTN17 cycling
         .disconnected_retry_timeout(std::time::Duration::from_secs(1))
         .suspended_retry_timeout(std::time::Duration::from_secs(3))
         .connection_state_ttl(std::time::Duration::from_secs(4));
@@ -1014,6 +1018,7 @@ async fn rtn15g_resume_state_cleared_after_ttl() {
     });
     let opts = default_opts()
         .auto_connect(false)
+        .fallback_hosts(vec![]) // isolate RTN15g from RTN17 cycling
         .disconnected_retry_timeout(std::time::Duration::from_secs(2))
         .suspended_retry_timeout(std::time::Duration::from_secs(2))
         .connection_state_ttl(std::time::Duration::from_secs(3));
@@ -1301,4 +1306,132 @@ async fn rtn2b_echo_param() {
     assert!(urls[1].contains("echo=false"), "echo=false when disabled, got {}", urls[1]);
     c1.close();
     c2.close();
+}
+
+// ============================================================================
+// Stage 5.3 — server-initiated reauth (RTN22) and in-place authorize (RTC8)
+// Source: uts/realtime/unit/connection/server_initiated_reauth_test.md
+// ============================================================================
+
+// UTS: realtime/unit/RTN22/server-auth-triggers-reauth-0 (+stays-connected-1)
+#[tokio::test]
+async fn rtn22_server_auth_triggers_reauth() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_success(connected_msg("connection-id", "connection-key"));
+        std::mem::forget(c);
+    });
+    let tokens = Arc::new(AtomicUsize::new(0));
+    let client = token_client(&mock, tokens.clone());
+
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+    assert_eq!(tokens.load(Ordering::SeqCst), 1);
+
+    // Record events from here on
+    let changes: Arc<StdMutex<Vec<ConnectionStateChange>>> = Arc::new(StdMutex::new(Vec::new()));
+    let changes_c = changes.clone();
+    let mut events = client.connection.on_state_change();
+    tokio::spawn(async move {
+        while let Ok(change) = events.recv().await {
+            changes_c.lock().unwrap().push(change);
+        }
+    });
+
+    // The server requests re-authentication
+    mock.active_connection().send_to_client(ProtocolMessage::new(action::AUTH));
+
+    // The client obtains a fresh token and sends AUTH back
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let auth_msg = loop {
+        if let Some(m) = mock
+            .client_messages()
+            .into_iter()
+            .find(|m| m.action == action::AUTH)
+        {
+            break m;
+        }
+        assert!(std::time::Instant::now() < deadline, "client never sent AUTH");
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    };
+    let auth = auth_msg.message.auth.expect("AUTH carries an auth payload");
+    assert_eq!(auth["accessToken"], "token-2", "fresh token used");
+    assert_eq!(tokens.load(Ordering::SeqCst), 2, "token source consulted again");
+
+    // The server acknowledges with an updated CONNECTED → UPDATE event
+    mock.active_connection()
+        .send_to_client(connected_msg("connection-id", "connection-key-2"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let snapshot = changes.lock().unwrap().clone();
+        if snapshot.iter().any(|c| c.event == crate::protocol::ConnectionEvent::Update) {
+            // The connection never left CONNECTED
+            assert!(
+                snapshot.iter().all(|c| c.current == ConnectionState::Connected),
+                "reauth must not change the connection state: {:?}",
+                snapshot.iter().map(|c| c.current).collect::<Vec<_>>()
+            );
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "no UPDATE event observed");
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(client.connection.key().as_deref(), Some("connection-key-2"));
+    client.close();
+}
+
+// RTC8: RealtimeAuth::authorize() applies the new token to the live
+// connection via AUTH, without a reconnect
+#[tokio::test]
+async fn rtc8_authorize_reauths_in_place() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_success(connected_msg("id", "key"));
+        std::mem::forget(c);
+    });
+    let tokens = Arc::new(AtomicUsize::new(0));
+    let client = token_client(&mock, tokens.clone());
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    let td = client.auth().authorize().await.expect("authorize");
+    assert_eq!(td.token, "token-2");
+
+    // The new token went out as an AUTH protocol message
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if let Some(m) = mock
+            .client_messages()
+            .into_iter()
+            .find(|m| m.action == action::AUTH)
+        {
+            let auth = m.message.auth.expect("auth payload");
+            assert_eq!(auth["accessToken"], "token-2");
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "AUTH never sent");
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        client.connection.state(),
+        ConnectionState::Connected,
+        "authorize is in-place: still connected"
+    );
+    assert_eq!(mock.connection_count(), 1, "no reconnect");
+    client.close();
+}
+
+// RTN17 live cross-check: Connection::host() reports the connected host
+#[tokio::test]
+async fn rtn17_host_reported_when_connected() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        conn.respond_with_success(connected_msg("id", "key"));
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+    assert!(client.connection.host().is_none());
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+    assert_eq!(
+        client.connection.host().as_deref(),
+        Some("main.realtime.ably.net")
+    );
+    client.close();
 }

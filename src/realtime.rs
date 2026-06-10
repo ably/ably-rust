@@ -68,7 +68,10 @@ impl Realtime {
     }
 
     pub fn auth(&self) -> RealtimeAuth {
-        RealtimeAuth { rest: self.rest.clone() }
+        RealtimeAuth {
+            rest: self.rest.clone(),
+            input_tx: self.connection.input_tx.clone(),
+        }
     }
 
     pub fn push(&self) -> Option<Push<'_>> {
@@ -83,13 +86,18 @@ impl Realtime {
 
 pub struct RealtimeAuth {
     rest: Rest,
+    input_tx: mpsc::UnboundedSender<LoopInput>,
 }
 
 impl RealtimeAuth {
+    /// RTC8: obtain a new token and apply it to the live connection in place
+    /// (an AUTH protocol message; the connection stays CONNECTED).
     pub async fn authorize(&self) -> Result<TokenDetails> {
-        // RTC8 in-place reauth over the live connection arrives in 5.3; the
-        // REST-side authorization state is shared already.
-        self.rest.auth().authorize(None, None).await
+        let td = self.rest.auth().authorize(None, None).await?;
+        let _ = self.input_tx.send(LoopInput::Cmd(Command::Reauth {
+            access_token: td.token.clone(),
+        }));
+        Ok(td)
     }
 
     pub fn client_id(&self) -> Option<String> {
@@ -125,9 +133,9 @@ impl Connection {
         self.snapshot().key
     }
 
+    /// RTN17: the host serving the current connection (None unless CONNECTED).
     pub fn host(&self) -> Option<String> {
-        // Fallback-host reporting arrives with RTN17 (5.3)
-        None
+        self.snapshot().host
     }
 
     /// RTN25: the last error that affected the connection.
