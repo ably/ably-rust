@@ -353,22 +353,7 @@ use crate::crypto::CipherParams;
     }
 
 
-    #[tokio::test]
-    async fn rsa9c_custom_ttl() {
-        let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
 
-        let params = crate::auth::TokenParams {
-            ttl: Some(7200000),
-            ..Default::default()
-        };
-        let options = crate::auth::AuthOptions::default();
-
-        let req = client
-            .auth()
-            .create_token_request(Some(&params), Some(&options)).await
-            .unwrap();
-        assert_eq!(req.ttl.unwrap(), 7200000);
-    }
 
 
     #[tokio::test]
@@ -955,62 +940,10 @@ use crate::crypto::CipherParams;
     // RSA4c2/RSA4d/RSA4f: Auth callback error handling
     // ========================================================================
 
-    #[tokio::test]
-    async fn rsa4c2_callback_error_during_connecting_goes_disconnected() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-
-        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
-        callback.set_should_fail(true);
-        callback.set_fail_code(crate::error::ErrorInfoCode::Unauthorized, Some(401));
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let options = ClientOptions::with_auth_callback(callback.clone())
-            .auto_connect(false)
-            .fallback_hosts(vec![]);
-        let client = Realtime::with_mock(&options, transport).unwrap();
-
-        client.connect();
-        // RSA4c2: authCallback error during CONNECTING → DISCONNECTED
-        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
-
-        let err = client.connection.error_reason();
-        assert!(err.is_some());
-    }
 
 
-    #[tokio::test]
-    async fn rsa4d_callback_403_during_connecting_goes_failed() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
 
-        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
-        callback.set_should_fail(true);
-        callback.set_fail_code(crate::error::ErrorInfoCode::Forbidden, Some(403));
 
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let options = ClientOptions::with_auth_callback(callback.clone())
-            .auto_connect(false)
-            .fallback_hosts(vec![]);
-        let client = Realtime::with_mock(&options, transport).unwrap();
-
-        client.connect();
-        // RSA4d: 403 from authCallback → FAILED
-        assert!(
-            await_state(&client.connection, ConnectionState::Failed, 5000).await
-            || await_state(&client.connection, ConnectionState::Disconnected, 5000).await
-        );
-    }
 
 
     // ---------------------------------------------------------------
@@ -1205,15 +1138,15 @@ use crate::crypto::CipherParams;
         let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
         let annotation = &body[0];
         // RSAN1c4: When idempotent publishing is enabled and id is empty,
-        // SDK should generate a base64 ID with :0 suffix
-        if let Some(id) = annotation.get("id").and_then(|v| v.as_str()) {
-            let parts: Vec<&str> = id.split(':').collect();
-            assert_eq!(parts.len(), 2, "ID should be in format <base64>:0");
-            assert!(parts[0].len() >= 12, "Base64 part should be at least 12 chars");
-            assert_eq!(parts[1], "0");
-        }
-        // If no id is present, the SDK hasn't implemented RSAN1c4 yet — that's okay,
-        // the test documents the spec requirement
+        // the SDK generates a base64 ID with a :0 suffix
+        let id = annotation
+            .get("id")
+            .and_then(|v| v.as_str())
+            .expect("RSAN1c4: idempotent annotation id must be generated");
+        let parts: Vec<&str> = id.split(':').collect();
+        assert_eq!(parts.len(), 2, "ID should be in format <base64>:0");
+        assert!(parts[0].len() >= 12, "Base64 part should be at least 12 chars");
+        assert_eq!(parts[1], "0");
         Ok(())
     }
 
@@ -1302,91 +1235,10 @@ use crate::crypto::CipherParams;
     // RSA4c3/RSA4d/RSA4f/RSA4e: Additional auth callback error tests
     // ===============================================================
 
-    #[tokio::test]
-    async fn rsa4c3_callback_error_while_connected_stays_connected() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage, action};
-        use crate::realtime::{await_state, Realtime};
-
-        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let options = ClientOptions::with_auth_callback(callback.clone())
-            .auto_connect(false)
-            .fallback_hosts(vec![]);
-        let client = Realtime::with_mock(&options, transport.clone()).unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        // Now make the callback fail for the reauth
-        callback.set_should_fail(true);
-        callback.set_fail_code(crate::error::ErrorInfoCode::InternalError, Some(500));
-
-        // Inject AUTH message from server (RTN22)
-        let conns = mock.active_connections();
-        assert!(!conns.is_empty());
-        conns[0].send_to_client(ProtocolMessage::new(action::AUTH));
-
-        // Wait for the callback to be invoked
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        // RSA4c3: Connection should remain CONNECTED
-        assert_eq!(client.connection.state(), ConnectionState::Connected);
-
-        // errorReason should NOT be set (the failure is silently swallowed)
-        assert!(client.connection.error_reason().is_none());
-    }
 
 
-    #[tokio::test]
-    async fn rsa4d_callback_403_during_reauth_goes_failed() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage, action};
-        use crate::realtime::{await_state, Realtime};
 
-        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
 
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let options = ClientOptions::with_auth_callback(callback.clone())
-            .auto_connect(false)
-            .fallback_hosts(vec![]);
-        let client = Realtime::with_mock(&options, transport.clone()).unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        // Make the callback fail with 403 for the reauth
-        callback.set_should_fail(true);
-        callback.set_fail_code(crate::error::ErrorInfoCode::Forbidden, Some(403));
-
-        // Inject AUTH message from server (RTN22)
-        let conns = mock.active_connections();
-        assert!(!conns.is_empty());
-        conns[0].send_to_client(ProtocolMessage::new(action::AUTH));
-
-        // RSA4d: 403 during RTN22 reauth should transition to FAILED
-        // Note: current impl may silently swallow — this test documents expected behavior
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        // The connection should either go to FAILED (per spec) or stay CONNECTED
-        // (current impl silently swallows auth errors during reauth).
-        // Per RSA4d1, 403 overrides RSA4c3 and should go to FAILED.
-        let state = client.connection.state();
-        assert!(
-            state == ConnectionState::Failed || state == ConnectionState::Connected,
-            "Expected FAILED or CONNECTED, got {:?}",
-            state
-        );
-    }
 
 
     #[tokio::test]
@@ -2419,8 +2271,10 @@ use crate::crypto::CipherParams;
     // UTS: rest/unit/auth/token_request_params.md
     // ===============================================================
 
-    #[test]
-    fn rsa5c_ttl_from_default_token_params() {
+    // RSA5c — ttl from defaultTokenParams flows into the TokenRequest
+    // UTS: rest/unit/RSA5c/ttl-from-default-params-0
+    #[tokio::test]
+    async fn rsa5c_ttl_from_default_token_params() {
         let client = ClientOptions::new("appId.keyId:keySecret")
             .default_token_params(crate::auth::TokenParams {
                 ttl: Some(1800000),
@@ -2428,33 +2282,32 @@ use crate::crypto::CipherParams;
             })
             .rest()
             .unwrap();
-
-        let dtp = &client.options().default_token_params;
-        assert!(dtp.is_some());
-        assert_eq!(dtp.as_ref().unwrap().ttl.unwrap(), 1800000);
+        let req = client.auth().create_token_request(None, None).await.unwrap();
+        assert_eq!(req.ttl, Some(1800000));
     }
 
 
-    #[test]
-    fn rsa5d_explicit_ttl_overrides_default() {
-        let explicit = crate::auth::TokenParams {
-            ttl: Some(600000),
-            ..Default::default()
-        };
-        let default = crate::auth::TokenParams {
-            ttl: Some(1800000),
-            ..Default::default()
-        };
-        assert_ne!(
-            explicit.ttl.unwrap(),
-            default.ttl.unwrap()
-        );
-        assert_eq!(explicit.ttl.unwrap(), 600000);
+    // RSA5d — explicit ttl overrides defaultTokenParams
+    // UTS: rest/unit/RSA5d/explicit-ttl-overrides-default-0
+    #[tokio::test]
+    async fn rsa5d_explicit_ttl_overrides_default() {
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .default_token_params(crate::auth::TokenParams {
+                ttl: Some(1800000),
+                ..Default::default()
+            })
+            .rest()
+            .unwrap();
+        let params = crate::auth::TokenParams { ttl: Some(600000), ..Default::default() };
+        let req = client.auth().create_token_request(Some(&params), None).await.unwrap();
+        assert_eq!(req.ttl, Some(600000));
     }
 
 
-    #[test]
-    fn rsa6c_capability_from_default_token_params() {
+    // RSA6c — capability from defaultTokenParams flows into the TokenRequest
+    // UTS: rest/unit/RSA6c/capability-from-default-params-0
+    #[tokio::test]
+    async fn rsa6c_capability_from_default_token_params() {
         let client = ClientOptions::new("appId.keyId:keySecret")
             .default_token_params(crate::auth::TokenParams {
                 capability: Some(r#"{"*":["subscribe"]}"#.to_string()),
@@ -2462,28 +2315,28 @@ use crate::crypto::CipherParams;
             })
             .rest()
             .unwrap();
-
-        let dtp = &client.options().default_token_params;
-        assert!(dtp.is_some());
-        assert_eq!(
-            dtp.as_ref().unwrap().capability.as_deref(),
-            Some(r#"{"*":["subscribe"]}"#)
-        );
+        let req = client.auth().create_token_request(None, None).await.unwrap();
+        assert_eq!(req.capability.as_deref(), Some(r#"{"*":["subscribe"]}"#));
     }
 
 
-    #[test]
-    fn rsa6d_explicit_capability_overrides_default() {
-        let explicit = crate::auth::TokenParams {
+    // RSA6d — explicit capability overrides defaultTokenParams
+    // UTS: rest/unit/RSA6d/explicit-capability-overrides-default-0
+    #[tokio::test]
+    async fn rsa6d_explicit_capability_overrides_default() {
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .default_token_params(crate::auth::TokenParams {
+                capability: Some(r#"{"*":["subscribe"]}"#.to_string()),
+                ..Default::default()
+            })
+            .rest()
+            .unwrap();
+        let params = crate::auth::TokenParams {
             capability: Some(r#"{"channel-x":["publish"]}"#.to_string()),
             ..Default::default()
         };
-        let default = crate::auth::TokenParams {
-            capability: Some(r#"{"*":["subscribe"]}"#.to_string()),
-            ..Default::default()
-        };
-        assert_ne!(explicit.capability, default.capability);
-        assert_eq!(explicit.capability.as_deref(), Some(r#"{"channel-x":["publish"]}"#));
+        let req = client.auth().create_token_request(Some(&params), None).await.unwrap();
+        assert_eq!(req.capability.as_deref(), Some(r#"{"channel-x":["publish"]}"#));
     }
 
 
@@ -3426,20 +3279,7 @@ use crate::crypto::CipherParams;
     }
 
 
-    #[test]
-    fn rsa10a_incompatible_key_in_auth_options() {
-        // RSA10a: AuthOptions with a key that doesn't match should be detectable
-        let opts1 = crate::auth::AuthOptions {
-            token: Some("token-from-key1".to_string()),
-            ..Default::default()
-        };
-        let opts2 = crate::auth::AuthOptions {
-            token: Some("token-from-key2".to_string()),
-            ..Default::default()
-        };
-        // The tokens are different
-        assert_ne!(opts1.token, opts2.token, "Tokens should differ");
-    }
+
 
 
     #[tokio::test]
@@ -4174,23 +4014,8 @@ use crate::crypto::CipherParams;
     }
 
 
-    #[test]
-    fn rsa5b_explicit_ttl_in_token_params_depth() {
-        let params = crate::auth::TokenParams {
-            ttl: Some(30 * 60 * 1000),
-            ..Default::default()
-        };
-        assert_eq!(params.ttl.unwrap() / 60000, 30);
-    }
 
 
-    #[test]
-    fn rsa6b_explicit_capability_in_token_params_depth() {
-        let params = crate::auth::TokenParams {
-            capability: Some(r#"{"channel1":["publish","subscribe"]}"#.to_string()),
-            ..Default::default()
-        };
-        assert!(params.capability.as_deref().unwrap().contains("publish"));
-        assert!(params.capability.as_deref().unwrap().contains("subscribe"));
-    }
+
+
 

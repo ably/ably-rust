@@ -226,3 +226,28 @@
 - Test status: unit 751 pass / 439 fail (realtime stubs) / 91 ignored;
   integration 47/47 vs sandbox.
 - Next: R5 remaining unit-test repair, then R6 integration hardening.
+
+### R5 Unit-Test Suite Repair — DONE (2026-06-10)
+(Bulk of R5 was done incrementally inside R1-R4: vacuous auth tests replaced with
+18 UTS tests, inverted RSC22 fixed, falsely-IDed REC/HP/logging tests rewritten,
+batch duplicates removed, idempotency conditional-asserts made strict.)
+This pass added:
+- RSL8/RSL8a/CHD2/CHS2/CHO2/CHM2: Channel::status() implemented + ChannelDetails
+  type tree; 5 UTS tests (endpoint, encoding, details, all-metrics, zero/missing).
+- RSL7: Channel::set_options() applies cipher to subsequent operations (tested).
+- RSAN1c4: annotation publish generates idempotent ids (was hidden by a
+  conditional assert; now implemented + strict test).
+- Realtime-dependent tests moved out of REST files (rsa4c2/c3, rsa4d x2 →
+  tests_realtime_unit_client; tm2* x8 → tests_realtime_unit_channel). Every
+  tests_rest_* test now passes.
+- Vacuous tests fixed/deleted: rsa5c/rsa6c (now assert TokenRequest flow),
+  rsa5d/rsa6d (real override tests), rsa10a tautology deleted, rsa5b/rsa6b depth
+  tautologies deleted, rsc15j + rsc7c-unique + rsc22c-empty conditionals strict.
+- Duplicates removed: rec1b2==rec1b1 (kept as rsc15l_fallback_on_network_failure),
+  rsc15m triplicate → 1, rsa9c==rsa5b, version-header triplicate → 2.
+- DESIGN.md updated with all Phase R API amendments + the RSN ephemeral-channel
+  decision. CLAUDE.md baseline updated (746/439/91; REST fully green).
+- Deferred (recorded): shared test_support module to dedup mock helpers;
+  none_/hp naming sweep; remaining near-duplicate pairs in auth (rsa10/rsa16
+  batches); RSC19d residual items; RSP1b/TM2s1.
+- Test status: unit 746 pass / 439 fail (all realtime stubs) / 91 ignored.

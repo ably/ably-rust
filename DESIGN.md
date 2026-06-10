@@ -1274,3 +1274,65 @@ the initial `cached_token`. If they provided a Key (without `use_token_auth`),
 
 - Realtime state management / Mutex reduction (Phase 4)
 - Connection loop architecture (Phase 5.1)
+
+---
+
+## Phase R Amendments (2026-06-10)
+
+API changes made during REST remediation; supersede earlier sections where they conflict.
+
+### Auth
+- `AuthOptions` is the full AO2 shape: key, token, token_details, auth_callback,
+  auth_url, method (default "GET"), headers, params, query_time.
+- `create_token_request` / `request_token` / `authorize` take
+  `(Option<&TokenParams>, Option<&AuthOptions>)`; `create_token_request` is async
+  (queryTime may query /time). `request_token` never mutates library auth state
+  (RSA8f); `authorize` saves params/options and forces token auth (RSA10a).
+- `AuthToken` gains a `Token(String)` variant (JWT strings from callbacks).
+- `Auth::client_id()` added (RSA7/RSA12).
+- `AuthState` carries saved_auth_options, forced_token_auth, time_offset_ms.
+  Still a single Mutex; never held across await.
+
+### Publish
+- `PublishBuilder::send()` returns `PublishResult { serials: Vec<Option<String>>,
+  message_id }` (RSL1n/PBR2). `messages(Vec<Message>)` enables multi-message
+  publish (single → object body, multiple → array). `cipher()` is real (RSL5)
+  and overrides the channel cipher.
+- Idempotent ids: `base64url(9 random bytes):index` per publish (RSL1k1),
+  default on (TO3n).
+
+### request()
+- `Rest::request()` returns `HttpPaginatedResponse` (HP1-HP8): items normalised
+  to an array, status_code/success/error_code/error_message/headers accessors,
+  Link-header pagination, per-request `version()` override (RSC19f1). HTTP error
+  statuses are inspectable responses, NOT Err. The old `Response` type remains
+  only as an internal shape.
+
+### Hosts (REC1/REC2)
+- New `endpoint()` option (hostname | routing policy | "nonprod:[id]").
+  `environment()`/`rest_host()`/`realtime_host()` are deprecated overrides and
+  mutually exclusive with it. `resolve_hosts()` computes `primary_host` +
+  `resolved_fallback_hosts` at build time. Defaults: main.realtime.ably.net,
+  main.[a-e].fallback.ably-realtime.com.
+
+### Channel
+- `Channel::status()` → `ChannelDetails { channel_id, status: ChannelStatus
+  { is_active, occupancy: ChannelOccupancy { metrics: ChannelMetrics } } }`
+  (RSL8/CHD2/CHS2/CHO2/CHM2). `Channel::set_options(ChannelOptions)` updates the
+  handle's cipher (RSL7).
+
+### Decision: REST channel collection semantics (RSN)
+The UTS channels_collection tests assume stored channel instances with identity
+semantics (get returns the same instance; release() removes it). This SDK keeps
+REST channels as cheap ephemeral accessors (`Channels<'a>::get` returns a value
+borrowing `&Rest`): Rust has no object identity to observe, all channel state a
+user can set (cipher) lives on the handle, and a stored collection would force
+`Arc<RealtimeChannel>`-style sharing onto stateless REST usage. Identity/release
+semantics will exist where they matter — the realtime `Channels` collection
+(Phase 4/5). The RSN-labelled REST tests assert name consistency only and do not
+claim identity coverage.
+
+### Logging (RSC2)
+- `log_level(LogLevel)` + `log_handler(Fn(LogLevel, &str))`, severity-filtered
+  (None suppresses all). Request logs carry method/host/path; failures log at
+  Error. Structured context objects (TO3c) are deferred.

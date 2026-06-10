@@ -2729,7 +2729,7 @@ use crate::crypto::CipherParams;
     // REC3 → rsc15a_fallback_hosts_tried_on_primary_failure (line 7700)
 
     #[tokio::test]
-    async fn rec1b1_fallback_on_dns_resolution_failure() -> Result<()> {
+    async fn rsc15l_fallback_on_network_failure() -> Result<()> {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let count = Arc::new(AtomicUsize::new(0));
         let count_c = count.clone();
@@ -2751,27 +2751,7 @@ use crate::crypto::CipherParams;
     }
 
 
-    #[tokio::test]
-    async fn rec1b2_fallback_on_connection_refused() -> Result<()> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let count = Arc::new(AtomicUsize::new(0));
-        let count_c = count.clone();
-        let mock = MockHttpClient::with_handler(move |_req| {
-            let n = count_c.fetch_add(1, Ordering::SeqCst);
-            if n == 0 {
-                MockResponse::network_error()
-            } else {
-                MockResponse::json(200, &json!([1700000000000_i64]))
-            }
-        });
-        let client = ClientOptions::new("appId.keyId:keySecret")
-            .use_binary_protocol(false)
-            .rest_with_mock(mock)?;
-        let result = client.time().await;
-        assert!(result.is_ok(), "Should succeed on fallback: {:?}", result);
-        assert!(count.load(Ordering::SeqCst) >= 2, "Should have retried on fallback host");
-        Ok(())
-    }
+
 
 
     #[tokio::test]
@@ -2810,22 +2790,7 @@ use crate::crypto::CipherParams;
     }
 
 
-    // REC1d2 already covered by rsc15m_no_fallback_when_fallback_hosts_empty
-    #[tokio::test]
-    async fn rec1d2_no_fallback_when_fallback_hosts_empty() -> Result<()> {
-        let mock = MockHttpClient::new();
-        mock.queue_response(MockResponse::json(500, &json!({"error": {"code": 50000}})));
-        let client = ClientOptions::new("appId.keyId:keySecret")
-            .use_binary_protocol(false)
-            .fallback_hosts(vec![])
-            .rest_with_mock(mock)
-            .unwrap();
-        let result = client.time().await;
-        assert!(result.is_err());
-        let reqs = get_mock(&client).captured_requests();
-        assert_eq!(reqs.len(), 1, "No fallback with empty hosts");
-        Ok(())
-    }
+
 
 
     // REC2a1 already covered by rsc15a_fallback_hosts_randomized
@@ -2999,16 +2964,16 @@ use crate::crypto::CipherParams;
             .unwrap()
             .rest_with_mock(mock)
             .unwrap();
-        let _ = client.time().await;
+        let _ = client.channels().get("test").history().send().await;
         let reqs = get_mock(&client).captured_requests();
-        if reqs.len() >= 2 {
-            let host = reqs[1].url.host_str().unwrap();
-            assert!(
-                host.contains("sandbox") || host.contains("ably"),
-                "Expected environment-based fallback host, got {}",
-                host
-            );
-        }
+        assert!(reqs.len() >= 2, "expected a fallback retry after 500");
+        let host = reqs[1].url.host_str().unwrap();
+        // REC2c5: environment fallbacks are [env].[a-e].fallback.ably-realtime.com
+        assert!(
+            host.starts_with("sandbox.") && host.ends_with(".fallback.ably-realtime.com"),
+            "Expected environment fallback domain, got {}",
+            host
+        );
         Ok(())
     }
 
@@ -4014,25 +3979,7 @@ use crate::crypto::CipherParams;
     }
 
 
-    // RSC15m — No fallback when fallback hosts list is empty
-    #[tokio::test]
-    async fn rsc15m_no_fallback_when_empty() -> Result<()> {
-        let mock = MockHttpClient::new();
-        mock.queue_response(MockResponse::json(500, &json!({"error": {"code": 50000}})));
 
-        let client = ClientOptions::new("appId.keyId:keySecret")
-            .use_binary_protocol(false)
-            .fallback_hosts(vec![])
-            .rest_with_mock(mock)
-            .unwrap();
-
-        let err = client.time().await.unwrap_err();
-        assert_eq!(err.status_code, Some(500));
-
-        let reqs = get_mock(&client).captured_requests();
-        assert_eq!(reqs.len(), 1, "Should not retry when fallback hosts are empty");
-        Ok(())
-    }
 
 
     // RSC22 — batch publish with empty messages is rejected client-side
@@ -4603,16 +4550,14 @@ use crate::crypto::CipherParams;
             .add_request_ids(true)
             .rest_with_mock(mock)
             .unwrap();
-        client.time().await.ok();
-        client.time().await.ok();
+        client.request("GET", "/channels/a").send().await?;
+        client.request("GET", "/channels/b").send().await?;
         let reqs = get_mock(&client).captured_requests();
-        if reqs.len() >= 2 {
-            let rid1 = reqs[0].url.query_pairs()
-                .find(|(k, _)| k == "request_id").unwrap().1.to_string();
-            let rid2 = reqs[1].url.query_pairs()
-                .find(|(k, _)| k == "request_id").unwrap().1.to_string();
-            assert_ne!(rid1, rid2, "Each request should have a unique request_id");
-        }
+        assert_eq!(reqs.len(), 2);
+        let rid = |i: usize| reqs[i].url.query_pairs()
+            .find(|(k, _)| k == "request_id")
+            .expect("request_id param present").1.to_string();
+        assert_ne!(rid(0), rid(1), "Each logical request gets a unique request_id");
         Ok(())
     }
 
@@ -4679,12 +4624,10 @@ use crate::crypto::CipherParams;
             MockResponse::json(200, &json!([]))
         });
         let client = mock_client(mock);
-        let result = client.batch_publish(vec![]).await;
-        // Empty batch should either succeed with empty result or fail gracefully
-        match result {
-            Ok(v) => assert!(v.is_empty()),
-            Err(_) => {} // also acceptable
-        }
+        // RSC22: an empty batch is rejected client-side with 40003
+        let err = client.batch_publish(vec![]).await.unwrap_err();
+        assert_eq!(err.code, Some(40003));
+        assert_eq!(get_mock(&client).request_count(), 0);
         Ok(())
     }
 

@@ -1218,6 +1218,81 @@ impl<'a> Channel<'a> {
     pub fn presence(&self) -> Presence<'_> {
         Presence { channel: self }
     }
+
+    /// RSL7: set or update the stored channel options on this handle.
+    pub fn set_options(&mut self, options: ChannelOptions) {
+        self.cipher = options.cipher;
+    }
+
+    /// RSL8: fetch the channel's lifecycle status and occupancy from
+    /// GET /channels/<channelId>, returning a ChannelDetails (RSL8a).
+    pub async fn status(&self) -> Result<ChannelDetails> {
+        let path = format!("/channels/{}", urlencoding::encode(&self.name));
+        let resp = self.rest.do_request("GET", &path, &[], &[], None).await?;
+        self.rest.deserialize_response(&resp)
+    }
+}
+
+/// CHD2: the details of a channel returned by RestChannel::status (RSL8a).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelDetails {
+    /// CHD2a
+    pub channel_id: String,
+    /// CHD2b
+    #[serde(default)]
+    pub status: ChannelStatus,
+}
+
+/// CHS2: a channel's lifecycle status.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelStatus {
+    /// CHS2a
+    #[serde(default)]
+    pub is_active: bool,
+    /// CHS2b
+    #[serde(default)]
+    pub occupancy: ChannelOccupancy,
+}
+
+/// CHO2: a channel's occupancy.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelOccupancy {
+    /// CHO2a
+    #[serde(default)]
+    pub metrics: ChannelMetrics,
+}
+
+/// CHM2: a channel's occupancy metrics.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMetrics {
+    /// CHM2a
+    #[serde(default)]
+    pub connections: u64,
+    /// CHM2b
+    #[serde(default)]
+    pub presence_connections: u64,
+    /// CHM2c
+    #[serde(default)]
+    pub presence_members: u64,
+    /// CHM2d
+    #[serde(default)]
+    pub presence_subscribers: u64,
+    /// CHM2e
+    #[serde(default)]
+    pub publishers: u64,
+    /// CHM2f
+    #[serde(default)]
+    pub subscribers: u64,
+    /// CHM2g — None when the server omits it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_publishers: Option<u64>,
+    /// CHM2h — None when the server omits it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_subscribers: Option<u64>,
 }
 
 // --- Presence ---
@@ -1312,6 +1387,10 @@ impl<'a> RestAnnotations<'a> {
         );
         let mut ann = annotation.clone();
         ann.action = Some(AnnotationAction::Create);
+        // RSAN1c4: idempotent publishing applies to annotations too
+        if self.channel.rest.inner.opts.idempotent_rest_publishing && ann.id.is_none() {
+            ann.id = Some(format!("{}:0", idempotent_id_base()));
+        }
         let body = self.channel.rest.serialize_body(&vec![ann])?;
         self.channel.rest.do_request("POST", &path, &[], &[], Some(body)).await?;
         Ok(())

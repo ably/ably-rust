@@ -8821,3 +8821,541 @@ use crate::crypto::CipherParams;
         assert_ne!(ch1.name(), ch2.name());
     }
 
+    // -- TM2a/TM2c/TM2f: message field population from ProtocolMessage
+    // (moved from tests_rest_unit_types.rs — these need realtime delivery) --
+
+    // --- TM2a, TM2c, TM2f: All fields populated together ---
+    #[tokio::test]
+    async fn tm2_all_fields_populated_together() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2-all";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let opts = ClientOptions::new("appId.keyId:keySecret").auto_connect(false);
+        let client = Realtime::with_mock(
+            &opts,
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: Some(false),
+                    ..Default::default()
+                },
+            );
+
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: action::ATTACHED,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(action::ATTACHED)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+
+        conn.send_to_client(ProtocolMessage {
+            action: action::MESSAGE,
+            channel: Some(cn.clone()),
+            id: Some("connId:7".to_string()),
+            connection_id: Some("connId".to_string()),
+            timestamp: Some(1700000000000),
+            messages: Some(vec![
+                serde_json::json!({"name": "first", "data": "a"}),
+                serde_json::json!({"name": "second", "data": "b"}),
+            ]),
+            ..ProtocolMessage::new(action::MESSAGE)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msg0 = rx.try_recv().unwrap();
+        assert_eq!(msg0.id.as_deref(), Some("connId:7:0"));
+        assert_eq!(msg0.connection_id.as_deref(), Some("connId"));
+        assert_eq!(msg0.timestamp, Some(1700000000000));
+        assert_eq!(msg0.name.as_deref(), Some("first"));
+
+        let msg1 = rx.try_recv().unwrap();
+        assert_eq!(msg1.id.as_deref(), Some("connId:7:1"));
+        assert_eq!(msg1.connection_id.as_deref(), Some("connId"));
+        assert_eq!(msg1.timestamp, Some(1700000000000));
+        assert_eq!(msg1.name.as_deref(), Some("second"));
+    }
+
+    // --- TM2a: Message with existing id is not overwritten ---
+    #[tokio::test]
+    async fn tm2a_existing_id_not_overwritten() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2a-existing";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let opts = ClientOptions::new("appId.keyId:keySecret").auto_connect(false);
+        let client = Realtime::with_mock(
+            &opts,
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: Some(false),
+                    ..Default::default()
+                },
+            );
+
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: action::ATTACHED,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(action::ATTACHED)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+
+        conn.send_to_client(ProtocolMessage {
+            action: action::MESSAGE,
+            channel: Some(cn.clone()),
+            id: Some("proto-id:0".to_string()),
+            messages: Some(vec![
+                serde_json::json!({"id": "my-custom-id", "name": "msg", "data": "hello"}),
+            ]),
+            ..ProtocolMessage::new(action::MESSAGE)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.id.as_deref(), Some("my-custom-id"));
+    }
+
+    // --- TM2a: Message id populated from ProtocolMessage ---
+    #[tokio::test]
+    async fn tm2a_message_id_populated() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2a";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let opts = ClientOptions::new("appId.keyId:keySecret").auto_connect(false);
+        let client = Realtime::with_mock(
+            &opts,
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: Some(false),
+                    ..Default::default()
+                },
+            );
+
+        // Attach
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: action::ATTACHED,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(action::ATTACHED)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+
+        // Send ProtocolMessage with id but messages without id
+        conn.send_to_client(ProtocolMessage {
+            action: action::MESSAGE,
+            channel: Some(cn.clone()),
+            id: Some("abc123:5".to_string()),
+            connection_id: Some("abc123".to_string()),
+            timestamp: Some(1700000000000),
+            messages: Some(vec![
+                serde_json::json!({"name": "first", "data": "a"}),
+                serde_json::json!({"name": "second", "data": "b"}),
+                serde_json::json!({"name": "third", "data": "c"}),
+            ]),
+            ..ProtocolMessage::new(action::MESSAGE)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let msg0 = rx.try_recv().unwrap();
+        assert_eq!(msg0.id.as_deref(), Some("abc123:5:0"));
+        let msg1 = rx.try_recv().unwrap();
+        assert_eq!(msg1.id.as_deref(), Some("abc123:5:1"));
+        let msg2 = rx.try_recv().unwrap();
+        assert_eq!(msg2.id.as_deref(), Some("abc123:5:2"));
+    }
+
+    // --- TM2a: No id when ProtocolMessage has no id ---
+    #[tokio::test]
+    async fn tm2a_no_id_when_protocol_message_has_no_id() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2a-no-proto-id";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let opts = ClientOptions::new("appId.keyId:keySecret").auto_connect(false);
+        let client = Realtime::with_mock(
+            &opts,
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: Some(false),
+                    ..Default::default()
+                },
+            );
+
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: action::ATTACHED,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(action::ATTACHED)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+
+        // ProtocolMessage has no id field
+        conn.send_to_client(ProtocolMessage {
+            action: action::MESSAGE,
+            channel: Some(cn.clone()),
+            connection_id: Some("abc123".to_string()),
+            messages: Some(vec![serde_json::json!({"name": "msg", "data": "hello"})]),
+            ..ProtocolMessage::new(action::MESSAGE)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msg = rx.try_recv().unwrap();
+        assert!(msg.id.is_none());
+    }
+
+    // --- TM2c: Message connectionId populated from ProtocolMessage ---
+    #[tokio::test]
+    async fn tm2c_connection_id_populated() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2c";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let opts = ClientOptions::new("appId.keyId:keySecret").auto_connect(false);
+        let client = Realtime::with_mock(
+            &opts,
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: Some(false),
+                    ..Default::default()
+                },
+            );
+
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: action::ATTACHED,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(action::ATTACHED)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+
+        conn.send_to_client(ProtocolMessage {
+            action: action::MESSAGE,
+            channel: Some(cn.clone()),
+            id: Some("msg:0".to_string()),
+            connection_id: Some("server-conn-xyz".to_string()),
+            messages: Some(vec![serde_json::json!({"name": "msg", "data": "hello"})]),
+            ..ProtocolMessage::new(action::MESSAGE)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.connection_id.as_deref(), Some("server-conn-xyz"));
+    }
+
+    // --- TM2c: Message with existing connectionId is not overwritten ---
+    #[tokio::test]
+    async fn tm2c_existing_connection_id_not_overwritten() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2c-existing";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let opts = ClientOptions::new("appId.keyId:keySecret").auto_connect(false);
+        let client = Realtime::with_mock(
+            &opts,
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: Some(false),
+                    ..Default::default()
+                },
+            );
+
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: action::ATTACHED,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(action::ATTACHED)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+
+        conn.send_to_client(ProtocolMessage {
+            action: action::MESSAGE,
+            channel: Some(cn.clone()),
+            id: Some("msg:0".to_string()),
+            connection_id: Some("proto-conn".to_string()),
+            messages: Some(vec![
+                serde_json::json!({"connectionId": "msg-conn", "name": "msg", "data": "hello"}),
+            ]),
+            ..ProtocolMessage::new(action::MESSAGE)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.connection_id.as_deref(), Some("msg-conn"));
+    }
+
+    // --- TM2f: Message with existing timestamp is not overwritten ---
+    #[tokio::test]
+    async fn tm2f_existing_timestamp_not_overwritten() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2f-existing";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let opts = ClientOptions::new("appId.keyId:keySecret").auto_connect(false);
+        let client = Realtime::with_mock(
+            &opts,
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: Some(false),
+                    ..Default::default()
+                },
+            );
+
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: action::ATTACHED,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(action::ATTACHED)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+
+        conn.send_to_client(ProtocolMessage {
+            action: action::MESSAGE,
+            channel: Some(cn.clone()),
+            id: Some("msg:0".to_string()),
+            timestamp: Some(1700000000000),
+            messages: Some(vec![
+                serde_json::json!({"timestamp": 1600000000000_i64, "name": "msg", "data": "hello"}),
+            ]),
+            ..ProtocolMessage::new(action::MESSAGE)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.timestamp, Some(1600000000000));
+    }
+
+    // --- TM2f: Message timestamp populated from ProtocolMessage ---
+    #[tokio::test]
+    async fn tm2f_timestamp_populated() {
+        use crate::mock_ws::MockWebSocket;
+        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
+        use crate::realtime::{await_state, Realtime};
+
+        let channel_name = "test-tm2f";
+        let mock = MockWebSocket::with_handler({
+            move |pc| {
+                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
+            }
+        });
+        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+        let opts = ClientOptions::new("appId.keyId:keySecret").auto_connect(false);
+        let client = Realtime::with_mock(
+            &opts,
+            transport.clone(),
+        )
+        .unwrap();
+
+        client.connect();
+        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+        let channel = client
+            .channels
+            .get_with_options(
+                channel_name,
+                crate::channel::RealtimeChannelOptions {
+                    attach_on_subscribe: Some(false),
+                    ..Default::default()
+                },
+            );
+
+        let ch = channel.clone();
+        let cn = channel_name.to_string();
+        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let conns = mock.active_connections();
+        let conn = conns.last().unwrap();
+        conn.send_to_client(ProtocolMessage {
+            action: action::ATTACHED,
+            channel: Some(cn.clone()),
+            ..ProtocolMessage::new(action::ATTACHED)
+        });
+        t.await.unwrap().unwrap();
+
+        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+
+        conn.send_to_client(ProtocolMessage {
+            action: action::MESSAGE,
+            channel: Some(cn.clone()),
+            id: Some("msg:0".to_string()),
+            timestamp: Some(1700000000000),
+            messages: Some(vec![serde_json::json!({"name": "msg", "data": "hello"})]),
+            ..ProtocolMessage::new(action::MESSAGE)
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let msg = rx.try_recv().unwrap();
+        assert_eq!(msg.timestamp, Some(1700000000000));
+    }
+

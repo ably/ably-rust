@@ -1908,27 +1908,147 @@ use crate::crypto::CipherParams;
     // UTS: rest/unit/channel/rest_channel_attributes.md
     // ===============================================================
 
-    #[test]
-    fn rsl7_channel_name() {
-        let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
-        let ch = client.channels().get("test-channel");
-        assert_eq!(ch.name, "test-channel");
+    // (RSL9 name-attribute coverage exists earlier in this file)
+
+    // RSL7 — setOptions updates the stored channel options; cipher params
+    // set this way apply to subsequent operations (RSL5)
+    // UTS: rest/unit/RSL7/setoptions-updates-options-0/-1
+    #[tokio::test]
+    async fn rsl7_set_options_applies_cipher() -> Result<()> {
+        let key = base64::decode("WUP6u0K7MXI5Zeo0VppPwg==").unwrap();
+        let cipher = crate::crypto::CipherParams::builder().key(key).build()?;
+
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(201, &json!({})));
+        let client = mock_client_json(mock);
+        let mut ch = client.channels().get("test-rsl7");
+        ch.set_options(crate::rest::ChannelOptions { cipher: Some(cipher) });
+        ch.publish().name("event").string("plain").send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+        assert_eq!(body["encoding"], "utf-8/cipher+aes-128-cbc/base64");
+        Ok(())
     }
 
 
-    #[test]
-    fn rsl8_channel_name_with_special_chars() {
-        let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
-        let ch = client.channels().get("test:channel/name");
-        assert_eq!(ch.name, "test:channel/name");
+    // RSL8 — status() sends GET /channels/<channelId>
+    // UTS: rest/unit/RSL8/status-get-correct-endpoint-0
+    #[tokio::test]
+    async fn rsl8_status_get_correct_endpoint() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({
+                "channelId": "test-RSL8",
+                "status": {"isActive": true, "occupancy": {"metrics": {
+                    "connections": 0, "publishers": 0, "subscribers": 0,
+                    "presenceConnections": 0, "presenceMembers": 0, "presenceSubscribers": 0
+                }}}
+            }))
+        });
+        let client = mock_client_json(mock);
+        client.channels().get("test-RSL8").status().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].method, "GET");
+        assert_eq!(reqs[0].url.path(), "/channels/test-RSL8");
+        Ok(())
     }
 
 
-    #[test]
-    fn rsl8a_channel_name_accessible() {
-        let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
-        let ch = client.channels().get("my-channel");
-        assert_eq!(ch.name, "my-channel");
+    // RSL8 — channel name URL-encoded in the status path
+    // UTS: rest/unit/RSL8/status-special-chars-encoded-1
+    #[tokio::test]
+    async fn rsl8_status_special_chars_encoded() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({
+                "channelId": "namespace:my channel",
+                "status": {"isActive": true, "occupancy": {"metrics": {}}}
+            }))
+        });
+        let client = mock_client_json(mock);
+        client.channels().get("namespace:my channel").status().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs[0].url.path(), "/channels/namespace%3Amy%20channel");
+        Ok(())
+    }
+
+
+    // RSL8a/CHD2/CHS2 — status() returns a parsed ChannelDetails
+    // UTS: rest/unit/RSL8a/status-returns-channel-details-0
+    #[tokio::test]
+    async fn rsl8a_status_returns_channel_details() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({
+                "channelId": "test-RSL8a",
+                "status": {"isActive": true, "occupancy": {"metrics": {
+                    "connections": 5, "publishers": 2, "subscribers": 3,
+                    "presenceConnections": 1, "presenceMembers": 1, "presenceSubscribers": 0
+                }}}
+            }))
+        });
+        let client = mock_client_json(mock);
+        let details = client.channels().get("test-RSL8a").status().await?;
+        assert_eq!(details.channel_id, "test-RSL8a"); // CHD2a
+        assert!(details.status.is_active); // CHS2a
+        let metrics = &details.status.occupancy.metrics; // CHS2b/CHO2a
+        assert_eq!(metrics.connections, 5);
+        assert_eq!(metrics.publishers, 2);
+        assert_eq!(metrics.subscribers, 3);
+        Ok(())
+    }
+
+
+    // CHM2 — all metrics fields parse, including objectPublishers/Subscribers
+    // UTS: rest/unit/CHM2/parses-all-metrics-fields-0
+    #[tokio::test]
+    async fn chm2_parses_all_metrics_fields() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({
+                "channelId": "test-CHM2-all-fields",
+                "status": {"isActive": true, "occupancy": {"metrics": {
+                    "connections": 10, "presenceConnections": 4, "presenceMembers": 3,
+                    "presenceSubscribers": 2, "publishers": 6, "subscribers": 8,
+                    "objectPublishers": 1, "objectSubscribers": 5
+                }}}
+            }))
+        });
+        let client = mock_client_json(mock);
+        let details = client.channels().get("test-CHM2-all-fields").status().await?;
+        let m = &details.status.occupancy.metrics;
+        assert_eq!(m.connections, 10); // CHM2a
+        assert_eq!(m.presence_connections, 4); // CHM2b
+        assert_eq!(m.presence_members, 3); // CHM2c
+        assert_eq!(m.presence_subscribers, 2); // CHM2d
+        assert_eq!(m.publishers, 6); // CHM2e
+        assert_eq!(m.subscribers, 8); // CHM2f
+        assert_eq!(m.object_publishers, Some(1)); // CHM2g
+        assert_eq!(m.object_subscribers, Some(5)); // CHM2h
+        Ok(())
+    }
+
+
+    // CHM2 — zero and missing metrics fields
+    // UTS: rest/unit/CHM2/zero-and-missing-metrics-1
+    #[tokio::test]
+    async fn chm2_zero_and_missing_metrics() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({
+                "channelId": "test-CHM2-zero",
+                "status": {"isActive": false, "occupancy": {"metrics": {
+                    "connections": 0, "publishers": 0, "subscribers": 0
+                }}}
+            }))
+        });
+        let client = mock_client_json(mock);
+        let details = client.channels().get("test-CHM2-zero").status().await?;
+        let m = &details.status.occupancy.metrics;
+        assert!(!details.status.is_active);
+        assert_eq!(m.connections, 0);
+        assert_eq!(m.presence_members, 0); // missing → default 0
+        assert!(m.object_publishers.is_none()); // missing optional → None
+        Ok(())
     }
 
 

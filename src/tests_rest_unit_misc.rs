@@ -1267,19 +1267,7 @@ use crate::crypto::CipherParams;
     }
 
 
-    #[tokio::test]
-    async fn none_x_ably_version_always_present() -> Result<()> {
-        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
-        let client = ClientOptions::new("appId.keyId:keySecret")
-            .use_binary_protocol(false)
-            .rest_with_mock(mock)
-            .unwrap();
-        client.channels().get("test").publish().name("e").string("d").send().await?;
-        let reqs = get_mock(&client).captured_requests();
-        let version = reqs[0].headers.iter().find(|(k,_)| k == "x-ably-version").map(|(_,v)| v.as_str()).unwrap();
-        assert_eq!(version, "6");
-        Ok(())
-    }
+
 
 
     #[tokio::test]
