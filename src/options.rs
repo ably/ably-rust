@@ -365,7 +365,7 @@ impl ClientOptions {
             client_id: None,
             use_token_auth: false,
             environment: None,
-            idempotent_rest_publishing: false,
+            idempotent_rest_publishing: true, // TO3n: default true for >= 1.2
             fallback_hosts: vec![
                 "a.ably-realtime.com".to_string(),
                 "b.ably-realtime.com".to_string(),

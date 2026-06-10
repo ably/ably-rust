@@ -6,7 +6,7 @@ use crate::http_client::HttpResponse;
 use crate::rest::Rest;
 
 pub(crate) trait Decodable {
-    fn decode_item(&mut self) {}
+    fn decode_item(&mut self, _cipher: Option<&crate::crypto::CipherParams>) {}
 }
 
 pub struct RequestBuilder<'a> {
@@ -69,6 +69,8 @@ pub struct PaginatedRequestBuilder<'a, T> {
     pub(crate) rest: &'a Rest,
     pub(crate) path: String,
     pub(crate) params: Vec<(String, String)>,
+    /// Channel cipher for decoding encrypted payloads (RSL6/RSL5).
+    pub(crate) cipher: Option<crate::crypto::CipherParams>,
     pub(crate) _marker: std::marker::PhantomData<T>,
 }
 
@@ -119,7 +121,7 @@ impl<'a, T: DeserializeOwned + Decodable + 'a> PaginatedRequestBuilder<'a, T> {
 
         let mut items: Vec<T> = self.rest.deserialize_response(&resp)?;
         for item in &mut items {
-            item.decode_item();
+            item.decode_item(self.cipher.as_ref());
         }
 
         Ok(PaginatedResult {
@@ -128,6 +130,7 @@ impl<'a, T: DeserializeOwned + Decodable + 'a> PaginatedRequestBuilder<'a, T> {
             next_rel_url,
             first_rel_url,
             base_path: self.path,
+            cipher: self.cipher,
         })
     }
 }
@@ -184,6 +187,7 @@ pub struct PaginatedResult<T> {
     pub(crate) next_rel_url: Option<String>,
     pub(crate) first_rel_url: Option<String>,
     pub(crate) base_path: String,
+    pub(crate) cipher: Option<crate::crypto::CipherParams>,
 }
 
 impl<T> PaginatedResult<T> {
@@ -247,7 +251,7 @@ impl<T: DeserializeOwned + Decodable> PaginatedResult<T> {
         let (next_rel_url, first_rel_url) = parse_link_headers(&resp.headers);
         let mut items: Vec<T> = self.rest.deserialize_response(&resp)?;
         for item in &mut items {
-            item.decode_item();
+            item.decode_item(self.cipher.as_ref());
         }
 
         Ok(PaginatedResult {
@@ -256,6 +260,7 @@ impl<T: DeserializeOwned + Decodable> PaginatedResult<T> {
             next_rel_url,
             first_rel_url,
             base_path,
+            cipher: self.cipher,
         })
     }
 }

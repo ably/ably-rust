@@ -169,3 +169,30 @@
 - Files: auth.rs (rewritten), rest.rs (auth machinery), options.rs, http.rs,
   tests_rest_unit_{auth,client,misc,types}.rs, tests_rest_integration.rs
 - Next: R3 publish features (idempotency, encryption, RSL1n serials).
+
+### R3 Publish Features — DONE (2026-06-10)
+- RSL1k idempotent publishing: default true (TO3n); library ids base64url(9 random
+  bytes):index, one base per publish, client ids preserved, mixed batches per UTS;
+  RSC22d applied per BatchPublishSpec.
+- RSL5/RSL6 encryption: shared encode_data_for_wire/decode_data codec; cipher threaded
+  through PublishBuilder (builder override or channel cipher), history, get_message,
+  message_versions, presence get/history, PaginatedResult pages. PublishBuilder::cipher
+  no longer a no-op. Message/PresenceMessage decode unified (duplication removed).
+- RSL6b: decode failure/unknown step leaves the UNPROCESSED chain prefix (applied
+  right-hand steps are not restored).
+- RSL1c/RSL1n: PublishBuilder::messages() for multi-message publish (single message →
+  object body, multiple → array); send() returns PublishResult {serials, message_id}
+  with null-serial (conflation) preservation (PBR2a).
+- RSL1i: size check now per TM6 (name + clientId + extras + data), pre-encoding.
+- RSL4a: top-level JSON scalars (number/bool) rejected with 40013.
+- Tests: conditional-assert idempotency tests rewritten strict (id format, serial
+  increments, unique bases, mixed batch); RSL1n result tests (single/batch/null);
+  RSL5 encrypt round-trip x2; RSL6 history decrypt; RSL6b residual; RSP5g presence
+  decrypt; canonical ably-common crypto fixtures (128+256, all items, both files) —
+  NOTE: the UTS RSP5g fixture string is corrupt (truncation of the ably-common one);
+  flag upstream.
+- Test status: unit 742 pass / 439 fail (realtime stubs) / 91 ignored;
+  integration 47/47 vs sandbox.
+- DESIGN.md not yet updated for API changes (PublishResult, messages(), auth
+  signatures) — do at end of Phase R.
+- Next: R4 endpoint spec + request pipeline.

@@ -102,6 +102,7 @@ impl Rest {
             rest: self,
             path: "/stats".to_string(),
             params: Vec::new(),
+            cipher: None,
             _marker: std::marker::PhantomData,
         }
     }
@@ -176,13 +177,26 @@ impl Rest {
                 ));
             }
         }
-        // RSC22c6: encode messages per RSL4
+        // RSC22c6: encode messages per RSL4; RSC22d: idempotent ids applied
+        // to each BatchPublishSpec separately
         let format = self.inner.opts.format;
+        let idempotent = self.inner.opts.idempotent_rest_publishing;
         let wire_specs: Vec<BatchPublishSpec> = specs
             .iter()
-            .map(|spec| BatchPublishSpec {
-                channels: spec.channels.clone(),
-                messages: spec.messages.iter().map(|m| m.encode_for_wire(format)).collect(),
+            .map(|spec| {
+                let mut messages = spec.messages.clone();
+                if idempotent {
+                    let base = idempotent_id_base();
+                    for (i, msg) in messages.iter_mut().enumerate() {
+                        if msg.id.is_none() {
+                            msg.id = Some(format!("{}:{}", base, i));
+                        }
+                    }
+                }
+                BatchPublishSpec {
+                    channels: spec.channels.clone(),
+                    messages: messages.iter().map(|m| m.encode_for_wire(format)).collect(),
+                }
             })
             .collect();
         let body = self.serialize_body(&wire_specs)?;
@@ -976,6 +990,8 @@ impl<'a> Channel<'a> {
             extras: None,
             client_id: None,
             params: None,
+            messages: None,
+            cipher: None,
         }
     }
 
@@ -985,6 +1001,7 @@ impl<'a> Channel<'a> {
             rest: self.rest,
             path,
             params: Vec::new(),
+            cipher: self.cipher.clone(),
             _marker: std::marker::PhantomData,
         }
     }
@@ -996,7 +1013,7 @@ impl<'a> Channel<'a> {
         let path = format!("/channels/{}/messages/{}", urlencoding::encode(&self.name), urlencoding::encode(serial));
         let resp = self.rest.do_request("GET", &path, &[], &[], None).await?;
         let mut msg: Message = self.rest.deserialize_response(&resp)?;
-        msg.decode();
+        msg.decode_with_cipher(self.cipher.as_ref());
         Ok(msg)
     }
 
@@ -1006,6 +1023,7 @@ impl<'a> Channel<'a> {
             rest: self.rest,
             path,
             params: Vec::new(),
+            cipher: self.cipher.clone(),
             _marker: std::marker::PhantomData,
         }
     }
@@ -1093,6 +1111,7 @@ impl<'a> Presence<'a> {
             rest: self.channel.rest,
             path,
             params: Vec::new(),
+            cipher: self.channel.cipher.clone(),
         }
     }
 
@@ -1102,6 +1121,7 @@ impl<'a> Presence<'a> {
             rest: self.channel.rest,
             path,
             params: Vec::new(),
+            cipher: self.channel.cipher.clone(),
             _marker: std::marker::PhantomData,
         }
     }
@@ -1111,6 +1131,7 @@ pub struct PresenceRequestBuilder<'a> {
     rest: &'a Rest,
     path: String,
     params: Vec<(String, String)>,
+    cipher: Option<CipherParams>,
 }
 
 impl<'a> PresenceRequestBuilder<'a> {
@@ -1134,7 +1155,7 @@ impl<'a> PresenceRequestBuilder<'a> {
         let (next_rel_url, first_rel_url) = crate::http::parse_link_headers(&resp.headers);
         let mut items: Vec<PresenceMessage> = self.rest.deserialize_response(&resp)?;
         for item in &mut items {
-            item.decode();
+            item.decode_with_cipher(self.cipher.as_ref());
         }
         Ok(PaginatedResult {
             items,
@@ -1142,6 +1163,7 @@ impl<'a> PresenceRequestBuilder<'a> {
             next_rel_url,
             first_rel_url,
             base_path: self.path,
+            cipher: self.cipher,
         })
     }
 }
@@ -1196,6 +1218,7 @@ impl<'a> RestAnnotations<'a> {
             rest: self.channel.rest,
             path,
             params: Vec::new(),
+            cipher: None,
             _marker: std::marker::PhantomData,
         }
     }
@@ -1211,6 +1234,8 @@ pub struct PublishBuilder<'a> {
     extras: Option<serde_json::Map<String, serde_json::Value>>,
     client_id: Option<String>,
     params: Option<Vec<(String, String)>>,
+    messages: Option<Vec<Message>>,
+    cipher: Option<CipherParams>,
 }
 
 impl<'a> PublishBuilder<'a> {
@@ -1254,40 +1279,137 @@ impl<'a> PublishBuilder<'a> {
         self
     }
 
-    pub fn cipher(self, _cipher: CipherParams) -> Self {
+    /// RSL5: encrypt the payload(s) with these cipher params, overriding any
+    /// cipher configured on the channel.
+    pub fn cipher(mut self, cipher: CipherParams) -> Self {
+        self.cipher = Some(cipher);
         self
     }
 
-    pub async fn send(self) -> Result<()> {
+    /// RSL1a/RSL1c: publish multiple messages in a single request. When set,
+    /// the single-message builder fields (name/data/...) are ignored.
+    pub fn messages(mut self, messages: Vec<Message>) -> Self {
+        self.messages = Some(messages);
+        self
+    }
+
+    pub async fn send(self) -> Result<PublishResult> {
+        let rest = self.channel.rest;
         let path = format!("/channels/{}/messages", urlencoding::encode(&self.channel.name));
 
-        let msg = Message {
-            id: self.id,
-            name: self.name,
-            data: self.data,
-            client_id: self.client_id,
-            extras: self.extras.map(serde_json::Value::Object),
-            ..Default::default()
+        let single = self.messages.is_none();
+        let mut messages = match self.messages {
+            Some(msgs) => msgs,
+            None => vec![Message {
+                id: self.id,
+                name: self.name,
+                data: self.data,
+                client_id: self.client_id,
+                extras: self.extras.map(serde_json::Value::Object),
+                ..Default::default()
+            }],
         };
-        let wire = msg.encode_for_wire(self.channel.rest.inner.opts.format);
-        let body = self.channel.rest.serialize_body(&wire)?;
 
-        // RSL1i: Check message size against max
-        let max_size = self.channel.rest.inner.opts.max_message_size;
-        if body.len() as u64 > max_size {
+        // RSL4a: only string, binary, and JSON object/array payloads are valid
+        for msg in &messages {
+            if let Data::JSON(v) = &msg.data {
+                if !(v.is_object() || v.is_array()) {
+                    return Err(ErrorInfo::new(
+                        ErrorCode::InvalidMessageDataOrEncoding.code(),
+                        "Message data must be a string, binary, or JSON object/array",
+                    ));
+                }
+            }
+        }
+
+        // RSL1i: message size per TM6 — sum over messages of name, clientId,
+        // stringified extras, and data lengths — measured before encoding
+        let total_size: u64 = messages.iter().map(message_size).sum();
+        let max_size = rest.inner.opts.max_message_size;
+        if total_size > max_size {
             return Err(ErrorInfo::new(
                 ErrorCode::MaximumMessageLengthExceeded.code(),
-                format!("Message size {} exceeds maximum {}", body.len(), max_size),
+                format!("Message size {} exceeds maximum {}", total_size, max_size),
             ));
         }
+
+        // RSL1k1: library-generated idempotent ids — one random base per
+        // publish, message index as the serial suffix. Client-supplied ids
+        // are preserved (RSL1k).
+        if rest.inner.opts.idempotent_rest_publishing {
+            let base = idempotent_id_base();
+            for (i, msg) in messages.iter_mut().enumerate() {
+                if msg.id.is_none() {
+                    msg.id = Some(format!("{}:{}", base, i));
+                }
+            }
+        }
+
+        // RSL5: cipher from the builder, falling back to the channel's
+        let cipher = self.cipher.as_ref().or(self.channel.cipher.as_ref());
+        let format = rest.inner.opts.format;
+        let wire: Vec<Message> = messages
+            .iter()
+            .map(|m| m.encode_for_wire_with(format, cipher))
+            .collect::<Result<_>>()?;
+
+        // A single message is sent as an object, multiple as an array
+        let body = if single {
+            rest.serialize_body(&wire[0])?
+        } else {
+            rest.serialize_body(&wire)?
+        };
 
         let params: Vec<(&str, &str)> = self.params.as_ref()
             .map(|p| p.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect())
             .unwrap_or_default();
 
-        self.channel.rest.do_request("POST", &path, &[], &params, Some(body)).await?;
-        Ok(())
+        let resp = rest.do_request("POST", &path, &[], &params, Some(body)).await?;
+        // RSL1n: the response carries the serials of the published messages
+        if resp.body.is_empty() {
+            return Ok(PublishResult::default());
+        }
+        Ok(rest.deserialize_response(&resp).unwrap_or_default())
     }
+}
+
+/// RSL1k1: the random base for library-generated message ids — at least
+/// 9 bytes of entropy, base64url encoded.
+pub(crate) fn idempotent_id_base() -> String {
+    let mut buf = [0u8; 9];
+    rand::thread_rng().fill(&mut buf);
+    base64::encode_config(buf, base64::URL_SAFE_NO_PAD)
+}
+
+/// TM6: the size of a message is the sum of its name, clientId,
+/// JSON-stringified extras, and data lengths.
+pub(crate) fn message_size(msg: &Message) -> u64 {
+    let name = msg.name.as_deref().map(str::len).unwrap_or(0);
+    let client_id = msg.client_id.as_deref().map(str::len).unwrap_or(0);
+    let extras = msg
+        .extras
+        .as_ref()
+        .map(|e| serde_json::to_string(e).map(|s| s.len()).unwrap_or(0))
+        .unwrap_or(0);
+    let data = match &msg.data {
+        Data::String(s) => s.len(),
+        Data::Binary(b) => b.len(),
+        Data::JSON(v) => serde_json::to_string(v).map(|s| s.len()).unwrap_or(0),
+        Data::None => 0,
+    };
+    (name + client_id + extras + data) as u64
+}
+
+/// Result of a REST publish (RSL1n/PBR2): one serial per published message,
+/// in order. A serial is None if the message was discarded by a conflation
+/// rule.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishResult {
+    #[serde(default)]
+    pub serials: Vec<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
 }
 
 // --- Push ---
@@ -1375,6 +1497,7 @@ impl<'a> PushDeviceRegistrations<'a> {
             rest: self.rest,
             path: "/push/deviceRegistrations".to_string(),
             params: Vec::new(),
+            cipher: None,
             _marker: std::marker::PhantomData,
         }
     }
@@ -1414,6 +1537,7 @@ impl<'a> PushChannelSubscriptions<'a> {
             rest: self.rest,
             path: "/push/channelSubscriptions".to_string(),
             params: Vec::new(),
+            cipher: None,
             _marker: std::marker::PhantomData,
         }
     }
@@ -1423,6 +1547,7 @@ impl<'a> PushChannelSubscriptions<'a> {
             rest: self.rest,
             path: "/push/channels".to_string(),
             params: Vec::new(),
+            cipher: None,
             _marker: std::marker::PhantomData,
         }
     }
@@ -1670,101 +1795,177 @@ pub(crate) fn append_encoding(existing: Option<String>, enc: &str) -> String {
     }
 }
 
-impl Message {
-    /// RSL4: produce the wire form of this message for the given format,
-    /// leaving `self` untouched. JSON-object data is stringified with "json"
-    /// appended to the encoding chain (RSL4d); binary data is base64-encoded
-    /// with "base64" appended only when the wire format is JSON — under
-    /// MessagePack binary stays native (RSL4c).
-    pub(crate) fn encode_for_wire(&self, format: Format) -> Message {
-        let mut msg = self.clone();
-        match &msg.data {
-            Data::JSON(v) => {
-                let s = serde_json::to_string(v).unwrap_or_default();
-                msg.data = Data::String(s);
-                msg.encoding = Some(append_encoding(msg.encoding.take(), "json"));
+/// RSL4/RSL5: encode a payload for the wire. JSON data is stringified with
+/// "json" appended (RSL4d); with a cipher the payload is encrypted, appending
+/// "utf-8" (for string data) and "cipher+<algorithm>" (RSL5b/RSL5c); binary
+/// data is base64-encoded only under the JSON wire format (RSL4c).
+pub(crate) fn encode_data_for_wire(
+    data: Data,
+    encoding: Option<String>,
+    format: Format,
+    cipher: Option<&CipherParams>,
+) -> Result<(Data, Option<String>)> {
+    let mut data = data;
+    let mut encoding = encoding;
+
+    if let Data::JSON(v) = &data {
+        let s = serde_json::to_string(v).unwrap_or_default();
+        data = Data::String(s);
+        encoding = Some(append_encoding(encoding, "json"));
+    }
+
+    if let Some(cipher) = cipher {
+        let plain: Option<Vec<u8>> = match &data {
+            Data::String(s) => {
+                let bytes = s.as_bytes().to_vec();
+                encoding = Some(append_encoding(encoding, "utf-8"));
+                Some(bytes)
             }
-            Data::Binary(b) if format == Format::JSON => {
-                let encoded = base64::encode(b.as_ref());
-                msg.data = Data::String(encoded);
-                msg.encoding = Some(append_encoding(msg.encoding.take(), "base64"));
-            }
-            _ => {}
+            Data::Binary(b) => Some(b.to_vec()),
+            Data::None => None,
+            Data::JSON(_) => unreachable!("JSON data stringified above"),
+        };
+        if let Some(plain) = plain {
+            let ciphertext = cipher.encrypt(None, &plain)?;
+            data = Data::Binary(serde_bytes::ByteBuf::from(ciphertext));
+            encoding = Some(append_encoding(encoding, &cipher.encoding()));
         }
-        msg
+    }
+
+    if format == Format::JSON {
+        if let Data::Binary(b) = &data {
+            let encoded = base64::encode(b.as_ref());
+            data = Data::String(encoded);
+            encoding = Some(append_encoding(encoding, "base64"));
+        }
+    }
+
+    Ok((data, encoding))
+}
+
+/// RSL6: decode an encoding chain, rightmost step first. On an unrecognised
+/// or failed step, processing stops and the *unprocessed* prefix of the chain
+/// remains in the returned encoding (RSL6b) — already-applied right-hand
+/// steps are not restored.
+pub(crate) fn decode_data(
+    data: Data,
+    encoding: Option<String>,
+    cipher: Option<&CipherParams>,
+) -> (Data, Option<String>) {
+    let encoding_str = match encoding {
+        Some(e) if !e.is_empty() => e,
+        _ => return (data, None),
+    };
+    let parts: Vec<&str> = encoding_str.split('/').collect();
+    let mut current = data;
+    let mut idx = parts.len();
+    while idx > 0 {
+        let step = parts[idx - 1];
+        let applied: Option<Data> = match step {
+            "base64" => match &current {
+                Data::String(s) => base64::decode(s)
+                    .ok()
+                    .map(|b| Data::Binary(serde_bytes::ByteBuf::from(b))),
+                _ => None,
+            },
+            "json" => match &current {
+                Data::String(s) => serde_json::from_str(s).ok().map(Data::JSON),
+                Data::Binary(b) => std::str::from_utf8(b)
+                    .ok()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .map(Data::JSON),
+                _ => None,
+            },
+            "utf-8" => match &current {
+                Data::Binary(b) => String::from_utf8(b.to_vec()).ok().map(Data::String),
+                // Already a string (e.g. delivered natively over msgpack)
+                Data::String(_) => Some(current.clone()),
+                _ => None,
+            },
+            s if s.starts_with("cipher+") => match (cipher, &current) {
+                (Some(c), Data::Binary(b)) => {
+                    let mut buf = b.to_vec();
+                    c.decrypt(&mut buf)
+                        .ok()
+                        .map(|plain| Data::Binary(serde_bytes::ByteBuf::from(plain)))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        match applied {
+            Some(d) => {
+                current = d;
+                idx -= 1;
+            }
+            None => break,
+        }
+    }
+    let residual = if idx == 0 {
+        None
+    } else {
+        Some(parts[..idx].join("/"))
+    };
+    (current, residual)
+}
+
+impl Message {
+    /// RSL4: produce the wire form of this message, leaving `self` untouched.
+    pub(crate) fn encode_for_wire(&self, format: Format) -> Message {
+        self.encode_for_wire_with(format, None)
+            .expect("encoding without a cipher cannot fail")
+    }
+
+    /// RSL4/RSL5: wire form with optional encryption.
+    pub(crate) fn encode_for_wire_with(
+        &self,
+        format: Format,
+        cipher: Option<&CipherParams>,
+    ) -> Result<Message> {
+        let mut msg = self.clone();
+        let (data, encoding) = encode_data_for_wire(
+            std::mem::take(&mut msg.data),
+            msg.encoding.take(),
+            format,
+            cipher,
+        )?;
+        msg.data = data;
+        msg.encoding = encoding;
+        Ok(msg)
     }
 
     pub fn from_encoded(
         data: serde_json::Value,
-        _cipher: Option<&crate::crypto::CipherParams>,
+        cipher: Option<&crate::crypto::CipherParams>,
     ) -> Result<Self> {
         let mut msg: Message = serde_json::from_value(data)?;
-        msg.decode();
+        msg.decode_with_cipher(cipher);
         Ok(msg)
     }
 
-    /// Decode the message data according to the encoding chain.
-    /// Processes encodings in reverse order (rightmost first): base64, json, utf-8, etc.
+    /// Decode the message data according to the encoding chain (RSL6).
     pub fn decode(&mut self) {
-        if let Some(encoding) = self.encoding.take() {
-            let parts: Vec<&str> = encoding.split('/').collect();
-            let mut current_data = std::mem::take(&mut self.data);
+        self.decode_with_cipher(None);
+    }
 
-            for enc in parts.iter().rev() {
-                match *enc {
-                    "base64" => {
-                        if let Data::String(s) = &current_data {
-                            if let Ok(bytes) = base64::decode(s) {
-                                current_data = Data::Binary(serde_bytes::ByteBuf::from(bytes));
-                            }
-                        }
-                    }
-                    "json" => {
-                        match &current_data {
-                            Data::String(s) => {
-                                if let Ok(v) = serde_json::from_str(s) {
-                                    current_data = Data::JSON(v);
-                                }
-                            }
-                            Data::Binary(b) => {
-                                if let Ok(s) = String::from_utf8(b.to_vec()) {
-                                    if let Ok(v) = serde_json::from_str(&s) {
-                                        current_data = Data::JSON(v);
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    "utf-8" => {
-                        if let Data::Binary(b) = &current_data {
-                            if let Ok(s) = String::from_utf8(b.to_vec()) {
-                                current_data = Data::String(s);
-                            }
-                        }
-                    }
-                    _ => {
-                        // Unknown encoding - put it back and stop
-                        self.encoding = Some(encoding.clone());
-                        break;
-                    }
-                }
-            }
-
-            self.data = current_data;
-        }
+    /// RSL6: decode, decrypting cipher steps with the given params.
+    pub fn decode_with_cipher(&mut self, cipher: Option<&CipherParams>) {
+        let (data, encoding) =
+            decode_data(std::mem::take(&mut self.data), self.encoding.take(), cipher);
+        self.data = data;
+        self.encoding = encoding;
     }
 }
 
 impl Decodable for Message {
-    fn decode_item(&mut self) {
-        self.decode();
+    fn decode_item(&mut self, cipher: Option<&CipherParams>) {
+        self.decode_with_cipher(cipher);
     }
 }
 
 impl Decodable for PresenceMessage {
-    fn decode_item(&mut self) {
-        self.decode();
+    fn decode_item(&mut self, cipher: Option<&CipherParams>) {
+        self.decode_with_cipher(cipher);
     }
 }
 impl Decodable for Annotation {}
@@ -1801,54 +2002,17 @@ impl PresenceMessage {
         )
     }
 
-    /// Decode the presence message data according to the encoding chain.
+    /// Decode the presence message data according to the encoding chain (RSL6).
     pub fn decode(&mut self) {
-        if let Some(encoding) = self.encoding.take() {
-            let parts: Vec<&str> = encoding.split('/').collect();
-            let mut current_data = std::mem::take(&mut self.data);
+        self.decode_with_cipher(None);
+    }
 
-            for enc in parts.iter().rev() {
-                match *enc {
-                    "base64" => {
-                        if let Data::String(s) = &current_data {
-                            if let Ok(bytes) = base64::decode(s) {
-                                current_data = Data::Binary(serde_bytes::ByteBuf::from(bytes));
-                            }
-                        }
-                    }
-                    "json" => {
-                        match &current_data {
-                            Data::String(s) => {
-                                if let Ok(v) = serde_json::from_str(s) {
-                                    current_data = Data::JSON(v);
-                                }
-                            }
-                            Data::Binary(b) => {
-                                if let Ok(s) = String::from_utf8(b.to_vec()) {
-                                    if let Ok(v) = serde_json::from_str(&s) {
-                                        current_data = Data::JSON(v);
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    "utf-8" => {
-                        if let Data::Binary(b) = &current_data {
-                            if let Ok(s) = String::from_utf8(b.to_vec()) {
-                                current_data = Data::String(s);
-                            }
-                        }
-                    }
-                    _ => {
-                        self.encoding = Some(encoding.clone());
-                        break;
-                    }
-                }
-            }
-
-            self.data = current_data;
-        }
+    /// RSL6: decode, decrypting cipher steps with the given params.
+    pub fn decode_with_cipher(&mut self, cipher: Option<&CipherParams>) {
+        let (data, encoding) =
+            decode_data(std::mem::take(&mut self.data), self.encoding.take(), cipher);
+        self.data = data;
+        self.encoding = encoding;
     }
 }
 

@@ -1570,7 +1570,8 @@ use crate::crypto::CipherParams;
     fn to3_client_options_defaults() {
         let opts = ClientOptions::new("appId.keyId:keySecret");
         assert!(opts.tls);
-        assert!(!opts.idempotent_rest_publishing);
+        // TO3n: idempotentRestPublishing defaults to true for >= 1.2
+        assert!(opts.idempotent_rest_publishing);
         assert_eq!(opts.http_request_timeout, std::time::Duration::from_secs(10));
         assert_eq!(opts.http_max_retry_count, 3);
     }
@@ -2303,12 +2304,13 @@ use crate::crypto::CipherParams;
 
 
     // ---------------------------------------------------------------
-    // TO3 — idempotentRestPublishing defaults to false
+    // TO3n — idempotentRestPublishing defaults to true (>= 1.2)
     // ---------------------------------------------------------------
     #[test]
     fn to3_idempotent_rest_publishing_default() {
         let opts = ClientOptions::new("test-key:secret");
-        assert!(!opts.idempotent_rest_publishing);
+        // TO3n: defaults to true for >= 1.2
+        assert!(opts.idempotent_rest_publishing);
     }
 
 

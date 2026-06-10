@@ -1037,9 +1037,10 @@ use crate::crypto::CipherParams;
 
 
     #[test]
-    fn none_client_options_idempotent_default_false() {
+    fn none_client_options_idempotent_default_true() {
         let opts = ClientOptions::new("appId.keyId:keySecret");
-        assert_eq!(opts.idempotent_rest_publishing, false);
+        // TO3n: defaults to true for >= 1.2
+        assert_eq!(opts.idempotent_rest_publishing, true);
     }
 
 

@@ -858,14 +858,9 @@ use crate::crypto::CipherParams;
     #[test]
     fn rsl1k1_idempotent_rest_publishing_default() {
         let opts = ClientOptions::new("appId.keyId:keySecret");
-        // RSL1k1: Default should be true for library versions >= 1.2
-        // Note: Current SDK defaults to false — this is a known gap.
-        // This test documents the current behavior.
-        // TODO: Change default to true to comply with RSL1k1.
-        assert_eq!(
-            opts.idempotent_rest_publishing, false,
-            "Current default is false; spec requires true for versions >= 1.2"
-        );
+        // RSL1k1/TO3n: idempotentRestPublishing defaults to true for >= 1.2
+        // UTS: rest/unit/RSL1k1/idempotent-default-true-0
+        assert!(opts.idempotent_rest_publishing);
     }
 
 
@@ -1021,13 +1016,28 @@ use crate::crypto::CipherParams;
     // UTS: rest/unit/channel/publish.md
     // ---------------------------------------------------------------
 
+    // RSL1c — multiple messages are published in a single HTTP request
     #[tokio::test]
-    #[ignore = "PublishBuilder::messages() not yet implemented"]
     async fn rsl1c_multi_message_publish_single_request() -> Result<()> {
-        // When PublishBuilder supports multi-message publish:
-        // - All messages should be sent in a single HTTP POST
-        // - Body should be a JSON array with all messages
-        // - Request count should be exactly 1
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(201, &json!({"serials": ["s1", "s2"]}))
+        });
+        let client = mock_client_json(mock);
+        let ch = client.channels().get("test-rsl1c");
+        let messages = vec![
+            Message { name: Some("e1".into()), data: Data::String("d1".into()), ..Default::default() },
+            Message { name: Some("e2".into()), data: Data::String("d2".into()), ..Default::default() },
+        ];
+        ch.publish().messages(messages).send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1, "all messages in a single POST");
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+        let arr = body.as_array().expect("body is a JSON array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["name"], "e1");
+        assert_eq!(arr[1]["name"], "e2");
         Ok(())
     }
 
@@ -1116,10 +1126,10 @@ use crate::crypto::CipherParams;
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .use_binary_protocol(false)
+            .idempotent_rest_publishing(false)
             .rest_with_mock(mock)
             .unwrap();
 
-        // idempotent_rest_publishing defaults to false in this SDK
         let channel = client.channels().get("test");
         channel
             .publish()
@@ -1612,6 +1622,149 @@ use crate::crypto::CipherParams;
     }
 
 
+    // RSL5a — publishing on a cipher-configured channel encrypts the payload
+    #[tokio::test]
+    async fn rsl5a_publish_encrypts_with_channel_cipher() -> Result<()> {
+        let key = base64::decode("WUP6u0K7MXI5Zeo0VppPwg==").unwrap();
+        let cipher = crate::crypto::CipherParams::builder().key(key.clone()).build()?;
+
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(201, &json!({})));
+        let client = mock_client_json(mock);
+        let ch = client.channels().name("secure").cipher(cipher.clone()).get();
+        ch.publish().name("event").string("sensitive-plaintext").send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+        // RSL5c: string data → utf-8 → encrypted → base64 (JSON protocol)
+        assert_eq!(body["encoding"], "utf-8/cipher+aes-128-cbc/base64");
+        let wire_data = body["data"].as_str().unwrap();
+        assert_ne!(wire_data, "sensitive-plaintext", "payload must not be plaintext");
+
+        // Round-trip: decoding with the cipher recovers the plaintext
+        let (decoded, residual) = crate::rest::decode_data(
+            Data::String(wire_data.to_string()),
+            Some("utf-8/cipher+aes-128-cbc/base64".to_string()),
+            Some(&cipher),
+        );
+        assert!(residual.is_none());
+        assert!(matches!(decoded, Data::String(ref s) if s == "sensitive-plaintext"));
+        Ok(())
+    }
+
+
+    // RSL5/RSL4d — JSON data on an encrypted channel: json → utf-8 → cipher → base64
+    #[tokio::test]
+    async fn rsl5_publish_encrypts_json_data() -> Result<()> {
+        let key = base64::decode("WUP6u0K7MXI5Zeo0VppPwg==").unwrap();
+        let cipher = crate::crypto::CipherParams::builder().key(key).build()?;
+
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(201, &json!({})));
+        let client = mock_client_json(mock);
+        let ch = client.channels().name("secure-json").cipher(cipher).get();
+        ch.publish().name("event").json(json!({"secret": "data"})).send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+        assert_eq!(body["encoding"], "json/utf-8/cipher+aes-128-cbc/base64");
+        Ok(())
+    }
+
+
+    // RSL6 — history on a cipher-configured channel decrypts payloads; uses
+    // the canonical fixture from the UTS (decrypts to {"secret":"data"})
+    #[tokio::test]
+    async fn rsl6_history_decrypts_with_channel_cipher() -> Result<()> {
+        let key = base64::decode("WUP6u0K7MXI5Zeo0VppPwg==").unwrap();
+        let cipher = crate::crypto::CipherParams::builder().key(key).build()?;
+
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([
+                {
+                    "name": "enc-event",
+                    "data": "HO4cYSP8LybPYBPZPHQOtuD53yrD3YV3NBoTEYBh4U0N1QXHbtkfsDfTspKeLQFt",
+                    "encoding": "json/utf-8/cipher+aes-128-cbc/base64"
+                }
+            ]))
+        });
+        let client = mock_client_json(mock);
+        let ch = client.channels().name("secure-hist").cipher(cipher).get();
+        let result = ch.history().send().await?;
+        let items = result.items();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].encoding.is_none(), "fully decoded, got {:?}", items[0].encoding);
+        assert!(
+            matches!(items[0].data, Data::JSON(ref v) if v["example"]["json"] == "Object"),
+            "expected decrypted JSON, got {:?}",
+            items[0].data
+        );
+        Ok(())
+    }
+
+
+    // RSL6b — without the cipher, decoding stops at the cipher step and the
+    // unprocessed chain prefix remains (right-hand base64 already applied)
+    #[tokio::test]
+    async fn rsl6b_cipher_step_without_cipher_leaves_residual() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([
+                {
+                    "name": "enc-event",
+                    "data": "HO4cYSP8LybPYBPZPHQOtuD53yrD3YV3NBoTEYBh4U0N1QXHbtkfsDfTspKeLQFt",
+                    "encoding": "json/utf-8/cipher+aes-128-cbc/base64"
+                }
+            ]))
+        });
+        let client = mock_client_json(mock);
+        // no cipher configured on the channel
+        let ch = client.channels().get("secure-nocipher");
+        let result = ch.history().send().await?;
+        let items = result.items();
+        assert_eq!(
+            items[0].encoding.as_deref(),
+            Some("json/utf-8/cipher+aes-128-cbc"),
+            "unprocessed prefix must remain"
+        );
+        assert!(matches!(items[0].data, Data::Binary(_)), "base64 step was applied");
+        Ok(())
+    }
+
+
+    // RSE/RSL6 — decode every item in the canonical ably-common crypto
+    // fixtures (128- and 256-bit), comparing against the unencrypted form
+    #[test]
+    fn rse_crypto_fixtures_decode() {
+        for file in ["crypto-data-128.json", "crypto-data-256.json"] {
+            let path = format!("submodules/ably-common/test-resources/{}", file);
+            let fixture: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let key = base64::decode(fixture["key"].as_str().unwrap()).unwrap();
+            let cipher = crate::crypto::CipherParams::builder().key(key).build().unwrap();
+
+            for (i, item) in fixture["items"].as_array().unwrap().iter().enumerate() {
+                let mut msg: Message =
+                    serde_json::from_value(item["encrypted"].clone()).unwrap();
+                msg.decode_with_cipher(Some(&cipher));
+
+                let mut expected: Message =
+                    serde_json::from_value(item["encoded"].clone()).unwrap();
+                expected.decode(); // resolve base64/json on the plain side
+
+                assert!(
+                    msg.encoding.is_none(),
+                    "{}[{}]: not fully decoded, residual {:?}",
+                    file, i, msg.encoding
+                );
+                assert_eq!(
+                    msg.data, expected.data,
+                    "{}[{}]: decrypted data mismatch", file, i
+                );
+            }
+        }
+    }
+
+
     // RSL15d — request body encoded per RSL4 (JSON data stringified + encoding "json")
     // UTS: rest/unit/RSL15d/body-encoded-per-rsl4-0
     #[tokio::test]
@@ -1797,12 +1950,57 @@ use crate::crypto::CipherParams;
             .unwrap();
 
         let channel = client.channels().get("test-rsl1n");
-        channel
+        let result = channel
             .publish()
             .name("test")
             .string("data")
             .send()
             .await?;
+        // RSL1n/PBR2a: one serial per published message
+        assert_eq!(result.serials.len(), 1);
+        assert_eq!(result.serials[0].as_deref(), Some("serial-abc"));
+        Ok(())
+    }
+
+
+    // RSL1n — batch publish returns serials 1:1 with the messages
+    // UTS: rest/unit/RSL1n/publish-result-batch-serials-1
+    #[tokio::test]
+    async fn rsl1n_publish_result_batch_serials() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(201, &json!({"serials": ["s1", "s2", "s3"]}))
+        });
+        let client = mock_client_json(mock);
+        let channel = client.channels().get("test-rsl1n-batch");
+        let messages = vec![
+            Message { name: Some("e1".into()), data: Data::String("d1".into()), ..Default::default() },
+            Message { name: Some("e2".into()), data: Data::String("d2".into()), ..Default::default() },
+            Message { name: Some("e3".into()), data: Data::String("d3".into()), ..Default::default() },
+        ];
+        let result = channel.publish().messages(messages).send().await?;
+        assert_eq!(result.serials.len(), 3);
+        assert_eq!(result.serials[1].as_deref(), Some("s2"));
+        Ok(())
+    }
+
+
+    // RSL1n/PBR2a — a null serial (conflated message) is preserved
+    // UTS: rest/unit/RSL1n/publish-result-null-serial-2
+    #[tokio::test]
+    async fn rsl1n_publish_result_null_serial() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(201, &json!({"serials": [null, "s2"]}))
+        });
+        let client = mock_client_json(mock);
+        let channel = client.channels().get("test-rsl1n-null");
+        let messages = vec![
+            Message { name: Some("e1".into()), data: Data::String("d1".into()), ..Default::default() },
+            Message { name: Some("e2".into()), data: Data::String("d2".into()), ..Default::default() },
+        ];
+        let result = channel.publish().messages(messages).send().await?;
+        assert_eq!(result.serials.len(), 2);
+        assert!(result.serials[0].is_none());
+        assert_eq!(result.serials[1].as_deref(), Some("s2"));
         Ok(())
     }
 
@@ -1864,11 +2062,13 @@ use crate::crypto::CipherParams;
     // UTS: rest/unit/channel/idempotency.md — RSL1k2
     #[tokio::test]
     async fn rsl1k2_idempotent_publish_message_id_format() -> Result<()> {
+        // UTS: rest/unit/RSL1k2/message-id-format-0
         let mock = MockHttpClient::with_handler(|_req| {
             MockResponse::json(201, &json!({}))
         });
         let client = ClientOptions::new("appId.keyId:keySecret")
             .idempotent_rest_publishing(true)
+            .use_binary_protocol(false)
             .rest_with_mock(mock)
             .unwrap();
         let channel = client.channels().get("test-rsl1k2");
@@ -1876,16 +2076,82 @@ use crate::crypto::CipherParams;
 
         let reqs = get_mock(&client).captured_requests();
         assert_eq!(reqs.len(), 1);
-        if let Some(body) = &reqs[0].body {
-            let msg: serde_json::Value = rmp_serde::from_slice(body)
-                .or_else(|_| serde_json::from_slice(body))
-                .unwrap();
-            if let Some(arr) = msg.as_array() {
-                if let Some(id) = arr[0].get("id") {
-                    assert!(id.is_string());
-                }
-            }
-        }
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+        let id = body["id"].as_str().expect("library-generated id must be present");
+        let parts: Vec<&str> = id.split(':').collect();
+        assert_eq!(parts.len(), 2, "id format must be base:serial, got '{}'", id);
+        assert!(parts[0].len() >= 12, ">= 9 bytes base64 encoded, got '{}'", parts[0]);
+        assert!(
+            parts[0].chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            "base must be base64url, got '{}'",
+            parts[0]
+        );
+        assert_eq!(parts[1], "0");
+        Ok(())
+    }
+
+
+    // RSL1k2 — serial increments across a multi-message publish, same base
+    // UTS: rest/unit/RSL1k2/serial-increments-batch-1
+    #[tokio::test]
+    async fn rsl1k2_serial_increments_batch() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(201, &json!({"serials": ["s1", "s2", "s3"]}))
+        });
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .idempotent_rest_publishing(true)
+            .use_binary_protocol(false)
+            .rest_with_mock(mock)
+            .unwrap();
+        let channel = client.channels().get("test-rsl1k2-batch");
+        let messages = vec![
+            Message { name: Some("e1".into()), data: Data::String("d1".into()), ..Default::default() },
+            Message { name: Some("e2".into()), data: Data::String("d2".into()), ..Default::default() },
+            Message { name: Some("e3".into()), data: Data::String("d3".into()), ..Default::default() },
+        ];
+        channel.publish().messages(messages).send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
+        let arr = body.as_array().expect("multi-message publish body is an array");
+        let ids: Vec<(&str, &str)> = arr.iter()
+            .map(|m| {
+                let id = m["id"].as_str().unwrap();
+                let (base, serial) = id.split_once(':').unwrap();
+                (base, serial)
+            })
+            .collect();
+        assert!(ids.iter().all(|(base, _)| *base == ids[0].0), "same base for all");
+        assert_eq!(ids.iter().map(|(_, s)| *s).collect::<Vec<_>>(), vec!["0", "1", "2"]);
+        Ok(())
+    }
+
+
+    // RSL1k3 — separate publishes get unique base ids
+    // UTS: rest/unit/RSL1k3/unique-base-ids-0
+    #[tokio::test]
+    async fn rsl1k3_unique_base_ids() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(201, &json!({}))
+        });
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .idempotent_rest_publishing(true)
+            .use_binary_protocol(false)
+            .rest_with_mock(mock)
+            .unwrap();
+        let channel = client.channels().get("test-rsl1k3");
+        channel.publish().name("e1").string("d1").send().await?;
+        channel.publish().name("e2").string("d2").send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let base = |i: usize| -> String {
+            let body: serde_json::Value =
+                serde_json::from_slice(reqs[i].body.as_deref().unwrap()).unwrap();
+            body["id"].as_str().unwrap().split(':').next().unwrap().to_string()
+        };
+        assert_ne!(base(0), base(1), "each publish must use a fresh base id");
         Ok(())
     }
 
@@ -1975,37 +2241,38 @@ use crate::crypto::CipherParams;
     // RSL1k — Mixed client-provided and library-generated IDs
     #[tokio::test]
     async fn rsl1k_mixed_client_and_library_ids() -> Result<()> {
-        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(201, &json!({})));
+        // UTS: rest/unit/RSL1k/mixed-ids-in-batch-1 — client ids preserved,
+        // messages without ids get library-generated ids
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(201, &json!({"serials": ["s1", "s2", "s3"]}))
+        });
         let client = ClientOptions::new("appId.keyId:keySecret")
             .idempotent_rest_publishing(true)
             .use_binary_protocol(false)
             .rest_with_mock(mock)
             .unwrap();
-        let channel = client.channels().get("test-rsl1k");
+        let channel = client.channels().get("test-rsl1k-mixed");
 
-        // Publish with explicit id
-        channel.publish().id("explicit-id").name("e1").string("d1").send().await?;
-
-        // Publish without id — library should generate one
-        channel.publish().name("e2").string("d2").send().await?;
+        let messages = vec![
+            Message { id: Some("client-id-1".into()), name: Some("event1".into()),
+                      data: Data::String("data1".into()), ..Default::default() },
+            Message { name: Some("event2".into()),
+                      data: Data::String("data2".into()), ..Default::default() },
+            Message { id: Some("client-id-2".into()), name: Some("event3".into()),
+                      data: Data::String("data3".into()), ..Default::default() },
+        ];
+        channel.publish().messages(messages).send().await?;
 
         let reqs = get_mock(&client).captured_requests();
-        assert_eq!(reqs.len(), 2);
-
-        let body1: serde_json::Value =
+        let body: serde_json::Value =
             serde_json::from_slice(reqs[0].body.as_deref().unwrap()).unwrap();
-        assert_eq!(body1["id"], "explicit-id");
-
-        let body2: serde_json::Value =
-            serde_json::from_slice(reqs[1].body.as_deref().unwrap()).unwrap();
-        // When idempotent publishing is enabled and no explicit id, library may generate one
-        // (format may be array or single message depending on SDK)
-        if let Some(arr) = body2.as_array() {
-            if let Some(id) = arr[0].get("id") {
-                assert!(id.is_string());
-                assert_ne!(id.as_str().unwrap(), "explicit-id");
-            }
-        }
+        let arr = body.as_array().unwrap();
+        assert_eq!(arr[0]["id"], "client-id-1");
+        assert_eq!(arr[2]["id"], "client-id-2");
+        let generated = arr[1]["id"].as_str().expect("library id for the middle message");
+        let (base, serial) = generated.split_once(':').unwrap();
+        assert!(base.len() >= 12);
+        assert_eq!(serial, "1");
         Ok(())
     }
 

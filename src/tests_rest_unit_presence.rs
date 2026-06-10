@@ -1366,3 +1366,35 @@ use crate::crypto::CipherParams;
         assert!(result.is_err());
     }
 
+    // RSP5g — presence data with cipher encoding is decrypted using the
+    // channel cipher options (canonical ably-common fixture)
+    // UTS: rest/unit/RSP5/decode-cipher-channel-7
+    #[tokio::test]
+    async fn rsp5g_presence_decode_cipher_channel() -> Result<()> {
+        let key = base64::decode("WUP6u0K7MXI5Zeo0VppPwg==").unwrap();
+        let cipher = crate::crypto::CipherParams::builder().key(key).build()?;
+
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([
+                {
+                    "action": 1,
+                    "clientId": "c1",
+                    "data": "HO4cYSP8LybPYBPZPHQOtuD53yrD3YV3NBoTEYBh4U0N1QXHbtkfsDfTspKeLQFt",
+                    "encoding": "json/utf-8/cipher+aes-128-cbc/base64"
+                }
+            ]))
+        });
+        let client = mock_client_json(mock);
+        let ch = client.channels().name("test-rsp5g").cipher(cipher).get();
+        let result = ch.presence().get().send().await?;
+        let items = result.items();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].encoding.is_none(), "fully decoded");
+        assert!(
+            matches!(items[0].data, Data::JSON(ref v) if v["example"]["json"] == "Object"),
+            "expected decrypted JSON, got {:?}",
+            items[0].data
+        );
+        Ok(())
+    }
+
