@@ -4,7 +4,8 @@ use crate::auth::TokenParams;
 use crate::options::ClientOptions;
 use crate::rest::{Data, Message, PresenceAction, Rest, RevokeTokensRequest};
 
-const SANDBOX_URL: &str = "https://sandbox-rest.ably.io";
+// The UTS-mandated sandbox: endpoint "nonprod:sandbox" (REC1b3)
+const SANDBOX_URL: &str = "https://sandbox.realtime.ably-nonprod.net";
 const TEST_APP_SETUP: &str = include_str!("../submodules/ably-common/test-resources/test-app-setup.json");
 
 struct SandboxApp {
@@ -63,9 +64,21 @@ impl SandboxApp {
     }
 }
 
+/// A sandbox client using the SDK-default MessagePack wire format, so the
+/// binary protocol is exercised across the whole integration suite. Explicit
+/// JSON-variant tests use sandbox_client_json.
 fn sandbox_client(key: &str) -> Rest {
     ClientOptions::new(key)
-        .rest_host(SANDBOX_URL.trim_start_matches("https://"))
+        .endpoint("nonprod:sandbox")
+        .unwrap()
+        .rest()
+        .unwrap()
+}
+
+/// JSON-protocol variant (UTS runs protocol-sensitive tests in both formats).
+fn sandbox_client_json(key: &str) -> Rest {
+    ClientOptions::new(key)
+        .endpoint("nonprod:sandbox")
         .unwrap()
         .use_binary_protocol(false)
         .rest()
@@ -305,19 +318,99 @@ async fn rsl1k5_idempotent_publish_deduplication() {
             .unwrap();
     }
 
-    // Poll history until message appears
+    // Poll history until the result is non-empty AND stable across two
+    // consecutive reads — a single non-empty read could race the remaining
+    // duplicates and mask broken deduplication
     let mut history_items = Vec::new();
+    let mut last_len = usize::MAX;
     for _ in 0..20 {
         let result = channel.history().send().await.unwrap();
-        if !result.items().is_empty() {
-            history_items = result.items().to_vec();
+        let items = result.items().to_vec();
+        if !items.is_empty() && items.len() == last_len {
+            history_items = items;
             break;
         }
+        last_len = items.len();
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
     assert_eq!(history_items.len(), 1, "Expected exactly 1 message (deduplication)");
     assert_eq!(history_items[0].id.as_deref(), Some(fixed_id.as_str()));
+    // UTS RSL1k5: the FIRST publish wins
+    assert!(
+        matches!(history_items[0].data, Data::String(ref s) if s == "data-1"),
+        "first-write-wins: expected data-1, got {:?}",
+        history_items[0].data
+    );
+}
+
+// ============================================================================
+// Protocol variants — the suite default is MessagePack (the SDK default);
+// these re-run the core round-trips over JSON (UTS protocol-variant runs)
+// ============================================================================
+
+#[tokio::test]
+async fn rsl1_publish_history_roundtrip_json_protocol() {
+    let app = get_sandbox().await;
+    let client = sandbox_client_json(app.full_access_key());
+    let channel_name = format!("json-proto-{}", random_id());
+    let channel = client.channels().get(&channel_name);
+
+    channel.publish().name("str").string("plain").send().await.unwrap();
+    channel
+        .publish()
+        .name("json")
+        .json(serde_json::json!({"k": "v"}))
+        .send()
+        .await
+        .unwrap();
+    channel
+        .publish()
+        .name("bin")
+        .binary(vec![0u8, 1, 254, 255])
+        .send()
+        .await
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let items = loop {
+        let result = channel.history().send().await.unwrap();
+        if result.items().len() == 3 {
+            break result.items().to_vec();
+        }
+        assert!(std::time::Instant::now() < deadline, "history did not converge");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+    // newest first
+    assert!(matches!(items[0].data, Data::Binary(ref b) if b.as_ref() == [0u8, 1, 254, 255]));
+    assert!(matches!(items[1].data, Data::JSON(ref v) if v["k"] == "v"));
+    assert!(matches!(items[2].data, Data::String(ref s) if s == "plain"));
+}
+
+#[tokio::test]
+async fn rsl1_binary_roundtrip_msgpack_protocol() {
+    let app = get_sandbox().await;
+    let client = sandbox_client(app.full_access_key());
+    let channel_name = format!("msgpack-proto-{}", random_id());
+    let channel = client.channels().get(&channel_name);
+
+    let payload = vec![0u8, 1, 2, 253, 254, 255];
+    channel.publish().name("bin").binary(payload.clone()).send().await.unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let result = channel.history().send().await.unwrap();
+        if !result.items().is_empty() {
+            assert!(
+                matches!(result.items()[0].data, Data::Binary(ref b) if b.as_ref() == payload.as_slice()),
+                "native msgpack binary round-trip, got {:?}",
+                result.items()[0].data
+            );
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "history did not converge");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
 }
 
 // ============================================================================
@@ -394,7 +487,17 @@ async fn rsl2a_history_returns_published_messages() {
 
     // Default order is backwards (newest first)
     assert_eq!(items[0].name.as_deref(), Some("event3"));
+    assert_eq!(items[1].name.as_deref(), Some("event2"));
     assert_eq!(items[2].name.as_deref(), Some("event1"));
+
+    // RSL2a/UTS: payloads round-trip with their types intact
+    assert!(
+        matches!(items[0].data, Data::JSON(ref v) if v["key"] == "value"),
+        "event3 data must decode to JSON, got {:?}",
+        items[0].data
+    );
+    assert!(matches!(items[1].data, Data::String(ref s) if s == "data2"));
+    assert!(matches!(items[2].data, Data::String(ref s) if s == "data1"));
 
     // All should have timestamps
     for msg in &items {
@@ -819,7 +922,15 @@ async fn rsp3a2_get_with_client_id_filter() {
         .unwrap();
 
     assert_eq!(result.items().len(), 1);
-    assert_eq!(result.items()[0].client_id.as_deref(), Some("client_json"));
+    let member = &result.items()[0];
+    assert_eq!(member.client_id.as_deref(), Some("client_json"));
+    // UTS RSP3a2: the fixture's data has no encoding, so it must remain the
+    // raw string — a decoder that spuriously JSON-parses it would fail here
+    assert!(
+        matches!(member.data, Data::String(_)),
+        "unencoded presence data must stay a string, got {:?}",
+        member.data
+    );
 }
 
 // ============================================================================
@@ -1609,11 +1720,49 @@ async fn rsa8_jwt_token_auth() {
     todo!()
 }
 
-// UTS: rest/integration/RSA8/auth-callback-token-request-2
+// UTS: rest/integration/RSA8/auth-callback-token-request-1
+// The authCallback returns a signed TokenRequest which the library exchanges.
 #[tokio::test]
-#[ignore = "authCallback not implemented for REST client"]
 async fn rsa8_auth_callback_with_token_request() {
-    todo!()
+    use crate::auth::{AuthCallback, AuthToken, Key, TokenParams};
+    use std::sync::Arc;
+
+    struct TokenRequestCb {
+        key: Key,
+    }
+    impl AuthCallback for TokenRequestCb {
+        fn token<'a>(
+            &'a self,
+            params: &'a TokenParams,
+        ) -> std::pin::Pin<Box<dyn Send + futures::Future<Output = crate::error::Result<AuthToken>> + 'a>> {
+            Box::pin(async move {
+                Ok(AuthToken::Request(self.key.sign(params)?))
+            })
+        }
+    }
+
+    let app = get_sandbox().await;
+    let key = Key::new(app.full_access_key()).unwrap();
+    let client = ClientOptions::with_auth_callback(Arc::new(TokenRequestCb { key }))
+        .endpoint("nonprod:sandbox")
+        .unwrap()
+        .rest()
+        .unwrap();
+
+    // The callback's TokenRequest is exchanged for a real token and used
+    let channel_name = format!("test-RSA8-cb-tr-{}", random_id());
+    let channel = client.channels().get(&channel_name);
+    channel
+        .publish()
+        .name("event")
+        .string("via-callback-token-request")
+        .send()
+        .await
+        .expect("publish with callback-supplied TokenRequest");
+
+    let td = client.auth().token_details();
+    assert!(td.is_some(), "library token cached after implicit acquisition");
+    assert!(!td.unwrap().token.is_empty());
 }
 
 // UTS: rest/integration/RSA8/auth-callback-jwt-3
@@ -1630,30 +1779,125 @@ async fn rsc10_token_renewal_with_expired_jwt() {
     todo!()
 }
 
-// UTS: rest/integration/RSA8/capability-restriction-4
+// UTS: rest/integration/RSA8/capability-restriction (native-token variant;
+// the JWT variant remains blocked on a JWT library)
 #[tokio::test]
-#[ignore = "JWT generation not implemented"]
 async fn rsa8_capability_restriction() {
-    todo!()
+    let app = get_sandbox().await;
+    let key_client = sandbox_client(app.full_access_key());
+
+    // A token restricted to one channel
+    let params = TokenParams::new().capability(r#"{"allowed-channel":["publish"]}"#);
+    let td = key_client
+        .auth()
+        .request_token(Some(&params), None)
+        .await
+        .expect("restricted token");
+
+    let token_client = ClientOptions::with_token(td.token)
+        .endpoint("nonprod:sandbox")
+        .unwrap()
+        .rest()
+        .unwrap();
+
+    // Publishing to the allowed channel succeeds
+    token_client
+        .channels()
+        .get("allowed-channel")
+        .publish()
+        .name("ok")
+        .string("d")
+        .send()
+        .await
+        .expect("publish within capability");
+
+    // Publishing elsewhere is rejected with a capability error
+    let err = token_client
+        .channels()
+        .get("forbidden-channel")
+        .publish()
+        .name("nope")
+        .string("d")
+        .send()
+        .await
+        .expect_err("publish outside capability must fail");
+    assert_eq!(err.status_code, Some(401));
+    assert_eq!(err.code, Some(40160), "operation not permitted by capability");
 }
 
 // --- History ---
 
 // UTS: rest/integration/RSL2b3/history-time-range-0
 #[tokio::test]
-#[ignore = "RSL2b3 time range filtering - requires server-timestamp-based boundary calculation"]
 async fn rsl2b3_history_time_range() {
-    todo!()
+    let app = get_sandbox().await;
+    let client = sandbox_client(app.full_access_key());
+    let channel_name = format!("persisted:test-RSL2b3-{}", random_id());
+    let channel = client.channels().get(&channel_name);
+
+    // Publish one message, capture the boundary, then publish another
+    channel.publish().name("before").string("d1").send().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let boundary = client.time().await.unwrap().timestamp_millis();
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    channel.publish().name("after").string("d2").send().await.unwrap();
+
+    // Poll until both messages are visible in unfiltered history
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let all = channel.history().send().await.unwrap();
+        if all.items().len() >= 2 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "history did not converge to 2 messages within 10s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    // RSL2b3: only the message published after `boundary` is returned
+    let result = channel
+        .history()
+        .start(&boundary.to_string())
+        .send()
+        .await
+        .unwrap();
+    let names: Vec<_> = result.items().iter().filter_map(|m| m.name.as_deref()).collect();
+    assert!(names.contains(&"after"), "expected 'after' in {:?}", names);
+    assert!(!names.contains(&"before"), "'before' must be excluded, got {:?}", names);
 }
 
 // --- Publish ---
 
-// UTS: rest/integration/RSL1n/publish-result-serials-0
-// UTS: rest/integration/RSL1n/publish-returns-serials-0
+// UTS: rest/integration/RSL1n/publish-result-serials-0 and
+// rest/integration/RSL1n/publish-returns-serials-0
 #[tokio::test]
-#[ignore = "publish returns () not PublishResult - RSL1n not yet implemented"]
 async fn rsl1n_publish_returns_serials() {
-    todo!()
+    let app = get_sandbox().await;
+    let client = sandbox_client(app.full_access_key());
+    let channel_name = format!("test-RSL1n-{}", random_id());
+    let channel = client.channels().get(&channel_name);
+
+    let result = channel
+        .publish()
+        .name("event")
+        .string("serial-data")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(result.serials.len(), 1, "one serial per published message");
+    let serial = result.serials[0].as_deref().expect("serial present");
+    assert!(!serial.is_empty());
+
+    // Batch: serials correspond 1:1
+    let messages = vec![
+        Message { name: Some("e1".into()), data: Data::String("d1".into()), ..Default::default() },
+        Message { name: Some("e2".into()), data: Data::String("d2".into()), ..Default::default() },
+    ];
+    let result = channel.publish().messages(messages).send().await.unwrap();
+    assert_eq!(result.serials.len(), 2);
+    assert!(result.serials.iter().all(|s| s.is_some()));
 }
 
 // --- Presence history (needs realtime) ---
@@ -1688,11 +1932,44 @@ async fn rsp4b3_presence_history_limit_pagination() {
 
 // --- Presence decoding ---
 
-// UTS: rest/integration/RSP5/decode-encrypted-data-2
+// RSL5/RSL6 live round-trip: encrypted publish is decrypted by history on a
+// cipher-configured channel. (The RSP5 presence variant still needs realtime.)
 #[tokio::test]
-#[ignore = "Cipher channel options not yet wired to presence decoding"]
-async fn rsp5_encrypted_data_decoded() {
-    todo!()
+async fn rsl5_encrypted_publish_history_roundtrip() {
+    let app = get_sandbox().await;
+    let client = sandbox_client(app.full_access_key());
+    let key = base64::decode("WUP6u0K7MXI5Zeo0VppPwg==").unwrap();
+    let cipher = crate::crypto::CipherParams::builder().key(key).build().unwrap();
+
+    let channel_name = format!("persisted:test-RSL5-{}", random_id());
+    let channel = client.channels().name(&channel_name).cipher(cipher).get();
+    channel
+        .publish()
+        .name("secret-event")
+        .json(serde_json::json!({"secret": "payload"}))
+        .send()
+        .await
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let result = channel.history().send().await.unwrap();
+        if !result.items().is_empty() {
+            let msg = &result.items()[0];
+            assert!(msg.encoding.is_none(), "fully decoded, got {:?}", msg.encoding);
+            assert!(
+                matches!(msg.data, Data::JSON(ref v) if v["secret"] == "payload"),
+                "decrypted JSON expected, got {:?}",
+                msg.data
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "encrypted message did not appear in history within 10s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
 }
 
 // UTS: rest/integration/RSP5/decode-history-messages-3

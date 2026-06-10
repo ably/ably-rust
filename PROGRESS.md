@@ -251,3 +251,30 @@ This pass added:
   none_/hp naming sweep; remaining near-duplicate pairs in auth (rsa10/rsa16
   batches); RSC19d residual items; RSP1b/TM2s1.
 - Test status: unit 746 pass / 439 fail (all realtime stubs) / 91 ignored.
+
+### R6 Integration-Test Hardening — DONE (2026-06-10)
+- Sandbox infra moved to the UTS-mandated endpoint: provisioning and clients use
+  endpoint("nonprod:sandbox") → sandbox.realtime.ably-nonprod.net (verified live).
+- Protocol coverage: sandbox_client now uses the SDK-default MessagePack — the
+  binary protocol is exercised across the whole integration suite for the first
+  time (all tests pass). sandbox_client_json + two explicit protocol-variant
+  round-trip tests (string/json/binary over JSON; native binary over msgpack).
+- Payload assertions added: rsl2a (typed data round-trip for all 3 messages),
+  rsp3a2 (unencoded presence data stays a raw string), rsl1k5 (first-write-wins
+  data + stable two-read poll to close the dedup race).
+- Five ignored stubs implemented and passing live: rsa8_auth_callback_with_token_request
+  (callback TokenRequest exchange), rsl2b3_history_time_range, rsa8_capability_restriction
+  (native-token variant; 40160 on out-of-capability publish), rsl1n_publish_returns_serials
+  (single + batch), rsl5_encrypted_publish_history_roundtrip (live encrypt/decrypt).
+- Test status: unit 753 pass / 439 fail (realtime stubs) / 86 ignored;
+  integration 54 pass / 31 ignored (was 47/36).
+- Remaining ignored stubs are all legitimately blocked: 4 JWT (needs a JWT dev
+  dependency), ~10 on stale ably-common fixtures (keys[4] revocableTokens +
+  mutable namespace — submodule update needed), the rest need a live realtime
+  client (Phase 5). App teardown + JWT dev-dep deferred to follow-up.
+- UPSTREAM FLAGS for the spec repo: (1) the RSP5g cipher fixture string in
+  uts/rest/unit/presence/rest_presence.md is a corrupt truncation of the
+  ably-common crypto fixture; (2) uts/rest/unit/auth/revoke_tokens.md unit mocks
+  use the legacy array response while the integration doc mandates the
+  BatchResult envelope; (3) UTS request.md (HP, no error on HTTP status) vs
+  token_renewal.md ("FAILS WITH error" via request()) are inconsistent.
