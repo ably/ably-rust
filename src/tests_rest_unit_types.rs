@@ -2140,3 +2140,80 @@ use crate::crypto::CipherParams;
         // When implemented: assert_eq!(msg.size(), 11); // "user-1" (6) + "hello" (5)
     }
 
+    // UTS rest/unit/TG/next-on-last-page-3
+    #[tokio::test]
+    async fn tg_next_on_last_page() -> Result<()> {
+        // No Link header: this is the last page
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([{"name": "only"}]))
+        });
+        let client = mock_client(mock);
+        let page = client.channels().get("test").history().send().await?;
+        assert!(!page.has_next());
+        assert!(page.is_last());
+        let next = page.next().await?;
+        assert!(next.is_none(), "TG: next() on the last page yields None");
+        Ok(())
+    }
+
+    // UTS rest/unit/TG/multiple-link-relations-6
+    #[tokio::test]
+    async fn tg_multiple_link_relations() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([{"name": "m"}])).with_header(
+                "Link",
+                "</channels/test/history?page=1>; rel=\"first\", \
+                 </channels/test/history?page=2>; rel=\"current\", \
+                 </channels/test/history?page=3>; rel=\"next\"",
+            )
+        });
+        let client = mock_client(mock);
+        let page = client.channels().get("test").history().send().await?;
+        assert!(page.has_next(), "next rel found among multiple relations");
+        let page2 = page.next().await?.expect("next page");
+        let reqs = get_mock(&client).captured_requests();
+        assert!(reqs.last().unwrap().url.query().unwrap_or("").contains("page=3"));
+        let _ = page2;
+        Ok(())
+    }
+
+    // UTS rest/unit/TG/error-handling-on-next-9
+    #[tokio::test]
+    async fn tg_error_handling_on_next() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(
+            MockResponse::json(200, &json!([{"name": "m"}])).with_header(
+                "Link",
+                "</channels/test/history?page=2>; rel=\"next\"",
+            ),
+        );
+        mock.queue_response(MockResponse::json(
+            500,
+            &json!({"error": {"code": 50000, "statusCode": 500, "message": "boom"}}),
+        ));
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .fallback_hosts(vec![])
+            .rest_with_mock(mock)
+            .unwrap();
+        let page = client.channels().get("test").history().send().await?;
+        let err = page.next().await.expect_err("TG: next() propagates errors");
+        assert_eq!(err.code, Some(50000));
+        Ok(())
+    }
+
+    // UTS rest/unit/TG2/has-next-is-last-0
+    #[tokio::test]
+    async fn tg2_has_next_is_last() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([{"name": "m"}])).with_header(
+                "Link",
+                "</channels/test/history?page=2>; rel=\"next\"",
+            )
+        });
+        let client = mock_client(mock);
+        let page = client.channels().get("test").history().send().await?;
+        assert!(page.has_next());
+        assert!(!page.is_last());
+        Ok(())
+    }

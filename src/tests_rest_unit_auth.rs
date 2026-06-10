@@ -4011,11 +4011,117 @@ use crate::crypto::CipherParams;
     fn rsa7_client_id_null_when_not_set_depth() {
         let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
         assert!(client.options().client_id.is_none());
+
+    // UTS rest/unit/RSA7/clientid-updated-after-authorize-0
+    #[tokio::test]
+    async fn rsa7_client_id_updated_after_authorize() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!({
+                    "token": "new-token",
+                    "expires": 4102444800000_i64,
+                    "issued": 1234567890000_i64,
+                    "clientId": "authorized-user"
+                }),
+            )
+        });
+        let client = mock_client(mock);
+        assert_eq!(client.auth().client_id(), None);
+        client.auth().authorize(None, None).await?;
+        assert_eq!(
+            client.auth().client_id().as_deref(),
+            Some("authorized-user"),
+            "RSA7: clientId reflects the authorized token"
+        );
+        Ok(())
     }
 
+    // UTS rest/unit/RSA16a/preserved-across-requests-0 — the configured
+    // token is used as-is across requests, not re-fetched
+    #[tokio::test]
+    async fn rsa16a_token_preserved_across_requests() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([{"channel": "x", "presence": []}]))
+        });
+        let client = ClientOptions::with_token("stable-token")
+            .use_binary_protocol(false)
+            .rest_with_mock(mock)
+            .unwrap();
+        let mut headers_seen = Vec::new();
+        for _ in 0..3 {
+            client.request("GET", "/channels/test").send().await?;
+        }
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 3);
+        for req in &reqs {
+            let auth = req
+                .headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+                .map(|(_, v)| v.clone())
+                .expect("auth header");
+            assert!(auth.starts_with("Bearer "), "token auth in use");
+            headers_seen.push(auth);
+        }
+        // RSA16a: the same literal token on every request (never re-fetched)
+        assert_eq!(headers_seen[0], headers_seen[1]);
+        assert_eq!(headers_seen[1], headers_seen[2]);
+        Ok(())
+    }
 
+    // UTS rest/unit/RSA17/server-error-propagated-0 — revocation server
+    // error propagates as a request error
+    #[tokio::test]
+    async fn rsa17_server_error_propagated() {
+        use crate::rest::RevokeTokensRequest;
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                500,
+                &json!({"error": {"code": 50000, "statusCode": 500, "message": "server error"}}),
+            )
+        });
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .fallback_hosts(vec![])
+            .rest_with_mock(mock)
+            .unwrap();
+        let err = client
+            .auth()
+            .revoke_tokens(&RevokeTokensRequest {
+                targets: vec!["clientId:user1".to_string()],
+                issued_before: None,
+                allow_reauth_margin: None,
+            })
+            .await
+            .expect_err("server error propagates");
+        assert_eq!(err.code, Some(50000));
+        assert_eq!(err.status_code, Some(500));
+    }
 
+    // UTS rest/unit/RSA17f/both-options-together-2 — issuedBefore and
+    // allowReauthMargin travel together in the request body
+    #[tokio::test]
+    async fn rsa17f_both_options_together() -> Result<()> {
+        use crate::rest::RevokeTokensRequest;
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({"results": [{"target": "clientId:user1"}]}))
+        });
+        let client = mock_client(mock);
+        client
+            .auth()
+            .revoke_tokens(&RevokeTokensRequest {
+                targets: vec!["clientId:user1".to_string()],
+                issued_before: Some(1234567890000),
+                allow_reauth_margin: Some(true),
+            })
+            .await?;
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs[0].body.as_ref().unwrap()).unwrap();
+        assert_eq!(body["issuedBefore"], 1234567890000_i64);
+        assert_eq!(body["allowReauthMargin"], true);
+        Ok(())
+    }
 
-
-
-
+}

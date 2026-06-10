@@ -265,35 +265,6 @@ use crate::crypto::CipherParams;
     // UTS: realtime/unit/client/realtime_client.md
     // ---------------------------------------------------------------
 
-    #[tokio::test]
-    async fn rtc16_close_proxies_to_connection() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected(
-                "connection-id",
-                "connection-key",
-            ));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .use_binary_protocol(false)
-                .auto_connect(false),
-            transport,
-        )
-        .unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        client.close();
-        assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
-    }
 
 
     // ---------------------------------------------------------------
@@ -931,117 +902,8 @@ use crate::crypto::CipherParams;
     }
 
 
-    #[tokio::test]
-    async fn rtc8c_authorize_from_closed_reconnects() {
-        // RTC8c: authorize() from CLOSED state opens a new connection.
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-
-        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let options = ClientOptions::with_auth_callback(callback.clone())
-            .auto_connect(false)
-            .fallback_hosts(vec![]);
-        let client = Realtime::with_mock(&options, transport).unwrap();
-
-        // Connect, then close
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        client.close();
-        assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
-
-        // authorize() from CLOSED state
-        let token = client.auth().authorize().await;
-        assert!(token.is_ok());
-        assert_eq!(token.unwrap().token, "token-2");
-
-        // Connection is now CONNECTED again
-        assert_eq!(client.connection.state(), ConnectionState::Connected);
-    }
 
 
-    #[tokio::test]
-    async fn rtc8a1_capability_downgrade_causes_channel_failed() {
-        // RTC8a1: Capability downgrade causes channel to enter FAILED state.
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{action, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
-        use crate::realtime::{await_channel_state, await_state, Realtime};
-
-        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let options = ClientOptions::with_auth_callback(callback.clone())
-            .auto_connect(false)
-            .fallback_hosts(vec![]);
-        let client = Realtime::with_mock(&options, transport.clone()).unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        // Attach a channel
-        let channel = client.channels.get("private-channel");
-
-        // Auto-respond to ATTACH
-        {
-            let conn = mock.active_connections().into_iter().last().unwrap();
-            // Watch for ATTACH and respond with ATTACHED
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                let mut msg = ProtocolMessage::new(action::ATTACHED);
-                msg.channel = Some("private-channel".to_string());
-                msg.flags = Some(0);
-                conn.send_to_client(msg);
-            });
-        }
-
-        let _ = channel.attach();
-        assert!(await_channel_state(&channel, crate::protocol::ChannelState::Attached, 5000).await);
-
-        // Now set up: when AUTH arrives, respond with CONNECTED + channel ERROR
-        let conn3 = mock.active_connections().into_iter().last().unwrap();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            // Reauth succeeds at connection level
-            conn3.send_to_client(ProtocolMessage::connected("conn-1", "key-2"));
-
-            // Then server sends channel-level ERROR (capability downgrade)
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            let mut error_msg = ProtocolMessage::new(action::ERROR);
-            error_msg.channel = Some("private-channel".to_string());
-            error_msg.error = Some(ErrorInfo {
-                code: Some(40160),
-                status_code: Some(401),
-                message: Some("Channel denied access based on given capability".to_string()),
-                href: None,
-                ..Default::default()
-            });
-            conn3.send_to_client(error_msg);
-        });
-
-        // Call authorize
-        let token = client.auth().authorize().await;
-        assert!(token.is_ok());
-
-        // Wait for channel ERROR to be processed
-        assert!(await_channel_state(&channel, crate::protocol::ChannelState::Failed, 5000).await);
-
-        // Channel entered FAILED state
-        assert_eq!(channel.state(), crate::protocol::ChannelState::Failed);
-
-        // Connection remains CONNECTED
-        assert_eq!(client.connection.state(), ConnectionState::Connected);
-    }
 
 
     // ==================== RTC7: Timeout Configuration Tests ====================
@@ -1262,8 +1124,8 @@ use crate::crypto::CipherParams;
 
 
     // UTS: realtime/unit/client/realtime_client.md — RTC1b
-    #[test]
-    fn rtc1b_realtime_internal_state() {
+    #[tokio::test]
+    async fn rtc1b_realtime_internal_state() {
         use crate::mock_ws::MockWebSocket;
 
         let mock = MockWebSocket::new();
@@ -1313,8 +1175,8 @@ use crate::crypto::CipherParams;
 
 
     // UTS: realtime/unit/client/realtime_client.md — RTC3
-    #[test]
-    fn rtc3_channels_attribute() {
+    #[tokio::test]
+    async fn rtc3_channels_attribute() {
         use crate::mock_ws::MockWebSocket;
 
         let mock = MockWebSocket::new();
@@ -1334,8 +1196,8 @@ use crate::crypto::CipherParams;
 
 
     // UTS: realtime/unit/client/realtime_client.md — RTC4
-    #[test]
-    fn rtc4_auth_attribute() {
+    #[tokio::test]
+    async fn rtc4_auth_attribute() {
         use crate::mock_ws::MockWebSocket;
 
         let mock = MockWebSocket::new();
@@ -1472,8 +1334,8 @@ use crate::crypto::CipherParams;
 
     // -- RTC1a: Realtime constructor variants --
 
-    #[test]
-    fn rtc1a_realtime_constructor_with_key() {
+    #[tokio::test]
+    async fn rtc1a_realtime_constructor_with_key() {
         // RTC1a: Constructing a Realtime client with a key string
         use crate::mock_ws::MockWebSocket;
         use crate::realtime::Realtime;
@@ -1490,8 +1352,8 @@ use crate::crypto::CipherParams;
     }
 
 
-    #[test]
-    fn rtc1a_realtime_constructor_with_token() {
+    #[tokio::test]
+    async fn rtc1a_realtime_constructor_with_token() {
         // RTC1a: Constructing a Realtime client with a token string
         use crate::mock_ws::MockWebSocket;
         use crate::realtime::Realtime;
@@ -1509,8 +1371,8 @@ use crate::crypto::CipherParams;
     }
 
 
-    #[test]
-    fn rtc1a_realtime_constructor_with_callback() {
+    #[tokio::test]
+    async fn rtc1a_realtime_constructor_with_callback() {
         // RTC1a: Constructing a Realtime client with an auth callback
         use crate::mock_ws::MockWebSocket;
         use crate::realtime::Realtime;
@@ -1529,8 +1391,8 @@ use crate::crypto::CipherParams;
     }
 
 
-    #[test]
-    fn rtc1a_realtime_constructor_with_options() {
+    #[tokio::test]
+    async fn rtc1a_realtime_constructor_with_options() {
         // RTC1a: Constructing a Realtime client with explicit options
         use crate::mock_ws::MockWebSocket;
         use crate::realtime::Realtime;
@@ -1739,36 +1601,6 @@ use crate::crypto::CipherParams;
 
     // -- RTC8c: authorize from closed --
 
-    #[tokio::test]
-    async fn rtc8c_authorize_from_closed() {
-        // RTC8c: authorize() from CLOSED state opens a new connection.
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-
-        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let options = ClientOptions::with_auth_callback(callback.clone())
-            .auto_connect(false)
-            .fallback_hosts(vec![]);
-        let client = Realtime::with_mock(&options, transport).unwrap();
-
-        // Connect, then close
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        client.close();
-        assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
-
-        // authorize() from CLOSED should reconnect
-        let result = client.auth().authorize().await;
-        assert!(result.is_ok(), "authorize from CLOSED should succeed");
-    }
 
 
     // -- RTC9: request GET / POST / params --

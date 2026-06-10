@@ -3182,3 +3182,32 @@ use crate::crypto::CipherParams;
         Ok(())
     }
 
+    // UTS rest/unit/RSL4a/number-type-rejected-1
+    #[tokio::test]
+    async fn rsl4a_number_type_rejected() {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+        let client = mock_client(mock);
+        let err = client.channels().get("test").publish()
+            .name("event")
+            .json(5)
+            .send()
+            .await
+            .expect_err("RSL4a: bare number payload must be rejected");
+        assert_eq!(err.code, Some(40013));
+        assert_eq!(get_mock(&client).captured_requests().len(), 0, "nothing sent");
+    }
+
+    // UTS rest/unit/RSL4a/boolean-type-rejected-2
+    #[tokio::test]
+    async fn rsl4a_boolean_type_rejected() {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+        let client = mock_client(mock);
+        let err = client.channels().get("test").publish()
+            .name("event")
+            .json(true)
+            .send()
+            .await
+            .expect_err("RSL4a: boolean payload must be rejected");
+        assert_eq!(err.code, Some(40013));
+        assert_eq!(get_mock(&client).captured_requests().len(), 0, "nothing sent");
+    }

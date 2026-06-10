@@ -1690,6 +1690,20 @@ Prose does not survive implementation pressure; these mechanisms do:
    work STOPS on that step; the change is proposed as a DESIGN.md edit and
    reviewed by a human first. A workaround that avoids the conformance test
    (e.g. hiding a lock in another module) is a violation of the same rule.
+5. **UTS coverage ratchet (mechanical).** `uts_coverage.txt` is a traceability
+   matrix with one line per UTS Test ID (rest/unit + realtime/unit): either
+   `id => rust_test_fn[, ...]` (covered by these passing tests) or
+   `id !! reason` (deliberately not covered — a future stage or a recorded
+   deferral). `tests_uts_coverage.rs` walks the spec tree on every `cargo
+   test` and fails on any spec ID the matrix doesn't account for, any matrix
+   entry the spec no longer defines, any mapped test fn that no longer
+   exists, and any reasonless exclusion. New spec-repo Test IDs therefore
+   fail the build until dispositioned, and renaming/deleting a covering test
+   breaks the link visibly. Closing a stage means converting that stage's
+   exclusions into mappings (bootstrap via `tools/uts_coverage_generate.py`;
+   the committed matrix is curated, its diffs are review material). Added
+   2026-06-10 after an audit found ~50% ID-level coverage in a spot-checked
+   spec file — including a real behavior bug (RTN13d) pinned by a wrong test.
 
 ## Implementation order note
 

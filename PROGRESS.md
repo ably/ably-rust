@@ -457,3 +457,46 @@ This pass added:
   annotations/options/derived) / 70 ignored.
 - Next: 5.5 channel messages — publish/subscribe, ACK/NACK, msgSerial,
   queueing (RTL6/7/8, RTN7, RTN19 resend), RTL15b serial updates from MESSAGE.
+
+### UTS Coverage Audit + Backfill — DONE (2026-06-10)
+- New enforcement (DESIGN.md §14.5): uts_coverage.txt traceability matrix —
+  all 963 UTS Test IDs (487 rest + 476 realtime) mapped to passing Rust tests
+  (686) or excluded with a stage/deferral reason (277). tests_uts_coverage.rs
+  fails the build on unaccounted IDs, dangling test references, or reasonless
+  exclusions. Bootstrap generator in tools/uts_coverage_generate.py.
+- REAL BUGS the audit caught:
+  - RTN13d: ping while CONNECTING/DISCONNECTED must be DEFERRED until the
+    connection resolves — the implementation errored immediately and a
+    wrongly-derived test pinned that behavior. Now: deferred_pings in the
+    loop, executed on CONNECTED (timeout runs from the send, RTN13c), failed
+    on terminal states (RTN13b). 5 new UTS tests.
+  - RTC8: authorize() was fire-and-forget. Now full semantics: resolves only
+    on the server's CONNECTED/ERROR (RTC8a3); halts and restarts an in-flight
+    attempt with the new token (RTC8b, generation-orphaned); initiates a
+    connection from INITIALIZED/DISCONNECTED/SUSPENDED/FAILED/CLOSED (RTC8c);
+    fails when the connection lands terminal (RTC8b1). 10 new UTS tests; the
+    pending_authorize replies live in the loop, resolved in transition().
+  - RSA4c3: a failed RTN22 token renewal while CONNECTED must be silently
+    swallowed (no event, no errorReason) — we set errorReason and emitted an
+    update.
+  - RTC1a/RTC1f1: echo param now explicit (echo=true default); transportParams
+    now OVERRIDE library URL defaults (were appended as duplicates).
+  - RSA4f: oversized (>128KiB) callback tokens now rejected with 80019/401.
+  - RSA4a1: literal-token clients with no renewal means log a 40171 warning.
+  - RSL4a (REST): bare-scalar JSON payloads (number/bool) now rejected with
+    40013 at publish time.
+- REST backfill: 18 new tests (RSL4a x2, TG navigation x4, batch results
+  BPR/BPF/RSC22c x3, RSC22 request-id, RSC15f late-success-no-resurrection,
+  RSC16 no-auth + non-TLS, RSC6a stats pagination, TO3c2 log context,
+  RSA7 authorize-clientId, RSA16a token reuse, RSA17 revoke error/options).
+  New: ClientOptions::fallback_retry_timeout (TO3l10).
+- Realtime backfill: RTF1 unknown-action tolerance, RTN22a forced-disconnect
+  reason (event-stream witness, no transient-state race), RSA4f oversized,
+  RSA4a1 warning. Ported sweep: 7 client tests mechanically converted
+  (sync→tokio), 8 superseded/deleted (close-timeout mock shapes, wrong rtn13d,
+  4 stale-ignored backoff stubs superseded by the UTS RTB1 formula tests).
+- Conformance: lock inventory UNCHANGED (deferred_pings/pending_authorize are
+  plain loop-owned Vecs). Both ratchets green.
+- Test status: 1079 pass / 202 fail (later-stage stubs) / 66 ignored; REST
+  unit 689 all green; integration serial-only flake documented (rsl11 vs
+  shared sandbox in parallel).

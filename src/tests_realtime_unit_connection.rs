@@ -2253,27 +2253,6 @@ use crate::crypto::CipherParams;
     }
 
 
-    // UTS: realtime/unit/connection/connection_ping_test.md — RTN13d
-    #[tokio::test]
-    async fn rtn13d_ping_errors_when_not_connected() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::ConnectionState;
-
-        let mock = MockWebSocket::new();
-        let transport = std::sync::Arc::new(
-            crate::mock_ws::MockTransport::new(mock.inner()),
-        );
-        let client = crate::realtime::Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .use_binary_protocol(false)
-                .auto_connect(false),
-            transport,
-        )
-        .unwrap();
-        assert_eq!(client.connection.state(), ConnectionState::Initialized);
-        let result = client.connection.ping().await;
-        assert!(result.is_err(), "Expected ping to fail in INITIALIZED state");
-    }
 
 
     // UTS: realtime/unit/connection/connection_ping_test.md — RTN13e
@@ -4197,24 +4176,8 @@ use crate::crypto::CipherParams;
 
     // --- RTB1: Exponential backoff/jitter ---
 
-    #[tokio::test]
-    #[ignore = "exponential backoff/jitter not implemented"]
-    async fn rtb1_backoff_jitter_formula() -> Result<()> { Ok(()) }
 
 
-    #[tokio::test]
-    #[ignore = "exponential backoff/jitter not implemented"]
-    async fn rtb1_backoff_jitter_distribution() -> Result<()> { Ok(()) }
-
-
-    #[tokio::test]
-    #[ignore = "exponential backoff/jitter not implemented"]
-    async fn rtb1a_initial_retry_delay() -> Result<()> { Ok(()) }
-
-
-    #[tokio::test]
-    #[ignore = "exponential backoff/jitter not implemented"]
-    async fn rtb1b_jitter_distribution() -> Result<()> { Ok(()) }
 
 
     // ===============================================================

@@ -66,7 +66,12 @@ pub(crate) enum Command {
         reply: oneshot::Sender<Result<Duration>>,
     },
     /// RTC8: apply an externally obtained token to the live connection.
-    Reauth { access_token: String },
+    /// RTC8: authorize with an already-obtained token. The reply resolves
+    /// once the server has confirmed (CONNECTED) or refused (RTC8a3/RTC8b1).
+    Authorize {
+        access_token: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
     /// RTS3a: register a channel's observation channels with the loop.
     EnsureChannel {
         name: String,
@@ -296,6 +301,11 @@ struct ConnectionCtx {
     idle_deadline: Option<Instant>,
     /// RTN13 pings in flight.
     pending_pings: Vec<PendingPing>,
+    /// RTN13d: pings issued while CONNECTING/DISCONNECTED, executed on
+    /// CONNECTED (or failed if a terminal state arrives first, RTN13b).
+    deferred_pings: Vec<oneshot::Sender<Result<Duration>>>,
+    /// RTC8a3/RTC8b1: authorize() outcomes awaiting the server's verdict.
+    pending_authorize: Vec<oneshot::Sender<Result<()>>>,
 
     /// All channel state, inside the loop (DESIGN.md §7).
     channels: std::collections::HashMap<String, ChannelCtx>,
@@ -329,9 +339,80 @@ impl ConnectionCtx {
         // RTL3: connection-state effects on channels, atomic with the
         // connection transition (DESIGN.md §7)
         self.apply_connection_effects_to_channels(to, &reason);
+        // RTN13d/RTN13b: deferred pings execute on CONNECTED, fail on a
+        // terminal state
+        self.resolve_deferred_pings(to, &reason);
+        // RTC8a3/RTC8b1: authorize() outcomes follow the connection state
+        self.resolve_authorize(to, &reason);
         if to == ConnectionState::Connected {
             // RTL3d/RTL4i: (re)attach channels
             self.reattach_channels_on_connected();
+        }
+    }
+
+    /// RTN13a/RTN13e: send a HEARTBEAT with a fresh random id and track it.
+    /// RTN13c: the timeout runs from the send, not from the ping() call.
+    fn send_ping(&mut self, reply: oneshot::Sender<Result<Duration>>) {
+        let id: String = rand::thread_rng()
+            .sample_iter(&rand::distributions::Alphanumeric)
+            .take(8)
+            .map(char::from)
+            .collect();
+        let mut msg = ProtocolMessage::new(action::HEARTBEAT);
+        msg.id = Some(id.clone());
+        self.send_protocol(msg);
+        let now = Instant::now();
+        self.pending_pings.push(PendingPing {
+            id,
+            sent_at: now,
+            deadline: now + self.rest.inner.opts.realtime_request_timeout,
+            reply,
+        });
+    }
+
+    /// RTC8a3/RTC8b1: resolve authorize() outcomes. Ok on (re)connection,
+    /// Err when the connection lands in FAILED/SUSPENDED/CLOSED instead.
+    fn resolve_authorize(&mut self, to: ConnectionState, reason: &Option<ErrorInfo>) {
+        match to {
+            ConnectionState::Connected => {
+                for reply in self.pending_authorize.drain(..) {
+                    let _ = reply.send(Ok(()));
+                }
+            }
+            ConnectionState::Failed | ConnectionState::Suspended | ConnectionState::Closed => {
+                for reply in self.pending_authorize.drain(..) {
+                    let _ = reply.send(Err(reason.clone().unwrap_or_else(|| {
+                        ErrorInfo::new(
+                            ErrorCode::Forbidden.code(),
+                            format!("Authorization failed: connection became {:?}", to),
+                        )
+                    })));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// RTN13d: execute or fail pings deferred while CONNECTING/DISCONNECTED.
+    fn resolve_deferred_pings(&mut self, to: ConnectionState, reason: &Option<ErrorInfo>) {
+        match to {
+            ConnectionState::Connected => {
+                for reply in std::mem::take(&mut self.deferred_pings) {
+                    self.send_ping(reply);
+                }
+            }
+            ConnectionState::Connecting | ConnectionState::Disconnected => {}
+            // RTN13b: a terminal state fails the deferred pings
+            _ => {
+                for reply in self.deferred_pings.drain(..) {
+                    let _ = reply.send(Err(reason.clone().unwrap_or_else(|| {
+                        ErrorInfo::new(
+                            ErrorCode::BadRequest.code(),
+                            format!("Ping failed: connection became {:?}", to),
+                        )
+                    })));
+                }
+            }
         }
     }
 
@@ -585,39 +666,42 @@ impl ConnectionCtx {
                     }
                 }
             }
-            Command::Reauth { access_token } => {
-                // RTC8: apply an externally obtained token in place
-                if self.state == ConnectionState::Connected {
+            Command::Authorize { access_token, reply } => match self.state {
+                // RTC8a: alter the live connection via an AUTH message; the
+                // reply resolves on the server's CONNECTED/ERROR (RTC8a3)
+                ConnectionState::Connected => {
                     self.send_auth(access_token);
+                    self.pending_authorize.push(reply);
                 }
-            }
-            Command::Ping { reply } => {
-                // RTN13b: ping is only valid while CONNECTED
-                if self.state != ConnectionState::Connected {
+                // RTC8b: halt the in-flight attempt and reconnect with the
+                // new token (already cached in the REST auth state)
+                ConnectionState::Connecting => {
+                    self.pending_authorize.push(reply);
+                    self.start_connect();
+                }
+                // RTC8c: initiate a connection from any other state
+                _ => {
+                    self.pending_authorize.push(reply);
+                    self.error_reason = None;
+                    self.retry_at = None;
+                    self.transition(ConnectionState::Connecting, None);
+                    self.start_connect();
+                }
+            },
+            Command::Ping { reply } => match self.state {
+                ConnectionState::Connected => self.send_ping(reply),
+                // RTN13d: deferred until the connection (re)connects
+                ConnectionState::Connecting | ConnectionState::Disconnected => {
+                    self.deferred_pings.push(reply);
+                }
+                // RTN13b: error in INITIALIZED/SUSPENDED/CLOSING/CLOSED/FAILED
+                _ => {
                     let _ = reply.send(Err(ErrorInfo::new(
                         ErrorCode::BadRequest.code(),
                         format!("Cannot ping in state {:?}", self.state),
                     )));
-                    return;
                 }
-                // RTN13e: a random id disambiguates concurrent pings
-                let id: String = rand::thread_rng()
-                    .sample_iter(&rand::distributions::Alphanumeric)
-                    .take(8)
-                    .map(char::from)
-                    .collect();
-                let mut msg = ProtocolMessage::new(action::HEARTBEAT);
-                msg.id = Some(id.clone());
-                self.send_protocol(msg);
-                let now = Instant::now();
-                self.pending_pings.push(PendingPing {
-                    id,
-                    sent_at: now,
-                    // RTN13c: timeout after realtimeRequestTimeout
-                    deadline: now + self.rest.inner.opts.realtime_request_timeout,
-                    reply,
-                });
-            }
+            },
         }
     }
 
@@ -739,9 +823,14 @@ impl ConnectionCtx {
         }
         match result {
             Ok(token) => self.send_auth(token),
+            // RSA4c3: a failed renewal while CONNECTED has no side effects —
+            // no state change, no event, errorReason untouched. The expiry
+            // path surfaces the failure later via the state machine.
             Err(err) => {
-                self.error_reason = Some(err.clone());
-                self.emit_update(Some(err));
+                self.rest.inner.opts.log(
+                    crate::options::LogLevel::Minor,
+                    &format!("Token renewal failed while connected: {}", err),
+                );
             }
         }
     }
@@ -799,6 +888,10 @@ impl ConnectionCtx {
                     self.details = pm.connection_details.clone();
                 }
                 self.emit_update(pm.error);
+                // RTC8a3: an in-band AUTH confirmed by this CONNECTED
+                for reply in self.pending_authorize.drain(..) {
+                    let _ = reply.send(Ok(()));
+                }
             }
             _ => {}
         }
@@ -1405,32 +1498,43 @@ async fn build_connection_url(rest: &Rest, host: &str, resume: Option<&str>) -> 
     let port = if opts.tls { opts.tls_port } else { opts.port };
 
     let mut url = url::Url::parse(&format!("{}://{}:{}/", scheme, host, port))?;
+    let mut params: Vec<(String, String)> = Vec::new();
+    // RTN2f: protocol version; RTN2a: format
+    params.push(("v".into(), "6".into()));
+    params.push((
+        "format".into(),
+        match opts.format {
+            Format::MessagePack => "msgpack",
+            Format::JSON => "json",
+        }
+        .into(),
+    ));
+    // RTN23a: this client consumes HEARTBEAT protocol messages
+    params.push(("heartbeats".into(), "true".into()));
+    // RTC1a/RTN2b: message echo, explicit either way
+    params.push((
+        "echo".into(),
+        if opts.echo_messages { "true" } else { "false" }.into(),
+    ));
+    // RTN2d: clientId when configured
+    if let Some(client_id) = &opts.client_id {
+        params.push(("clientId".into(), client_id.clone()));
+    }
+    // RTN15b1: resume with the previous connection key
+    if let Some(resume_key) = resume {
+        params.push(("resume".into(), resume_key.into()));
+    }
+    // RTC1f: user transportParams, overriding library defaults (RTC1f1)
+    for (k, v) in &opts.transport_params {
+        if let Some(existing) = params.iter_mut().find(|(pk, _)| pk == k) {
+            existing.1 = v.clone();
+        } else {
+            params.push((k.clone(), v.clone()));
+        }
+    }
     {
         let mut q = url.query_pairs_mut();
-        // RTN2f: protocol version; RTN2a: format
-        q.append_pair("v", "6");
-        q.append_pair(
-            "format",
-            match opts.format {
-                Format::MessagePack => "msgpack",
-                Format::JSON => "json",
-            },
-        );
-        // RTN23a: this client consumes HEARTBEAT protocol messages
-        q.append_pair("heartbeats", "true");
-        // RTN2b: suppress message echo when configured off
-        if !opts.echo_messages {
-            q.append_pair("echo", "false");
-        }
-        // RTN2d: clientId when configured
-        if let Some(client_id) = &opts.client_id {
-            q.append_pair("clientId", client_id);
-        }
-        // RTN15b1: resume with the previous connection key
-        if let Some(resume_key) = resume {
-            q.append_pair("resume", resume_key);
-        }
-        for (k, v) in &opts.transport_params {
+        for (k, v) in &params {
             q.append_pair(k, v);
         }
     }
@@ -1535,6 +1639,8 @@ pub(crate) fn spawn_connection_loop(
         close_deadline: None,
         idle_deadline: None,
         pending_pings: Vec::new(),
+        deferred_pings: Vec::new(),
+        pending_authorize: Vec::new(),
         channels: std::collections::HashMap::new(),
         snapshot_tx,
         events_tx: events_tx.clone(),

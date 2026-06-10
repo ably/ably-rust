@@ -4729,3 +4729,269 @@ use crate::crypto::CipherParams;
         Ok(())
     }
 
+    // UTS rest/unit/RSC22/request-id-included-0 — batch publish carries a
+    // request_id when addRequestIds is enabled
+    #[tokio::test]
+    async fn rsc22_request_id_included() -> Result<()> {
+        use crate::rest::BatchPublishSpec;
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([{"channel": "ch1", "messageId": "m-1"}]))
+        });
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .add_request_ids(true)
+            .use_binary_protocol(false)
+            .rest_with_mock(mock)
+            .unwrap();
+        client
+            .batch_publish(vec![BatchPublishSpec {
+                channels: vec!["ch1".to_string()],
+                messages: vec![crate::rest::Message::default()],
+            }])
+            .await?;
+        let reqs = get_mock(&client).captured_requests();
+        assert!(
+            reqs[0].url.query().unwrap_or("").contains("request_id="),
+            "RSC22: batch publish request carries a request_id"
+        );
+        Ok(())
+    }
+
+    // UTS rest/unit/RSC22c (distinguish-success-failure-0, partial-success-
+    // mixed-results-0) + BPF2a/BPF2b — batch publish mixed results
+    #[tokio::test]
+    async fn rsc22c_batch_publish_mixed_results() -> Result<()> {
+        use crate::rest::{BatchPublishResult, BatchPublishSpec};
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!([
+                    {"channel": "ok-channel", "messageId": "m-1"},
+                    {"channel": "bad-channel",
+                     "error": {"code": 40160, "statusCode": 401, "message": "denied"}}
+                ]),
+            )
+        });
+        let client = mock_client(mock);
+        let results = client
+            .batch_publish(vec![
+                BatchPublishSpec {
+                    channels: vec!["ok-channel".to_string()],
+                    messages: vec![crate::rest::Message::default()],
+                },
+                BatchPublishSpec {
+                    channels: vec!["bad-channel".to_string()],
+                    messages: vec![crate::rest::Message::default()],
+                },
+            ])
+            .await?;
+        assert_eq!(results.len(), 2);
+        let BatchPublishResult::Success(s) = &results[0] else {
+            panic!("first result is a success");
+        };
+        assert_eq!(s.channel, "ok-channel");
+        // BPF2a/BPF2b: failure carries the channel name and the ErrorInfo
+        let BatchPublishResult::Failure(f) = &results[1] else {
+            panic!("second result is a failure");
+        };
+        assert_eq!(f.channel, "bad-channel");
+        assert_eq!(f.error.code, Some(40160));
+        assert_eq!(f.error.status_code, Some(401));
+        Ok(())
+    }
+
+    // UTS rest/unit/BPR2a/BPR2b/BPR2c — success result fields
+    #[tokio::test]
+    async fn bpr2_success_result_fields() -> Result<()> {
+        use crate::rest::{BatchPublishResult, BatchPublishSpec};
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(
+                200,
+                &json!([{
+                    "channel": "ch1",
+                    "messageId": "abc123:0",
+                    "serials": ["serial-1", null]
+                }]),
+            )
+        });
+        let client = mock_client(mock);
+        let results = client
+            .batch_publish(vec![BatchPublishSpec {
+                channels: vec!["ch1".to_string()],
+                messages: vec![crate::rest::Message::default(), crate::rest::Message::default()],
+            }])
+            .await?;
+        let BatchPublishResult::Success(s) = &results[0] else {
+            panic!("success expected");
+        };
+        assert_eq!(s.channel, "ch1"); // BPR2a
+        assert_eq!(s.message_id.as_deref(), Some("abc123:0")); // BPR2b
+        // BPR2c: serials array, null entries conflated to None
+        assert_eq!(
+            s.serials,
+            Some(vec![Some("serial-1".to_string()), None])
+        );
+        Ok(())
+    }
+
+    // UTS rest/unit/RSC15f/expired-not-resurrected-2 — a late in-flight
+    // success against a previously-preferred fallback must not re-pin it
+    #[tokio::test]
+    async fn rsc15f_expired_fallback_not_resurrected() -> Result<()> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let n = std::sync::Arc::new(AtomicUsize::new(0));
+        let n2 = n.clone();
+        let mock = MockHttpClient::with_handler(move |_req| {
+            if n2.fetch_add(1, Ordering::SeqCst) == 0 {
+                // first request (primary) fails to trigger the failover
+                MockResponse::json(
+                    500,
+                    &json!({"error": {"code": 50000, "statusCode": 500, "message": "fail"}}),
+                )
+            } else {
+                MockResponse::json(200, &json!([1234567890000_i64]))
+            }
+        });
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .fallback_retry_timeout(std::time::Duration::from_millis(100))
+            .rest_with_mock(mock)
+            .unwrap();
+
+        // Request 1: primary fails -> fallback succeeds -> fallback cached
+        client.time().await?;
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 2);
+        let primary = reqs[0].url.host_str().unwrap().to_string();
+        let fallback = reqs[1].url.host_str().unwrap().to_string();
+        assert_ne!(primary, fallback);
+
+        // Request 2: goes to the cached fallback, but completes only AFTER
+        // the cache has expired (held via the mock's response delay)
+        get_mock(&client).set_response_delay(std::time::Duration::from_millis(250));
+        let held_client = client.clone();
+        let held = tokio::spawn(async move { held_client.time().await });
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        get_mock(&client).set_response_delay(std::time::Duration::from_millis(0));
+
+        // Let the cache expire
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+        // Request 3: cache expired -> primary tried again
+        client.time().await?;
+        // The held request now completes successfully against the old fallback
+        held.await.unwrap()?;
+
+        // Request 4: the late success must NOT have re-pinned the fallback
+        client.time().await?;
+
+        // The mock records a request only when it answers it, so the held
+        // request appears late in the capture order — assert by host counts.
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 5);
+        let to_fallback = reqs.iter().filter(|r| r.url.host_str() == Some(fallback.as_str())).count();
+        assert_eq!(to_fallback, 2, "failover + the held cached-host request");
+        assert_eq!(
+            reqs.last().unwrap().url.host_str().unwrap(),
+            primary,
+            "RSC15f: the late success did not re-pin the fallback"
+        );
+        Ok(())
+    }
+
+    // UTS rest/unit/RSC16/no-auth-required-2
+    #[tokio::test]
+    async fn rsc16_time_no_auth_header() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([1234567890000_i64]))
+        });
+        let client = mock_client(mock);
+        client.time().await?;
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+        assert!(
+            !reqs[0].headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("authorization")),
+            "RSC16: time() must not send credentials"
+        );
+        Ok(())
+    }
+
+    // UTS rest/unit/RSC16/works-without-tls-3
+    #[tokio::test]
+    async fn rsc16_time_works_without_tls() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([1234567890000_i64]))
+        });
+        // RSC18 forbids basic auth over non-TLS, so the client opts into
+        // token auth; time() itself sends no credentials either way
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .tls(false)
+            .use_token_auth(true)
+            .use_binary_protocol(false)
+            .rest_with_mock(mock)
+            .unwrap();
+        let t = client.time().await?;
+        assert!(t.timestamp_millis() > 0);
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs[0].url.scheme(), "http");
+        assert!(
+            !reqs[0].headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("authorization")),
+            "no credentials over non-TLS"
+        );
+        Ok(())
+    }
+
+    // UTS rest/unit/RSC6a/pagination-link-headers-3 — stats() pagination
+    #[tokio::test]
+    async fn rsc6a_stats_pagination_link_headers() -> Result<()> {
+        let mock = MockHttpClient::new();
+        mock.queue_response(
+            MockResponse::json(200, &json!([{"intervalId": "2024-01-01:01:00"}]))
+                .with_header("Link", "</stats?page=2>; rel=\"next\""),
+        );
+        mock.queue_response(MockResponse::json(
+            200,
+            &json!([{"intervalId": "2024-01-01:00:00"}]),
+        ));
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_binary_protocol(false)
+            .rest_with_mock(mock)
+            .unwrap();
+        let page1 = client.stats().send().await?;
+        assert_eq!(page1.items()[0].interval_id, "2024-01-01:01:00");
+        assert!(page1.has_next());
+        assert!(!page1.is_last());
+        let page2 = page1.next().await?.expect("second page");
+        assert_eq!(page2.items()[0].interval_id, "2024-01-01:00:00");
+        assert!(!page2.has_next());
+        Ok(())
+    }
+
+    // UTS rest/unit/TO3c2/context-contains-expected-keys-0 — HTTP request
+    // logs carry method, host and path
+    #[tokio::test]
+    async fn to3c2_log_context_keys() -> Result<()> {
+        use std::sync::{Arc as StdArc, Mutex as StdMutex};
+        let lines: StdArc<StdMutex<Vec<String>>> = StdArc::new(StdMutex::new(Vec::new()));
+        let lines2 = lines.clone();
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([1234567890000_i64]))
+        });
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .log_level(crate::options::LogLevel::Micro)
+            .log_handler(move |_level, msg| {
+                lines2.lock().unwrap().push(msg.to_string());
+            })
+            .use_binary_protocol(false)
+            .rest_with_mock(mock)
+            .unwrap();
+        client.time().await?;
+        let lines = lines.lock().unwrap();
+        let http_line = lines
+            .iter()
+            .find(|l| l.contains("HTTP request"))
+            .expect("an HTTP request log line");
+        assert!(http_line.contains("method=GET"));
+        assert!(http_line.contains("host="));
+        assert!(http_line.contains("path=/time"));
+        Ok(())
+    }

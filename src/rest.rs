@@ -388,7 +388,23 @@ impl Rest {
                 err.status_code = Some(401);
                 err
             })?;
+            // RSA4f: a token exceeding 128KiB is invalid output from the
+            // callback
+            const MAX_TOKEN_LENGTH: usize = 128 * 1024;
+            let oversized = |t: &str| t.len() > MAX_TOKEN_LENGTH;
             return match token_result {
+                auth::AuthToken::Details(td) if oversized(&td.token) => {
+                    Err(ErrorInfo::with_status(
+                        ErrorCode::ClientConfiguredAuthenticationProviderRequestFailed.code(),
+                        401,
+                        "Token from authCallback exceeds the maximum token length",
+                    ))
+                }
+                auth::AuthToken::Token(s) if oversized(&s) => Err(ErrorInfo::with_status(
+                    ErrorCode::ClientConfiguredAuthenticationProviderRequestFailed.code(),
+                    401,
+                    "Token from authCallback exceeds the maximum token length",
+                )),
                 auth::AuthToken::Details(td) => Ok(td),
                 auth::AuthToken::Token(s) => Ok(TokenDetails::token(s)),
                 auth::AuthToken::Request(tr) => self.exchange_token_request(&tr).await,
@@ -2035,6 +2051,15 @@ pub(crate) fn encode_data_for_wire(
     let mut encoding = encoding;
 
     if let Data::JSON(v) = &data {
+        // RSL4a: payloads must be binary, strings, or JSON objects/arrays;
+        // bare scalars are not permitted
+        if !(v.is_object() || v.is_array()) {
+            return Err(ErrorInfo::with_status(
+                ErrorCode::InvalidMessageDataOrEncoding.code(),
+                400,
+                "Message data must be a string, binary, or a JSON object or array",
+            ));
+        }
         let s = serde_json::to_string(v).unwrap_or_default();
         data = Data::String(s);
         encoding = Some(append_encoding(encoding, "json"));

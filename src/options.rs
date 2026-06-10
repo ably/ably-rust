@@ -279,6 +279,12 @@ impl ClientOptions {
         self
     }
 
+    /// TO3l10: how long a successful fallback host is preferred (RSC15f).
+    pub fn fallback_retry_timeout(mut self, timeout: Duration) -> Self {
+        self.fallback_retry_timeout = timeout;
+        self
+    }
+
     pub fn disconnected_retry_timeout(mut self, timeout: Duration) -> Self {
         self.disconnected_retry_timeout = timeout;
         self

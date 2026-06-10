@@ -10,7 +10,7 @@ These are the same value. The versioning scheme changed from decimal (e.g. "1.2"
 
 ## Test baseline
 
-1029 pass / 224 fail / 70 ignored (post stage 5.4, 2026-06-10). ALL failures are
+1079 pass / 202 fail / 66 ignored (post UTS coverage audit, 2026-06-10). ALL failures are
 unimplemented realtime stubs in tests_realtime_* files — every test in tests_rest_*
 and tests_proxy passes. Integration: 62 pass / 15 ignored against the live nonprod
 sandbox; proxy: 8/8 via uts-proxy. Run integration/proxy with --test-threads=1
@@ -79,6 +79,12 @@ These are requirements, not guidance. They apply to ALL realtime work (Phase 5+)
    never from old implementations. The 440 ported tests are a coverage
    cross-check and quarry only (adopt verbatim only when they match the UTS
    pseudo-code); each Phase 5 stage records adopted/superseded counts.
+   **Per-ID traceability is enforced**: `uts_coverage.txt` maps every UTS
+   Test ID (rest + realtime) to the Rust test(s) covering it, or excludes it
+   with a stage/deferral reason; `tests_uts_coverage.rs` fails the build on
+   any unaccounted ID, dangling test reference, or reasonless exclusion.
+   Closing a stage means converting its exclusions into mappings (regenerate
+   with `tools/uts_coverage_generate.py`, then review the diff).
 5. **Design-change-before-code**: if an implementation step seems to need a new
    sync primitive, shared state outside the loop, or a loop bypass, STOP. Propose
    the change as a DESIGN.md edit and get explicit human approval BEFORE writing

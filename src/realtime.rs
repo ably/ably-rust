@@ -39,6 +39,21 @@ impl Realtime {
     fn with_transport(options: &ClientOptions, transport: Arc<dyn Transport>) -> Result<Self> {
         let auto_connect = options.auto_connect;
         let rest = options.clone_for_realtime().rest()?;
+        // RSA4a1: a literal token with no renewal means gets a warning —
+        // when it expires the connection cannot recover by itself
+        {
+            let cfg = rest.auth_config();
+            let token_only = matches!(
+                &rest.inner.opts.credential,
+                crate::auth::Credential::TokenDetails(_)
+            );
+            if token_only && cfg.key.is_none() && cfg.callback.is_none() && cfg.url.is_none() {
+                rest.inner.opts.log(
+                    crate::options::LogLevel::Major,
+                    "Warning (code 40171): the client was supplied a literal token with no means to renew it;                      when it expires the client will be unable to authenticate.                      See https://help.ably.io/error/40171",
+                );
+            }
+        }
         let (input_tx, snapshot_rx, events_tx) = spawn_connection_loop(rest.clone(), transport);
 
         let connection = Connection {
@@ -90,13 +105,31 @@ pub struct RealtimeAuth {
 }
 
 impl RealtimeAuth {
-    /// RTC8: obtain a new token and apply it to the live connection in place
-    /// (an AUTH protocol message; the connection stays CONNECTED).
+    /// RTC8: obtain a new token and apply it to the connection. While
+    /// CONNECTED this is an in-band AUTH (the connection stays CONNECTED);
+    /// while CONNECTING the attempt restarts with the new token (RTC8b);
+    /// from any other state a connection is initiated (RTC8c). Resolves only
+    /// once the server has confirmed or refused the new token (RTC8a3).
     pub async fn authorize(&self) -> Result<TokenDetails> {
         let td = self.rest.auth().authorize(None, None).await?;
-        let _ = self.input_tx.send(LoopInput::Cmd(Command::Reauth {
-            access_token: td.token.clone(),
-        }));
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.input_tx
+            .send(LoopInput::Cmd(Command::Authorize {
+                access_token: td.token.clone(),
+                reply,
+            }))
+            .map_err(|_| {
+                ErrorInfo::new(
+                    ErrorCode::ConnectionClosed.code(),
+                    "Connection loop has terminated",
+                )
+            })?;
+        rx.await.map_err(|_| {
+            ErrorInfo::new(
+                ErrorCode::ConnectionClosed.code(),
+                "Connection loop dropped the authorize",
+            )
+        })??;
         Ok(td)
     }
 

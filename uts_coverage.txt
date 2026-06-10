@@ -1,0 +1,973 @@
+# UTS coverage matrix — one line per UTS Test ID (rest/unit + realtime/unit).
+#
+#   <test-id> => <rust_test_fn>[, ...]   covered by these passing tests
+#   <test-id> !! <reason>                deliberately not covered (stage/deferral)
+#
+# Enforced by tests_uts_coverage.rs: every UTS Test ID must appear here, every
+# referenced test fn must exist, every exclusion must carry a reason. When the
+# spec repo adds IDs, or a referenced test is renamed/deleted, the test fails.
+# Regenerate/update via tools/uts_coverage_generate.py, then REVIEW the diff —
+# the matrix is a curated artifact, not a build product.
+realtime/unit/DO2a/filter-attribute-0 => do2a_derive_options_filter_attribute
+realtime/unit/PC3/no-plugin-fails-1 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/unit/PC3/vcdiff-plugin-decodes-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/unit/RSA4a/token-error-no-renewal-0 => rsa4a_token_error_without_renewal_goes_failed
+realtime/unit/RSA4a1/non-renewable-token-logs-warning-0 => rsa4a1_non_renewable_token_logs_warning
+realtime/unit/RSA4a2/token-error-non-renewable-failed-0 => rsa4a2_expired_token_no_renewal
+realtime/unit/RSA4a2/token-error-non-renewable-no-retry-1 => rsa4a2_expired_token_no_renewal
+realtime/unit/RSA4c2/callback-error-causes-disconnected-0 => rsa4c2_callback_error_during_connecting_goes_disconnected
+realtime/unit/RSA4c2/callback-error-connecting-disconnected-0 => rsa4c2_callback_error_during_connecting_goes_disconnected
+realtime/unit/RSA4c2/callback-timeout-connecting-disconnected-1 => rsa4c2_callback_error_during_connecting_goes_disconnected
+realtime/unit/RSA4c3/callback-error-connected-stays-0 => rsa4c3_callback_error_while_connected_stays_connected
+realtime/unit/RSA4c3/callback-error-stays-connected-0 => rsa4c3_callback_error_while_connected_stays_connected
+realtime/unit/RSA4d/callback-403-causes-failed-0 => rsa4d_callback_403_during_connecting_goes_failed
+realtime/unit/RSA4d/callback-403-connecting-failed-0 => rsa4d_callback_403_during_connecting_goes_failed
+realtime/unit/RSA4d/callback-403-reauth-causes-failed-1 => rsa4d_callback_403_during_reauth_goes_failed
+realtime/unit/RSA4d/callback-403-reauth-failed-1 => rsa4d_callback_403_during_reauth_goes_failed
+realtime/unit/RSA4e/rest-callback-error-40170-0 => rsa4e_rest_callback_error_produces_40170
+realtime/unit/RSA4f/callback-invalid-type-format-0 !! unrepresentable: the typed Rust AuthCallback cannot return a wrong-typed token
+realtime/unit/RSA4f/callback-oversized-token-format-1 => rsa4f_oversized_token_disconnects
+realtime/unit/RSF1/message-unrecognised-attrs-0 !! stage 5.5 (needs message delivery; serde is already tolerant)
+realtime/unit/RTAN1a/encodes-data-json-2 !! stage 5.8 (annotations)
+realtime/unit/RTAN1a/publish-sends-annotation-0 !! stage 5.8 (annotations)
+realtime/unit/RTAN1a/validates-type-required-1 !! stage 5.8 (annotations)
+realtime/unit/RTAN1b/publish-channel-state-0 !! stage 5.8 (annotations)
+realtime/unit/RTAN1d/publish-ack-nack-0 !! stage 5.8 (annotations)
+realtime/unit/RTAN2a/delete-sends-annotation-0 !! stage 5.8 (annotations)
+realtime/unit/RTAN4a/subscribe-delivers-annotations-0 !! stage 5.8 (annotations)
+realtime/unit/RTAN4c/subscribe-type-filter-0 !! stage 5.8 (annotations)
+realtime/unit/RTAN4d/subscribe-implicit-attach-0 !! stage 5.8 (annotations)
+realtime/unit/RTAN4e/subscribe-warns-no-mode-0 !! stage 5.8 (annotations)
+realtime/unit/RTAN4e1/no-warn-unattached-0 !! stage 5.8 (annotations)
+realtime/unit/RTAN5a/unsubscribe-removes-listeners-0 !! stage 5.8 (annotations)
+realtime/unit/RTAN5a/unsubscribe-type-filter-1 !! stage 5.8 (annotations)
+realtime/unit/RTB1/disconnected-retry-delay-0 => rtb1a_backoff_coefficient_sequence, rtb1b_jitter_coefficient_range, rtn14d_retries_after_recoverable_failure
+realtime/unit/RTB1/suspended-channel-retry-delay-1 !! stage 5.6 (RTL13 channel retries)
+realtime/unit/RTB1a/backoff-coefficient-sequence-0 => rtb1a_backoff_coefficient_sequence
+realtime/unit/RTB1b/jitter-coefficient-range-0 => rtb1b_jitter_coefficient_range
+realtime/unit/RTC12/constructor-string-detection-0 => rtc12_constructor_detects_key_vs_token
+realtime/unit/RTC12/invalid-arguments-error-1 => rtc12_constructor_detects_key_vs_token
+realtime/unit/RTC13/push-attribute-0 !! push: LocalDevice not implemented (recorded deferral)
+realtime/unit/RTC15/connect-method-0 => rtc15_connect_proxies_to_connection
+realtime/unit/RTC16/close-method-0 => rtc8c_authorize_from_closed_reconnects
+realtime/unit/RTC17/client-id-attribute-0 => rtc17_client_id_returns_auth_client_id
+realtime/unit/RTC1a/echo-messages-option-0 => rtc1a_echo_messages_default_true
+realtime/unit/RTC1b/auto-connect-option-0 => rtc1b_auto_connect_false
+realtime/unit/RTC1c/recover-option-0 !! RTN16 recovery not yet implemented (planned post-5.6)
+realtime/unit/RTC1f/transport-params-option-0 => rtc1f_transport_params
+realtime/unit/RTC2/connection-attribute-0 => rtc2_connection_attribute
+realtime/unit/RTC3/channels-attribute-0 => rtc3_channels_attribute
+realtime/unit/RTC4/auth-attribute-0 => rtc4_auth_attribute
+realtime/unit/RTC5/stats-proxies-rest-0 => rtc5_realtime_stats_proxies_to_rest
+realtime/unit/RTC6/time-proxies-rest-0 => rtc6_realtime_time_proxies_to_rest
+realtime/unit/RTC7/attach-request-timeout-0 => rtc7_realtime_request_timeout_applied_to_attach
+realtime/unit/RTC7/default-timeouts-applied-3 => rtc7_default_timeouts
+realtime/unit/RTC7/detach-request-timeout-1 => rtc7_realtime_request_timeout_applied_to_detach
+realtime/unit/RTC7/disconnected-retry-timeout-2 => rtc7_disconnected_retry_timeout_controls_delay
+realtime/unit/RTC8a/authorize-connected-sends-auth-0 => rtc8a_authorize_connected_sends_auth
+realtime/unit/RTC8a1/capability-downgrade-channel-failed-1 => rtc8a1_capability_downgrade_channel_failed
+realtime/unit/RTC8a1/successful-reauth-update-event-0 => rtc8a1_successful_reauth_emits_update_event
+realtime/unit/RTC8a2/failed-reauth-connection-failed-0 => rtc8a2_failed_reauth_connection_failed
+realtime/unit/RTC8a3/authorize-completes-after-response-0 => rtc8a3_authorize_completes_after_response
+realtime/unit/RTC8b/authorize-connecting-halts-attempt-0 => rtc8b_authorize_connecting_halts_attempt
+realtime/unit/RTC8b1/authorize-connecting-fails-on-failed-0 => rtc8b1_authorize_connecting_fails_on_failed
+realtime/unit/RTC8c/authorize-closed-initiates-connection-2 => rtc8c_authorize_from_initialized_initiates_connection
+realtime/unit/RTC8c/authorize-disconnected-initiates-connection-0 => rtc8c_authorize_from_initialized_initiates_connection
+realtime/unit/RTC8c/authorize-failed-initiates-connection-1 => rtc8c_authorize_from_initialized_initiates_connection
+realtime/unit/RTC9/request-proxies-rest-0 => rtc9_realtime_request_proxies_to_rest
+realtime/unit/RTF1/unknown-action-handled-1 => rtf1_unknown_action_ignored
+realtime/unit/RTF1/unrecognised-attributes-ignored-0 !! stage 5.5 (needs message delivery; serde is already tolerant)
+realtime/unit/RTL10a/supports-rest-params-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL10b/adds-from-serial-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL10b/errors-when-not-attached-1 !! stage 5.5 (channel messages)
+realtime/unit/RTL11/queued-presence-fail-detached-0 !! stage 5.7 (presence)
+realtime/unit/RTL11/queued-presence-fail-failed-2 !! stage 5.7 (presence)
+realtime/unit/RTL11/queued-presence-fail-suspended-1 !! stage 5.7 (presence)
+realtime/unit/RTL11a/ack-nack-unaffected-by-state-0 !! stage 5.7 (presence)
+realtime/unit/RTL12/no-error-null-reason-2 !! stage 5.6 (RTL12 full semantics)
+realtime/unit/RTL12/resumed-no-update-1 !! stage 5.6 (RTL12 full semantics)
+realtime/unit/RTL12/update-emits-with-error-0 !! stage 5.6 (RTL12 full semantics)
+realtime/unit/RTL13a/attached-reattach-triggered-0 !! stage 5.6 (RTL13)
+realtime/unit/RTL13a/detaching-not-server-initiated-2 !! stage 5.6 (RTL13)
+realtime/unit/RTL13a/suspended-reattach-triggered-1 !! stage 5.6 (RTL13)
+realtime/unit/RTL13b/attaching-detached-to-suspended-1 !! stage 5.6 (RTL13)
+realtime/unit/RTL13b/failed-reattach-suspended-retry-0 !! stage 5.6 (RTL13)
+realtime/unit/RTL13b/repeated-failure-cycle-2 !! stage 5.6 (RTL13)
+realtime/unit/RTL13c/retry-cancelled-disconnected-0 !! stage 5.6 (RTL13)
+realtime/unit/RTL14/attached-to-failed-0 !! stage 5.5/5.6 (message + retry paths)
+realtime/unit/RTL14/attaching-to-failed-1 !! stage 5.5/5.6 (message + retry paths)
+realtime/unit/RTL14/cancels-pending-timers-4 !! stage 5.5/5.6 (message + retry paths)
+realtime/unit/RTL14/other-channels-unaffected-3 !! stage 5.5/5.6 (message + retry paths)
+realtime/unit/RTL14/pending-detach-error-2 !! stage 5.5/5.6 (message + retry paths)
+realtime/unit/RTL15a/attach-serial-from-attached-0 => rtl15a_attach_serial_from_attached
+realtime/unit/RTL15a/attach-serial-server-reattach-1 => rtl15a_attach_serial_from_attached
+realtime/unit/RTL15b/channel-serial-from-attached-0 => rtl15b_channel_serial_from_attached
+realtime/unit/RTL15b/channel-serial-from-messages-1 => rtl15b_channel_serial_from_attached
+realtime/unit/RTL15b/serial-not-updated-empty-2 => rtl15b_channel_serial_not_updated_when_absent
+realtime/unit/RTL15b/serial-not-updated-irrelevant-3 => rtl15b_channel_serial_not_updated_when_absent
+realtime/unit/RTL15b1/serial-cleared-detached-0 => rtl15b1_channel_serial_cleared_on_detached
+realtime/unit/RTL15b1/serial-cleared-failed-2 => rtl15b1_channel_serial_cleared_on_failed
+realtime/unit/RTL15b1/serial-cleared-suspended-1 => rtl15b1_channel_serial_cleared_on_detached
+realtime/unit/RTL16/set-options-updates-0 !! stage 5.6 (set_options/RTL16)
+realtime/unit/RTL16a/triggers-reattach-0 !! stage 5.6 (set_options/RTL16)
+realtime/unit/RTL17/no-delivery-when-not-attached-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL18/decode-failure-recovery-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/unit/RTL18/single-recovery-at-time-1 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/unit/RTL18c/recovery-completes-on-attached-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/unit/RTL19a/base64-decoded-before-store-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/unit/RTL19b/json-wire-form-base-1 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/unit/RTL19b/stores-base-payload-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/unit/RTL19c/delta-result-becomes-base-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/unit/RTL2/filtered-event-subscription-0 => rtl2_filtered_event_subscription
+realtime/unit/RTL20/last-id-updated-on-decode-1 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/unit/RTL20/mismatched-id-triggers-recovery-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/unit/RTL21/ascending-index-order-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/unit/RTL22a/filter-matching-clientid-2 !! stage 5.5 (channel messages)
+realtime/unit/RTL22a/filter-matching-name-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL22a/filter-matching-ref-timeserial-1 !! stage 5.5 (channel messages)
+realtime/unit/RTL22b/filter-isref-false-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL22c/filter-multiple-criteria-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL23/name-attribute-0 => rtl23_channel_name_attribute
+realtime/unit/RTL24/error-reason-attach-failure-1 => rtl24_error_reason_cleared_on_attach
+realtime/unit/RTL24/error-reason-channel-error-0 => rtl24_error_reason_cleared_on_attach
+realtime/unit/RTL24/error-reason-populated-0 => rtl24_error_reason_cleared_on_attach
+realtime/unit/RTL25a/past-state-does-not-resolve-1 => rtl25a_when_state_fires_immediately
+realtime/unit/RTL25a/resolves-immediately-current-0 => rtl25a_when_state_fires_immediately
+realtime/unit/RTL25b/fires-once-only-1 => rtl25b_when_state_fires_only_once
+realtime/unit/RTL25b/waits-for-state-change-0 => rtl25b_when_state_waits_for_transition
+realtime/unit/RTL26/annotations-attribute-type-0 !! stage 5.8 (annotations)
+realtime/unit/RTL28/identical-to-rest-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL2a/state-change-events-emitted-0 => rtl2a_state_change_events_emitted
+realtime/unit/RTL2b/channel-state-attribute-0 => rtl2b_channel_initial_state_depth
+realtime/unit/RTL2b/initial-state-initialized-1 => rtl2b_channel_initial_state_is_initialized
+realtime/unit/RTL2d/resumed-flag-propagated-2 => rtl2d_resumed_flag_propagated
+realtime/unit/RTL2d/state-change-error-reason-1 => rtl2d_channel_state_change_includes_error
+realtime/unit/RTL2d/state-change-object-structure-0 => rtl2d_channel_state_change_structure
+realtime/unit/RTL2g/no-duplicate-state-events-1 => rtl2g_no_duplicate_state_events
+realtime/unit/RTL2g/update-event-condition-change-0 => rtl2g_update_event_and_no_duplicates
+realtime/unit/RTL2i/has-backlog-flag-false-1 => rtl2i_has_backlog_false_when_not_present
+realtime/unit/RTL2i/has-backlog-flag-true-0 => rtl2i_has_backlog_flag
+realtime/unit/RTL31/identical-to-rest-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL32a/serial-validation-required-0 !! stage 5.5 (message update/delete)
+realtime/unit/RTL32b/append-message-action-2 !! stage 5.5 (message update/delete)
+realtime/unit/RTL32b/delete-message-action-1 !! stage 5.5 (message update/delete)
+realtime/unit/RTL32b/update-message-action-0 !! stage 5.5 (message update/delete)
+realtime/unit/RTL32b2/version-from-operation-0 !! stage 5.5 (message update/delete)
+realtime/unit/RTL32c/no-message-mutation-0 !! stage 5.5 (message update/delete)
+realtime/unit/RTL32d/ack-returns-result-0 !! stage 5.5 (message update/delete)
+realtime/unit/RTL32d/nack-returns-error-1 !! stage 5.5 (message update/delete)
+realtime/unit/RTL32e/params-in-protocol-message-0 !! stage 5.5 (message update/delete)
+realtime/unit/RTL3a/failed-attached-to-failed-0 => rtl3a_failed_connection_transitions_attached_to_failed
+realtime/unit/RTL3a/failed-attaching-to-failed-1 => rtl3a_failed_to_attaching_channel_failed
+realtime/unit/RTL3a/other-states-unaffected-2 => rtl3a_initialized_unaffected_by_failed
+realtime/unit/RTL3b/closed-attached-to-detached-0 => rtl3b_closed_connection_transitions_attached_to_detached
+realtime/unit/RTL3b/closed-attaching-to-detached-1 => rtl3b_closed_connection_transitions_attached_to_detached
+realtime/unit/RTL3c/suspended-attached-to-suspended-0 => rtl3c_suspended_to_attaching_channel_suspended
+realtime/unit/RTL3c/suspended-attaching-to-suspended-1 => rtl3c_suspended_to_attaching_channel_suspended
+realtime/unit/RTL3d/init-detached-not-reattached-2 => rtl3d_reattach_on_connected
+realtime/unit/RTL3d/multiple-channels-reattached-3 => rtl3d_reattach_on_connected
+realtime/unit/RTL3d/reattach-attached-with-serial-0 => rtl3d_reattach_on_connected
+realtime/unit/RTL3d/reattach-suspended-channels-1 => rtl3d_reattach_on_connected
+realtime/unit/RTL3e/disconnected-attached-noop-0 => rtl3e_disconnected_leaves_channels_untouched
+realtime/unit/RTL3e/disconnected-attaching-noop-1 => rtl3e_disconnected_leaves_channels_untouched
+realtime/unit/RTL4a/already-attached-noop-0 => rtl4a_attach_when_already_attached_is_noop
+realtime/unit/RTL4b/fails-connection-closed-0 => rtl4b_attach_fails_in_invalid_connection_states
+realtime/unit/RTL4b/fails-connection-failed-1 => rtl4b_attach_fails_when_connection_failed
+realtime/unit/RTL4b/fails-connection-suspended-2 => rtl4b_attach_fails_in_invalid_connection_states
+realtime/unit/RTL4c/clears-error-reason-0 => rtl4c_error_reason_after_reattach_from_suspended_state_change
+realtime/unit/RTL4c/error-cleared-on-attach-0 => rtl4c_attach_sends_message_and_transitions
+realtime/unit/RTL4c/error-cleared-preserved-detach-1 => rtl4c_error_reason_after_reattach_from_suspended_state_change
+realtime/unit/RTL4c/error-reason-cleared-attach-0 => rtl4c_error_reason_after_reattach_from_suspended_state_change
+realtime/unit/RTL4c/sends-attach-message-1 => rtl4c_attach_sends_message_and_transitions
+realtime/unit/RTL4c1/includes-channel-serial-0 => rtl4c1_rtl4j_reattach_serial_and_resume_flag
+realtime/unit/RTL4f/timeout-to-suspended-0 => rtl4f_attach_timeout_transitions_to_suspended
+realtime/unit/RTL4g/attach-from-failed-0 => rtl4g_attach_from_failed_clears_error_reason
+realtime/unit/RTL4h/attach-while-attaching-0 => rtl4h_attach_while_attaching_waits
+realtime/unit/RTL4h/attach-while-detaching-1 => rtl4h_attach_while_detaching_waits_then_attaches
+realtime/unit/RTL4i/completes-on-connected-1 => rtl4i_attach_completes_when_connected
+realtime/unit/RTL4i/queued-while-connecting-0 => rtl4i_attach_queued_when_connecting
+realtime/unit/RTL4j/attach-resume-flag-0 => rtl4j_attach_resume_flag_on_reattach
+realtime/unit/RTL4k/includes-channel-params-0 => rtl4k_attach_includes_params
+realtime/unit/RTL4l/modes-encoded-as-flags-0 => rtl4l_attach_includes_modes_as_flags
+realtime/unit/RTL4m/modes-from-attached-0 => rtl4m_modes_populated_from_attached_response
+realtime/unit/RTL5/detach-state-change-events-0 => rtl5_detach_emits_state_change_events
+realtime/unit/RTL5a/detach-already-detached-noop-1 => rtl5a_detach_when_already_detached_is_noop
+realtime/unit/RTL5a/detach-initialized-noop-0 => rtl5a_detach_when_initialized_is_noop
+realtime/unit/RTL5b/detach-failed-errors-0 => rtl5b_detach_from_failed_errors
+realtime/unit/RTL5d/normal-detach-flow-0 => rtl5d_normal_detach_flow
+realtime/unit/RTL5f/timeout-returns-previous-state-0 => rtl5f_detach_timeout_returns_to_previous_state
+realtime/unit/RTL5i/detach-while-attaching-1 => rtl5i_detach_while_attaching_waits_then_detaches
+realtime/unit/RTL5i/detach-while-detaching-0 => rtl5i_detach_while_detaching_waits
+realtime/unit/RTL5j/detach-suspended-to-detached-0 => rtl5j_detach_from_suspended_transitions_to_detached
+realtime/unit/RTL5k/attached-while-detached-1 => rtl5k_attached_while_detached_sends_detach
+realtime/unit/RTL5k/attached-while-detaching-0 => rtl5k_attached_while_detaching_sends_new_detach
+realtime/unit/RTL5l/detach-attached-when-disconnected-1 => rtl5l_detach_when_not_connected_transitions_immediately
+realtime/unit/RTL5l/detach-not-connected-immediate-0 => rtl5l_detach_when_not_connected_transitions_immediately
+realtime/unit/RTL6c1/publish-when-attached-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL6c1/publish-when-attaching-1 !! stage 5.5 (channel messages)
+realtime/unit/RTL6c1/publish-when-initialized-2 !! stage 5.5 (channel messages)
+realtime/unit/RTL6c2/fails-no-queue-messages-3 !! stage 5.5 (channel messages)
+realtime/unit/RTL6c2/queued-messages-order-4 !! stage 5.5 (channel messages)
+realtime/unit/RTL6c2/queued-when-connecting-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL6c2/queued-when-disconnected-1 !! stage 5.5 (channel messages)
+realtime/unit/RTL6c2/queued-when-initialized-2 !! stage 5.5 (channel messages)
+realtime/unit/RTL6c4/fails-channel-failed-4 !! stage 5.5 (channel messages)
+realtime/unit/RTL6c4/fails-channel-suspended-3 !! stage 5.5 (channel messages)
+realtime/unit/RTL6c4/fails-conn-closed-1 !! stage 5.5 (channel messages)
+realtime/unit/RTL6c4/fails-conn-failed-2 !! stage 5.5 (channel messages)
+realtime/unit/RTL6c4/fails-conn-suspended-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL6c5/no-implicit-attach-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL6i1/publish-message-object-1 !! stage 5.5 (channel messages)
+realtime/unit/RTL6i1/publish-name-and-data-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL6i2/publish-message-array-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL6i3/null-fields-json-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL6i3/null-fields-msgpack-1 !! stage 5.5 (channel messages)
+realtime/unit/RTL6j/batch-publish-serials-1 !! stage 5.5 (channel messages)
+realtime/unit/RTL6j/incrementing-msg-serial-2 !! stage 5.5 (channel messages)
+realtime/unit/RTL6j/nack-results-error-3 !! stage 5.5 (channel messages)
+realtime/unit/RTL6j/publish-result-serials-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL7a/multiple-messages-per-protocol-1 !! stage 5.5 (channel messages)
+realtime/unit/RTL7a/subscribe-all-messages-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL7b/multiple-name-subscriptions-1 !! stage 5.5 (channel messages)
+realtime/unit/RTL7b/name-filtered-subscribe-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL7f/no-echo-messages-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL7g/implicit-attach-detached-1 !! stage 5.5 (channel messages)
+realtime/unit/RTL7g/implicit-attach-initialized-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL7g/listener-registered-attach-fails-2 !! stage 5.5 (channel messages)
+realtime/unit/RTL7g/no-attach-when-attached-3 !! stage 5.5 (channel messages)
+realtime/unit/RTL7g/no-attach-when-attaching-4 !! stage 5.5 (channel messages)
+realtime/unit/RTL7h/no-attach-on-subscribe-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL8a/unsubscribe-noop-not-subscribed-1 !! stage 5.5 (channel messages)
+realtime/unit/RTL8a/unsubscribe-specific-listener-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL8b/unsubscribe-named-listener-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL8c/unsubscribe-all-listeners-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL9/presence-attribute-0 !! stage 5.7 (presence)
+realtime/unit/RTN13a/ping-heartbeat-roundtrip-0 => rtn13a_ping_sends_heartbeat_and_resolves_roundtrip
+realtime/unit/RTN13b/deferred-ping-error-failed-4 => rtn13b_deferred_ping_fails_on_failed
+realtime/unit/RTN13b/deferred-ping-error-suspended-5 => rtn13b_deferred_ping_fails_on_suspended
+realtime/unit/RTN13b/ping-error-closed-2 => rtn13b_ping_error_in_failed
+realtime/unit/RTN13b/ping-error-failed-3 => rtn13b_ping_error_in_failed
+realtime/unit/RTN13b/ping-error-initialized-0 => rtn13b_ping_error_in_initialized
+realtime/unit/RTN13b/ping-error-suspended-1 => rtn13b_deferred_ping_fails_on_suspended
+realtime/unit/RTN13c/deferred-ping-timeout-1 => rtn13c_deferred_ping_times_out_after_send
+realtime/unit/RTN13c/ping-timeout-0 => rtn13c_ping_timeout_when_no_heartbeat_response
+realtime/unit/RTN13d/ping-deferred-connecting-0 => rtn13d_ping_deferred_while_connecting_runs_on_connected
+realtime/unit/RTN13d/ping-deferred-disconnected-1 => rtn13d_ping_deferred_while_disconnected_runs_on_reconnect
+realtime/unit/RTN13e/concurrent-pings-unique-ids-2 => rtn13e_concurrent_pings
+realtime/unit/RTN13e/heartbeat-random-id-0 => rtn13e_heartbeat_includes_random_id
+realtime/unit/RTN13e/no-id-heartbeat-ignored-1 => rtn13c_rtn13e_idless_heartbeat_ignored_and_ping_times_out
+realtime/unit/RTN14a/invalid-key-failed-0 => rtn14a_invalid_api_key_causes_failed
+realtime/unit/RTN14b/token-error-with-renewal-0 => rtn14b_token_error_during_connect_renews_and_retries
+realtime/unit/RTN14b/token-renewal-fails-1 => rtn14b_token_renewal_fails_goes_disconnected
+realtime/unit/RTN14c/connection-timeout-0 => rtn14c_connect_attempt_times_out
+realtime/unit/RTN14d/retry-recoverable-failure-0 => rtn14d_retry_after_recoverable_failure
+realtime/unit/RTN14e/disconnected-to-suspended-0 => rtn14e_disconnected_to_suspended_after_ttl
+realtime/unit/RTN14f/suspended-retries-indefinitely-0 => rtn14f_suspended_retries_indefinitely
+realtime/unit/RTN14g/error-empty-channel-failed-0 => rtn14g_error_empty_channel_causes_failed
+realtime/unit/RTN15a/unexpected-transport-disconnect-0 => rtn15a_rtn15b_unexpected_disconnect_resumes_immediately
+realtime/unit/RTN15b/successful-resume-0 => rtn15b_c6_successful_resume
+realtime/unit/RTN15c4/fatal-error-during-resume-0 => rtn15c4_fatal_error_during_resume
+realtime/unit/RTN15c5/token-error-during-resume-0 => rtn15c5_recovery_with_expired_connection_error
+realtime/unit/RTN15c7/failed-resume-new-id-0 => rtn15c7_failed_resume_gets_new_connection_id
+realtime/unit/RTN15e/connection-key-updated-0 => rtn15e_token_error_no_renewal_means
+realtime/unit/RTN15g/state-cleared-after-ttl-0 => rtn15g_resume_state_cleared_after_ttl
+realtime/unit/RTN15h1/token-error-no-renew-0 => rtn15h1_token_error_no_renewal
+realtime/unit/RTN15h2/token-error-renew-fails-1 => rtn15h2_disconnected_token_error_renews_and_reconnects
+realtime/unit/RTN15h2/token-error-renew-success-0 => rtn15h2_disconnected_token_error_renews_and_reconnects
+realtime/unit/RTN15h3/non-token-error-resume-0 => rtn15h3_disconnected_non_token_error_resumes
+realtime/unit/RTN15j/error-empty-channel-failed-0 => rtn15j_error_empty_channel_while_connected
+realtime/unit/RTN16f/recover-initializes-msgserial-0 !! RTN16 recovery not yet implemented (planned post-5.6)
+realtime/unit/RTN16f1/malformed-recovery-key-0 !! RTN16 recovery not yet implemented (planned post-5.6)
+realtime/unit/RTN16g/recovery-key-structure-0 !! RTN16 recovery not yet implemented (planned post-5.6)
+realtime/unit/RTN16g2/recovery-key-null-inactive-0 !! RTN16 recovery not yet implemented (planned post-5.6)
+realtime/unit/RTN16j/recover-channel-serials-0 !! RTN16 recovery not yet implemented (planned post-5.6)
+realtime/unit/RTN16k/recover-query-param-0 !! RTN16 recovery not yet implemented (planned post-5.6)
+realtime/unit/RTN17e/http-uses-same-fallback-0 => rtn17e_http_uses_same_fallback_as_realtime
+realtime/unit/RTN17f/fallback-on-error-0 => rtn17f_connection_refused_triggers_fallback
+realtime/unit/RTN17f1/disconnected-5xx-fallback-0 => rtn17f1_5xx_disconnected_triggers_fallback
+realtime/unit/RTN17g/empty-fallback-set-error-0 => rtn17g_empty_fallback_set_no_retry
+realtime/unit/RTN17h/fallback-domains-from-rec2-0 => rtn17h_fallback_domains_from_default_set
+realtime/unit/RTN17i/prefer-primary-domain-0 => rtn17i_always_try_primary_first
+realtime/unit/RTN17j/connectivity-check-before-fallback-0 => rtn17j_fallback_hosts_random_order
+realtime/unit/RTN17j/fallback-random-order-1 => rtn17j_fallback_hosts_random_order
+realtime/unit/RTN19a/resent-on-new-transport-0 !! stage 5.5 (channel messages)
+realtime/unit/RTN19a2/new-serial-failed-resume-1 !! stage 5.5 (channel messages)
+realtime/unit/RTN19a2/same-serial-on-resume-0 !! stage 5.5 (channel messages)
+realtime/unit/RTN19b/attach-resent-on-reconnect-0 !! stage 5.5 (channel messages)
+realtime/unit/RTN19b/detach-resent-on-reconnect-1 !! stage 5.5 (channel messages)
+realtime/unit/RTN20a/network-loss-connected-disconnects-0 !! OS network-event detection not implemented (recorded deferral)
+realtime/unit/RTN20a/network-loss-connecting-disconnects-1 !! OS network-event detection not implemented (recorded deferral)
+realtime/unit/RTN20b/network-available-disconnected-connects-0 !! OS network-event detection not implemented (recorded deferral)
+realtime/unit/RTN20c/network-available-connecting-restarts-0 !! OS network-event detection not implemented (recorded deferral)
+realtime/unit/RTN22/server-auth-triggers-reauth-0 => rtn22_server_auth_triggers_reauth
+realtime/unit/RTN22/stays-connected-during-reauth-1 => rtn22_connection_stays_connected_during_reauth
+realtime/unit/RTN22a/forced-disconnect-reauth-failure-0 => rtn22a_forced_disconnect_carries_reason
+realtime/unit/RTN23a/any-message-resets-timer-3 => rtn23a_continuous_activity_keeps_alive
+realtime/unit/RTN23a/heartbeat-resets-timer-2 => rtn23a_heartbeat_traffic_keeps_connection_alive
+realtime/unit/RTN23a/heartbeats-true-query-param-0 => rtn23a_heartbeats_true_in_url
+realtime/unit/RTN23a/idle-timeout-reconnect-1 => rtn23a_idle_timeout_triggers_resume_reconnect
+realtime/unit/RTN23a/reconnect-uses-resume-5 => rtn23a_idle_timeout_triggers_resume_reconnect
+realtime/unit/RTN23a/timeout-triggers-reconnect-4 => rtn23a_idle_timeout_triggers_resume_reconnect
+realtime/unit/RTN23b/any-message-resets-timer-3 => rtn23b_heartbeat_protocol_message
+realtime/unit/RTN23b/heartbeats-false-query-param-0 !! SDK consumes protocol-level heartbeats (heartbeats=true; RTN23b design choice, stage 5.2)
+realtime/unit/RTN23b/idle-timeout-reconnect-1 => rtn23b_heartbeat_timeout_calculation
+realtime/unit/RTN23b/multiple-pings-keep-alive-6 !! transport ping frames are not surfaced by tungstenite; protocol heartbeats used instead
+realtime/unit/RTN23b/ping-frame-resets-timer-2 => rtn23b_heartbeat_ping_frame
+realtime/unit/RTN23b/reconnect-uses-resume-5 => rtn23a_idle_timeout_triggers_resume_reconnect
+realtime/unit/RTN23b/timeout-triggers-reconnect-4 => rtn23b_heartbeat_timeout_calculation
+realtime/unit/RTN24/connected-emits-update-0 => rtn24_connected_while_connected_emits_update
+realtime/unit/RTN24/connection-details-override-2 => rtn24_update_event_connection_details
+realtime/unit/RTN24/no-duplicate-connected-event-3 => rtn24_update_event_no_duplicate
+realtime/unit/RTN24/update-event-with-error-1 => rtn24_update_event_with_error_reason
+realtime/unit/RTN25/error-reason-cleared-on-connect-4 => rtn25_error_reason_on_disconnected
+realtime/unit/RTN25/error-reason-disconnected-1 => rtn25_error_reason_on_disconnected
+realtime/unit/RTN25/error-reason-in-state-change-6 => rtn25_error_reason_in_state_change_events
+realtime/unit/RTN25/error-reason-on-failed-0 => rtn25_error_reason_set_on_failed
+realtime/unit/RTN25/error-reason-protocol-error-5 => rtn25_error_reason_in_state_change_events
+realtime/unit/RTN25/error-reason-suspended-2 => rtn25_error_reason_suspended
+realtime/unit/RTN25/error-reason-token-error-3 => rtn25_error_reason_in_state_change_events
+realtime/unit/RTN26/whenstate-different-states-0 => rtn26_when_state_different_states
+realtime/unit/RTN26a/immediate-callback-current-state-0 => rtn26a_when_state_immediate_if_in_state
+realtime/unit/RTN26a/multiple-whenstate-calls-1 => rtn26a_multiple_when_state_listeners_all_fire
+realtime/unit/RTN26a/no-fire-for-past-state-2 => rtn26a_no_fire_for_state_passed_through_earlier
+realtime/unit/RTN26b/deferred-callback-future-state-0 => rtn26b_when_state_deferred_until_transition
+realtime/unit/RTN26b/fires-only-once-1 => rtn26b_when_state_fires_only_once
+realtime/unit/RTN2e/callback-error-prevents-connect-1 => rtn2e_auth_callback_error_prevents_connection
+realtime/unit/RTN2e/callback-params-include-clientid-2 => rtn2e_auth_callback_error_prevents_connection
+realtime/unit/RTN2e/reuse-valid-token-3 => rtn2e_token_obtained_before_connection
+realtime/unit/RTN2e/token-before-websocket-0 => rtn2e_token_obtained_before_connection
+realtime/unit/RTN3/auto-connect-false-1 => rtn3_auto_connect_false_does_not_connect
+realtime/unit/RTN3/auto-connect-true-0 => rtn3_auto_connect_true_connects_immediately
+realtime/unit/RTN3/explicit-connect-after-false-2 => rtn3_explicit_connect_after_auto_connect_false
+realtime/unit/RTN7d/fail-disconnected-no-queue-0 !! stage 5.5 (channel messages)
+realtime/unit/RTN7d/survive-disconnected-queue-1 !! stage 5.5 (channel messages)
+realtime/unit/RTN7e/error-represents-reason-4 !! stage 5.5 (channel messages)
+realtime/unit/RTN7e/multiple-pending-fail-3 !! stage 5.5 (channel messages)
+realtime/unit/RTN7e/pending-fail-closed-1 !! stage 5.5 (channel messages)
+realtime/unit/RTN7e/pending-fail-failed-2 !! stage 5.5 (channel messages)
+realtime/unit/RTN7e/pending-fail-suspended-0 !! stage 5.5 (channel messages)
+realtime/unit/RTN8a/id-unset-until-connected-0 => rtn8a_rtn9a_id_and_key_unset_until_connected
+realtime/unit/RTN8b/id-unique-per-connection-0 => rtn8b_rtn9b_id_and_key_unique_per_connection
+realtime/unit/RTN8c/id-key-null-after-failed-1 => rtn8c_rtn9c_id_and_key_null_after_failed
+realtime/unit/RTN8c/id-key-null-after-suspended-2 => rtn8c_id_key_null_in_suspended
+realtime/unit/RTN8c/id-null-after-closed-0 => rtn8c_rtn9c_id_and_key_null_after_closed
+realtime/unit/RTN9a/key-unset-until-connected-0 => rtn8a_rtn9a_id_and_key_unset_until_connected
+realtime/unit/RTN9b/key-unique-per-connection-0 => rtn8b_rtn9b_id_and_key_unique_per_connection
+realtime/unit/RTN9c/key-null-after-closed-0 => rtn8c_rtn9c_id_and_key_null_after_closed
+realtime/unit/RTP1/has-presence-triggers-sync-0 !! stage 5.7 (presence)
+realtime/unit/RTP1/no-has-presence-clears-existing-2 !! stage 5.7 (presence)
+realtime/unit/RTP1/no-has-presence-empty-1 !! stage 5.7 (presence)
+realtime/unit/RTP10a/leave-sends-presence-leave-0 !! stage 5.7 (presence)
+realtime/unit/RTP10a/leave-with-data-1 !! stage 5.7 (presence)
+realtime/unit/RTP11a/get-returns-members-single-sync-0 !! stage 5.7 (presence)
+realtime/unit/RTP11a/get-waits-for-multi-sync-1 !! stage 5.7 (presence)
+realtime/unit/RTP11b/get-implicitly-attaches-0 !! stage 5.7 (presence)
+realtime/unit/RTP11c1/get-no-wait-returns-immediately-0 !! stage 5.7 (presence)
+realtime/unit/RTP11c2/get-filtered-by-clientid-0 !! stage 5.7 (presence)
+realtime/unit/RTP11c3/get-filtered-by-connectionid-0 !! stage 5.7 (presence)
+realtime/unit/RTP11d/get-suspended-errors-default-0 !! stage 5.7 (presence)
+realtime/unit/RTP11d/get-suspended-no-wait-returns-1 !! stage 5.7 (presence)
+realtime/unit/RTP12a/history-supports-rest-params-0 !! stage 5.7 (presence)
+realtime/unit/RTP12c/history-returns-paginated-result-0 !! stage 5.7 (presence)
+realtime/unit/RTP13/sync-complete-attribute-0 !! stage 5.7 (presence)
+realtime/unit/RTP14a/enterclient-on-behalf-0 !! stage 5.7 (presence)
+realtime/unit/RTP15a/updateclient-leaveclient-0 !! stage 5.7 (presence)
+realtime/unit/RTP15c/enterclient-no-side-effects-0 !! stage 5.7 (presence)
+realtime/unit/RTP15e/enterclient-implicitly-attaches-0 !! stage 5.7 (presence)
+realtime/unit/RTP15f/enterclient-mismatched-clientid-0 !! stage 5.7 (presence)
+realtime/unit/RTP16a/presence-sent-when-attached-0 !! stage 5.7 (presence)
+realtime/unit/RTP16b/presence-queued-when-attaching-0 !! stage 5.7 (presence)
+realtime/unit/RTP16c/presence-errors-other-states-0 !! stage 5.7 (presence)
+realtime/unit/RTP17/clear-resets-state-2 !! stage 5.7 (presence)
+realtime/unit/RTP17/get-null-unknown-clientid-3 !! stage 5.7 (presence)
+realtime/unit/RTP17/multiple-clientids-coexist-0 !! stage 5.7 (presence)
+realtime/unit/RTP17/remove-one-of-multiple-1 !! stage 5.7 (presence)
+realtime/unit/RTP17/remove-unknown-noop-4 !! stage 5.7 (presence)
+realtime/unit/RTP17a/server-publishes-without-subscribe-0 !! stage 5.7 (presence)
+realtime/unit/RTP17b/enter-adds-to-map-0 !! stage 5.7 (presence)
+realtime/unit/RTP17b/enter-overwrites-enter-2 !! stage 5.7 (presence)
+realtime/unit/RTP17b/non-synthesized-leave-removes-5 !! stage 5.7 (presence)
+realtime/unit/RTP17b/present-adds-to-map-4 !! stage 5.7 (presence)
+realtime/unit/RTP17b/synthesized-leave-ignored-6 !! stage 5.7 (presence)
+realtime/unit/RTP17b/update-adds-to-map-1 !! stage 5.7 (presence)
+realtime/unit/RTP17b/update-overwrites-enter-3 !! stage 5.7 (presence)
+realtime/unit/RTP17e/failed-reentry-emits-update-error-0 !! stage 5.7 (presence)
+realtime/unit/RTP17g/reentry-publishes-enter-with-data-0 !! stage 5.7 (presence)
+realtime/unit/RTP17g1/reentry-omits-id-new-connid-0 !! stage 5.7 (presence)
+realtime/unit/RTP17h/keyed-by-clientid-0 !! stage 5.7 (presence)
+realtime/unit/RTP17i/auto-reentry-on-attached-0 !! stage 5.7 (presence)
+realtime/unit/RTP17i/no-reentry-with-resumed-flag-1 !! stage 5.7 (presence)
+realtime/unit/RTP18/endsync-without-startsync-noop-0 !! stage 5.7 (presence)
+realtime/unit/RTP18a/new-sync-discards-previous-1 !! stage 5.7 (presence)
+realtime/unit/RTP18a/startsync-sets-flag-0 !! stage 5.7 (presence)
+realtime/unit/RTP18b/endsync-clears-flag-0 !! stage 5.7 (presence)
+realtime/unit/RTP18c/single-message-sync-0 !! stage 5.7 (presence)
+realtime/unit/RTP19/empty-map-sync-no-leaves-3 !! stage 5.7 (presence)
+realtime/unit/RTP19/new-member-during-sync-survives-6 !! stage 5.7 (presence)
+realtime/unit/RTP19/presence-echoes-then-sync-preserves-5 !! stage 5.7 (presence)
+realtime/unit/RTP19/stale-members-leave-after-sync-0 !! stage 5.7 (presence)
+realtime/unit/RTP19/stale-sync-removes-from-residuals-4 !! stage 5.7 (presence)
+realtime/unit/RTP19/synth-leave-null-id-timestamp-1 !! stage 5.7 (presence)
+realtime/unit/RTP19/updated-members-survive-sync-2 !! stage 5.7 (presence)
+realtime/unit/RTP19a/no-has-presence-clears-members-0 !! stage 5.7 (presence)
+realtime/unit/RTP2/basic-put-and-get-0 !! stage 5.7 (presence)
+realtime/unit/RTP2/clear-resets-state-3 !! stage 5.7 (presence)
+realtime/unit/RTP2/multiple-members-coexist-1 !! stage 5.7 (presence)
+realtime/unit/RTP2/values-excludes-absent-2 !! stage 5.7 (presence)
+realtime/unit/RTP2b1/newness-by-timestamp-0 !! stage 5.7 (presence)
+realtime/unit/RTP2b1/older-synth-leave-rejected-1 !! stage 5.7 (presence)
+realtime/unit/RTP2b1a/equal-timestamps-incoming-wins-0 !! stage 5.7 (presence)
+realtime/unit/RTP2b2/newness-by-index-same-serial-1 !! stage 5.7 (presence)
+realtime/unit/RTP2b2/newness-by-msgserial-index-0 !! stage 5.7 (presence)
+realtime/unit/RTP2c/sync-uses-same-newness-0 !! stage 5.7 (presence)
+realtime/unit/RTP2d1/put-returns-original-action-0 !! stage 5.7 (presence)
+realtime/unit/RTP2d2/enter-stored-as-present-0 !! stage 5.7 (presence)
+realtime/unit/RTP2d2/present-stored-as-present-2 !! stage 5.7 (presence)
+realtime/unit/RTP2d2/update-stored-as-present-1 !! stage 5.7 (presence)
+realtime/unit/RTP2h1/leave-nonexistent-returns-null-1 !! stage 5.7 (presence)
+realtime/unit/RTP2h1/leave-outside-sync-removes-0 !! stage 5.7 (presence)
+realtime/unit/RTP2h2a/leave-during-sync-absent-cleanup-0 !! stage 5.7 (presence)
+realtime/unit/RTP2h2a/leave-during-sync-stores-absent-0 !! stage 5.7 (presence)
+realtime/unit/RTP2h2b/absent-deleted-on-endsync-0 !! stage 5.7 (presence)
+realtime/unit/RTP4/bulk-enterclient-diff-connections-1 !! stage 5.7 (presence)
+realtime/unit/RTP4/bulk-enterclient-same-connection-0 !! stage 5.7 (presence)
+realtime/unit/RTP5a/detached-clears-presence-maps-0 !! stage 5.7 (presence)
+realtime/unit/RTP5a/failed-clears-presence-maps-1 !! stage 5.7 (presence)
+realtime/unit/RTP5b/attached-sends-queued-presence-0 !! stage 5.7 (presence)
+realtime/unit/RTP5f/suspended-maintains-presence-map-0 !! stage 5.7 (presence)
+realtime/unit/RTP6/multiple-presence-in-single-message-1 !! stage 5.7 (presence)
+realtime/unit/RTP6/presence-events-update-map-0 !! stage 5.7 (presence)
+realtime/unit/RTP6a/subscribe-all-presence-events-0 !! stage 5.7 (presence)
+realtime/unit/RTP6b/subscribe-filtered-by-action-0 !! stage 5.7 (presence)
+realtime/unit/RTP6b/subscribe-filtered-multiple-actions-1 !! stage 5.7 (presence)
+realtime/unit/RTP6d/subscribe-implicitly-attaches-0 !! stage 5.7 (presence)
+realtime/unit/RTP6e/subscribe-no-attach-option-0 !! stage 5.7 (presence)
+realtime/unit/RTP7a/unsubscribe-specific-listener-0 !! stage 5.7 (presence)
+realtime/unit/RTP7b/unsubscribe-for-specific-action-0 !! stage 5.7 (presence)
+realtime/unit/RTP7c/unsubscribe-all-listeners-0 !! stage 5.7 (presence)
+realtime/unit/RTP8a/enter-sends-presence-enter-0 !! stage 5.7 (presence)
+realtime/unit/RTP8d/enter-implicitly-attaches-0 !! stage 5.7 (presence)
+realtime/unit/RTP8e/enter-with-data-0 !! stage 5.7 (presence)
+realtime/unit/RTP8g/enter-detached-failed-errors-0 !! stage 5.7 (presence)
+realtime/unit/RTP8h/nack-presence-permission-denied-0 !! stage 5.7 (presence)
+realtime/unit/RTP8j/enter-null-clientid-errors-0 !! stage 5.7 (presence)
+realtime/unit/RTP8j/enter-wildcard-clientid-errors-1 !! stage 5.7 (presence)
+realtime/unit/RTP9a/update-sends-presence-update-0 !! stage 5.7 (presence)
+realtime/unit/RTS1/channels-collection-accessible-0 => rts1_channels_collection_accessible
+realtime/unit/RTS2/channel-exists-check-0 => rts2_channel_exists
+realtime/unit/RTS2/iterate-channels-1 => rts2_iterate_channels
+realtime/unit/RTS3a/get-after-release-new-3 => rts3a_get_after_release_creates_new_channel
+realtime/unit/RTS3a/get-creates-new-channel-0 => rts3a_get_after_release_creates_new_channel
+realtime/unit/RTS3a/get-returns-existing-channel-1 => rts3a_get_returns_existing_channel
+realtime/unit/RTS3a/subscript-operator-channel-2 => rts3a_get_after_release_creates_new_channel
+realtime/unit/RTS3b/options-set-on-new-0 => rts3b_options_set_on_new_channel
+realtime/unit/RTS3c/options-updated-existing-0 !! stage 5.6 (channel options; needs fallible get_with_options)
+realtime/unit/RTS3c1/error-reattach-modes-1 !! stage 5.6 (channel options; needs fallible get_with_options)
+realtime/unit/RTS3c1/error-reattach-params-0 !! stage 5.6 (channel options; needs fallible get_with_options)
+realtime/unit/RTS4a/release-detaches-attached-2 => rts4a_release_detaches_and_removes
+realtime/unit/RTS4a/release-nonexistent-noop-1 => rts4a_release_nonexistent_is_noop
+realtime/unit/RTS4a/release-removes-channel-0 => rts4a_release_removes_channel
+realtime/unit/RTS5/get-derived-with-options-0 !! derived channels not yet implemented (post-5.6)
+realtime/unit/RTS5a/creates-derived-channel-0 !! derived channels not yet implemented (post-5.6)
+realtime/unit/RTS5a1/filter-base64-encoded-0 !! derived channels not yet implemented (post-5.6)
+realtime/unit/RTS5a2/derived-with-params-0 !! derived channels not yet implemented (post-5.6)
+realtime/unit/TB2/channel-options-attributes-0 => tb2_channel_options_defaults
+realtime/unit/TB2c/options-with-params-0 => tb2c_channel_options_with_params
+realtime/unit/TB2d/options-with-modes-0 => tb2d_channel_options_with_modes
+realtime/unit/TB3/with-cipher-key-0 => tb3_cipher_key_channel_options
+realtime/unit/TB4/attach-on-subscribe-default-0 => tb4_attach_on_subscribe_default
+realtime/unit/TM2a/all-fields-populated-together-3 !! stage 5.5 (channel messages)
+realtime/unit/TM2a/existing-id-not-overwritten-1 !! stage 5.5 (channel messages)
+realtime/unit/TM2a/id-from-protocol-message-0 !! stage 5.5 (channel messages)
+realtime/unit/TM2a/no-id-without-protocol-id-2 !! stage 5.5 (channel messages)
+realtime/unit/TM2c/connectionid-from-protocol-0 !! stage 5.5 (channel messages)
+realtime/unit/TM2c/existing-connectionid-kept-1 !! stage 5.5 (channel messages)
+realtime/unit/TM2f/existing-timestamp-kept-1 !! stage 5.5 (channel messages)
+realtime/unit/TM2f/timestamp-from-protocol-0 !! stage 5.5 (channel messages)
+rest/unit/AO/auth-options-with-callback-0 => rsa16a_token_from_callback
+rest/unit/AO2/auth-options-attributes-0 => ao2_auth_options_attributes
+rest/unit/BAR2/all-failure-counts-0 => bar2_all_failure
+rest/unit/BAR2/all-success-counts-0 => bar2_mixed_success_failure_counts
+rest/unit/BAR2/mixed-success-failure-counts-0 => bar2_mixed_success_failure_counts
+rest/unit/BGF2/failure-error-details-0 => bgf2_failure_result_with_error
+rest/unit/BGR2/success-empty-presence-0 => bgr2_success_empty_presence
+rest/unit/BGR2/success-with-members-0 => bgr2_success_result_members
+rest/unit/BPF2a/failure-channel-name-0 => rsc22c_batch_publish_mixed_results
+rest/unit/BPF2b/failure-error-info-0 => rsc22c_batch_publish_mixed_results
+rest/unit/BPR2a/success-channel-name-0 => bpr2_success_result_fields
+rest/unit/BPR2b/success-message-id-prefix-0 => bpr2_success_result_fields
+rest/unit/BPR2c/serials-array-0 => bpr2_success_result_fields
+rest/unit/BPR2c/serials-null-conflated-0 => bpr2_success_result_fields
+rest/unit/BSP2a/channels-array-strings-0 => rsc22c_batch_publish_body_contains_channels_depth
+rest/unit/BSP2b/messages-array-objects-0 => rsc22c_batch_publish_body_contains_channels_depth
+rest/unit/CHM2/parses-all-metrics-fields-0 => chm2_parses_all_metrics_fields
+rest/unit/CHM2/zero-and-missing-metrics-1 => chm2_zero_and_missing_metrics
+rest/unit/MOP2a/message-operation-fields-0 => mop2_message_operation_fields
+rest/unit/REC1a/default-primary-domain-0 => rec1a_default_primary_domain
+rest/unit/REC1b1/endpoint-conflicts-environment-0 => rec1b1_endpoint_conflicts_with_deprecated_options
+rest/unit/REC1b1/endpoint-conflicts-fallback-default-3 => rec1b1_endpoint_conflicts_with_deprecated_options
+rest/unit/REC1b1/endpoint-conflicts-realtimehost-2 => rec1b1_endpoint_conflicts_with_deprecated_options
+rest/unit/REC1b1/endpoint-conflicts-resthost-1 => rec1b1_endpoint_conflicts_with_deprecated_options
+rest/unit/REC1b2/endpoint-ipv6-address-2 => rec1b2_endpoint_hostname
+rest/unit/REC1b2/endpoint-localhost-1 => rec1b2_endpoint_hostname
+rest/unit/REC1b2/explicit-hostname-with-period-0 => rec1b2_endpoint_hostname
+rest/unit/REC1b3/nonprod-routing-policy-0 => rec1b3_endpoint_nonprod_routing_policy
+rest/unit/REC1b4/production-routing-policy-0 => rec1b4_endpoint_production_routing_policy
+rest/unit/REC1c1/environment-conflicts-realtimehost-1 => rec1c1_environment_conflicts_with_rest_host
+rest/unit/REC1c1/environment-conflicts-resthost-0 => rec1c1_environment_conflicts_with_rest_host
+rest/unit/REC1c2/environment-sets-primary-domain-0 => rec1c2_environment_sets_primary_domain
+rest/unit/REC1d/resthost-precedence-over-realtimehost-0 => rec1d_realtime_host_overrides_default_independently, rec1d_rest_host_overrides_default
+rest/unit/REC1d1/resthost-sets-primary-domain-0 => rec1d1_custom_rest_host, rec1d1_rest_host_takes_precedence_over_realtime_host
+rest/unit/REC1d2/realtimehost-sets-primary-domain-0 => rec1d2_realtime_host_sets_primary_domain
+rest/unit/REC2a1/fallback-hosts-conflicts-use-default-0 !! deprecated fallbackHostsUseDefault is deliberately not exposed; the conflict cannot arise
+rest/unit/REC2a2/custom-fallback-hosts-0 => rec2a2_custom_fallback_hosts
+rest/unit/REC2b/fallback-hosts-use-default-0 => rec2b_qualifying_status_codes_500_to_504
+rest/unit/REC2c1/default-fallback-domains-0 => rec2c1_default_fallback_domains
+rest/unit/REC2c2/explicit-hostname-no-fallbacks-0 => rec2c2_connection_timeout_triggers_fallback
+rest/unit/REC2c3/nonprod-fallback-domains-0 => rec2c3_dns_failure_triggers_fallback
+rest/unit/REC2c4/production-endpoint-fallback-domains-0 => rec2c4_non_5xx_does_not_trigger_fallback
+rest/unit/REC2c5/production-environment-fallback-domains-0 => rec2c5_environment_sets_fallback_domains
+rest/unit/REC2c6/custom-realtimehost-no-fallbacks-1 => rec2c6_custom_rest_host_no_fallbacks
+rest/unit/REC2c6/custom-resthost-no-fallbacks-0 => rec2c6_custom_rest_host_no_fallbacks
+rest/unit/REC3/connectivity-check-validation-0 => rec3_fallback_retry_exhaustion
+rest/unit/REC3a/default-connectivity-check-url-0 => rec3a_fallback_retry_timeout
+rest/unit/REC3b/custom-connectivity-check-url-0 => rec3b_fallback_host_state_persistence
+rest/unit/RSA1/token-auth-takes-precedence-0 => rsa1_token_auth_takes_precedence
+rest/unit/RSA10a/authorize-default-params-0 => rsa10a_authorize_obtains_token
+rest/unit/RSA10b/authorize-explicit-params-0 => rsa10b_authorize_with_explicit_token_params
+rest/unit/RSA10e/authorize-saves-params-0 => rsa10e_authorize_saves_token_params_for_reuse
+rest/unit/RSA10g/authorize-updates-token-details-0 => rsa10g_authorize_updates_token_details
+rest/unit/RSA10h/authorize-replaces-auth-options-0 => rsa10h_authorize_with_auth_options
+rest/unit/RSA10i/authorize-preserves-key-0 => rsa10i_authorize_preserves_key_from_constructor
+rest/unit/RSA10j/authorize-replaces-existing-token-0 => rsa10j_authorize_when_already_authorized
+rest/unit/RSA10k/authorize-query-time-0 => rsa10k_authorize_with_query_time
+rest/unit/RSA10l/authorize-error-propagated-0 => rsa10l_authorize_error_handling
+rest/unit/RSA12/wildcard-clientid-0 => rsa12_wildcard_client_id
+rest/unit/RSA12a/clientid-passed-to-callback-0 => rsa12a_client_id_passed_to_callback
+rest/unit/RSA12b/clientid-sent-to-authurl-0 => rsa12b_client_id_sent_to_authurl
+rest/unit/RSA15a/token-clientid-must-match-0 => rsa15a_token_client_id_must_match_options
+rest/unit/RSA15b/wildcard-token-permits-any-0 => rsa15b_wildcard_token_permits_any_client_id
+rest/unit/RSA15c/incompatible-clientid-error-0 => rsa15c_incompatible_client_id_detected
+rest/unit/RSA16a/preserved-across-requests-0 => rsa16a_token_preserved_across_requests
+rest/unit/RSA16a/reflects-capability-1 => rsa16a_token_details_from_callback, rsa16a_token_details_from_request_token, rsa16a_token_from_callback
+rest/unit/RSA16a/token-from-callback-0 => rsa16a_token_details_from_callback
+rest/unit/RSA16a/token-from-request-token-1 => rsa16a_token_details_from_request_token
+rest/unit/RSA16b/token-string-from-callback-1 => rsa16b_token_details_from_token_string
+rest/unit/RSA16b/token-string-in-options-0 => rsa16b_token_string_in_options
+rest/unit/RSA16c/set-on-instantiation-0 => rsa16c_set_on_instantiation
+rest/unit/RSA16c/updated-after-40142-renewal-3 => rsa16c_token_details_updated_after_renewal
+rest/unit/RSA16c/updated-after-authorize-1 => rsa16c_token_details_updated_after_renewal
+rest/unit/RSA16c/updated-after-expiry-renewal-2 => rsa16c_token_details_updated_after_renewal
+rest/unit/RSA16d/null-after-invalidation-2 => rsa16d_null_with_basic_auth
+rest/unit/RSA16d/null-after-switch-to-basic-3 => rsa16d_null_with_basic_auth
+rest/unit/RSA16d/null-before-token-obtained-1 => rsa16d_token_details_null_with_basic_auth
+rest/unit/RSA16d/null-with-basic-auth-0 => rsa16d_null_with_basic_auth
+rest/unit/RSA17/request-uses-basic-auth-0 => rsa17_auth_uses_basic_auth
+rest/unit/RSA17/server-error-propagated-0 => rsa17_server_error_propagated
+rest/unit/RSA17b/multiple-specifier-types-1 => rsa17b_multiple_specifiers
+rest/unit/RSA17b/single-specifier-targets-0 => rsa17b_single_specifier_sent_as_targets_array
+rest/unit/RSA17c/all-failure-result-2 => rsa17c_batch_result_envelope
+rest/unit/RSA17c/all-success-result-0 => rsa17c_success_result_attributes
+rest/unit/RSA17c/mixed-success-failure-1 => rsa17c_mixed_revocation_result
+rest/unit/RSA17d/token-auth-revoke-rejected-0 => rsa17d_use_token_auth_revoke_rejected
+rest/unit/RSA17d/use-token-auth-revoke-rejected-1 => rsa17d_use_token_auth_revoke_rejected
+rest/unit/RSA17e/issued-before-included-0 => rsa17e_issued_before_included
+rest/unit/RSA17e/issued-before-omitted-1 => rsa17e_issued_before_omitted
+rest/unit/RSA17f/both-options-together-2 => rsa17f_both_options_together
+rest/unit/RSA17f/reauth-margin-included-0 => rsa17f_allow_reauth_margin_included
+rest/unit/RSA17f/reauth-margin-omitted-1 => rsa17f_allow_reauth_margin_included
+rest/unit/RSA17g/sends-post-correct-path-0 => rsa17g_revocation_sends_post_to_correct_path
+rest/unit/RSA2/basic-auth-header-format-0 => rsa2_rsa11_basic_auth_header_format
+rest/unit/RSA3/token-auth-explicit-token-0 => rsa3_bearer_auth_with_explicit_token
+rest/unit/RSA3/token-auth-token-details-1 => rsa3_token_auth_with_token_details
+rest/unit/RSA4/auth-callback-triggers-token-2 => rsa4_auth_callback_triggers_token_auth
+rest/unit/RSA4/authurl-triggers-token-3 => rsa4_auth_callback_triggers_token_auth
+rest/unit/RSA4/basic-auth-key-only-0 => rsa4_basic_auth_succeeds
+rest/unit/RSA4/use-token-auth-forced-1 => rsa4_use_token_auth_forces_token_auth
+rest/unit/RSA4a2/expired-token-no-renewal-0 => rsa4a2_expired_token_no_renewal
+rest/unit/RSA4a2/no-renewal-without-callback-0 => rsa4a2_expired_token_no_renewal
+rest/unit/RSA4b/renewal-limit-no-loop-3 => rsa4b_token_renewal_limit
+rest/unit/RSA4b/renewal-msgpack-response-4 => rsa4b_token_renewal_limit
+rest/unit/RSA4b/renewal-on-40140-1 => rsa4b_token_renewal_on_40140
+rest/unit/RSA4b/renewal-on-40142-0 => rsa4b_token_renewal_on_40140
+rest/unit/RSA4b/renewal-via-authurl-2 => rsa4b_token_renewal_limit
+rest/unit/RSA4b1/preemptive-renewal-0 => rsa4b1_preemptive_renewal
+rest/unit/RSA5/ttl-null-when-unspecified-0 => rsa5_ttl_null_when_unspecified
+rest/unit/RSA5b/explicit-ttl-preserved-0 => rsa5b_explicit_ttl_preserved
+rest/unit/RSA5c/ttl-from-default-params-0 => rsa5c_ttl_from_default_token_params
+rest/unit/RSA5d/explicit-ttl-overrides-default-0 => rsa5d_explicit_ttl_overrides_default
+rest/unit/RSA6/capability-null-when-unspecified-0 => rsa6_capability_null_when_unspecified
+rest/unit/RSA6b/explicit-capability-preserved-0 => rsa6b_explicit_capability_preserved
+rest/unit/RSA6c/capability-from-default-params-0 => rsa6c_capability_from_default_token_params
+rest/unit/RSA6d/explicit-capability-overrides-default-0 => rsa6d_explicit_capability_overrides_default
+rest/unit/RSA7/clientid-mismatch-error-1 => rsa15c_incompatible_client_id_detected
+rest/unit/RSA7/clientid-updated-after-authorize-0 => rsa7_client_id_updated_after_authorize
+rest/unit/RSA7a/clientid-from-options-0 => rsa7a_client_id_from_options
+rest/unit/RSA7b/clientid-from-callback-token-1 => rsa7b_client_id_from_auth_callback_token_details
+rest/unit/RSA7b/clientid-from-token-details-0 => rsa7b_client_id_from_auth_callback_token_details
+rest/unit/RSA7c/clientid-null-unidentified-0 => rsa7c_client_id_null_when_unidentified
+rest/unit/RSA7c/clientid-null-unidentified-token-1 => rsa7c_client_id_null_when_unidentified
+rest/unit/RSA8c/authurl-custom-headers-2 => rsa8c_auth_url_custom_headers
+rest/unit/RSA8c/authurl-error-propagated-5 => rsa8c_auth_url_error_propagated
+rest/unit/RSA8c/authurl-invoked-for-auth-0 => rsa8c_auth_url_invoked
+rest/unit/RSA8c/authurl-post-method-1 => rsa8c_auth_url_post_method
+rest/unit/RSA8c/authurl-query-params-3 => rsa8c_auth_url_query_params
+rest/unit/RSA8c/authurl-returns-jwt-4 => rsa8c_auth_url_returns_jwt
+rest/unit/RSA8d/callback-error-propagated-4 => rsa8d_auth_callback_error_propagated
+rest/unit/RSA8d/callback-invoked-for-auth-0 => rsa8d_auth_callback_invoked
+rest/unit/RSA8d/callback-receives-token-params-3 => rsa8d_auth_callback_receives_token_params
+rest/unit/RSA8d/callback-returns-jwt-1 => rsa8d_auth_callback_returning_jwt
+rest/unit/RSA8d/callback-returns-token-request-2 => rsa8d_auth_callback_returning_token_request
+rest/unit/RSAN1a3/publish-type-required-0 => rsan1a3_publish_validates_type
+rest/unit/RSAN1c3/annotation-data-encoded-0 => rsan1c3_annotation_data_encoded
+rest/unit/RSAN1c4/idempotent-id-generated-0 => rsan1c4_idempotent_id_generated
+rest/unit/RSAN1c4/idempotent-id-not-generated-1 => rsan1c4_idempotent_id_not_generated
+rest/unit/RSAN1c6/publish-post-annotation-create-0 => rsan1c_publish_sends_post
+rest/unit/RSC10/request-retried-after-renewal-0 => rsc10_non_token_401_no_renewal
+rest/unit/RSC10b/non-token-401-no-renewal-0 => rsc10b_non_token_401_not_retried
+rest/unit/RSC13/request-timeout-enforced-0 => rsc13_request_timeout
+rest/unit/RSC15a/fallback-random-order-0 => rsc15a_fallback_hosts_randomized
+rest/unit/RSC15f/cached-fallback-expires-1 => rsc15f_successful_fallback_cached
+rest/unit/RSC15f/expired-not-resurrected-2 => rsc15f_expired_fallback_not_resurrected
+rest/unit/RSC15f/successful-fallback-cached-0 => rsc15f_successful_fallback_cached
+rest/unit/RSC15j/host-header-matches-request-0 => rsc15j_environment_fallback_host_generation
+rest/unit/RSC15l/connection-refused-fallback-0 => rsc15l_connection_drop_retried_on_fallback
+rest/unit/RSC15l/connection-timeout-fallback-2 => rsc15l_connection_drop_retried_on_fallback
+rest/unit/RSC15l/dns-error-fallback-1 => rsc15l_4xx_does_not_trigger_fallback
+rest/unit/RSC15l/http-4xx-no-fallback-5 => rsc15l_4xx_does_not_trigger_fallback
+rest/unit/RSC15l/http-5xx-triggers-fallback-4 => rsc15l_500_triggers_fallback
+rest/unit/RSC15l/qualifying-errors-trigger-fallback-0 => rsc15l_4xx_does_not_trigger_fallback
+rest/unit/RSC15l/request-timeout-fallback-3 => rsc15l_4xx_does_not_trigger_fallback
+rest/unit/RSC15l4/cloudfront-error-triggers-fallback-0 => rsc15l4_cloudfront_error_triggers_fallback
+rest/unit/RSC15m/no-fallback-empty-hosts-0 => rsc15m_no_fallback_when_fallback_hosts_empty
+rest/unit/RSC16/error-propagated-4 => rsc16_time_error_handling
+rest/unit/RSC16/no-auth-required-2 => rsc16_time_no_auth_header
+rest/unit/RSC16/request-format-get-time-1 => rsc16_time_request_format
+rest/unit/RSC16/returns-server-time-0 => rsc16_time_returns_server_time
+rest/unit/RSC16/works-without-tls-3 => rsc16_time_works_without_tls
+rest/unit/RSC17/client-id-from-options-0 => rsc17_client_id_attribute
+rest/unit/RSC17/client-id-matches-auth-1 => rsc17_client_id_attribute
+rest/unit/RSC18/basic-auth-over-http-rejected-1 => rsc18_basic_auth_rejected_without_tls
+rest/unit/RSC18/tls-controls-protocol-scheme-0 => rsc18_basic_auth_rejected_without_tls
+rest/unit/RSC18/token-auth-over-non-tls-0 => rsc18_token_auth_allowed_without_tls
+rest/unit/RSC19b/cannot-override-auth-1 => rsc19b_request_uses_auth
+rest/unit/RSC19b/uses-configured-auth-0 => rsc19b_request_uses_auth
+rest/unit/RSC19c/body-encoded-per-protocol-2 => rsc19c_request_json_protocol_headers
+rest/unit/RSC19c/protocol-headers-json-0 => rsc19c_request_json_protocol_headers
+rest/unit/RSC19c/protocol-headers-msgpack-1 => rsc19c_request_msgpack_protocol_headers
+rest/unit/RSC19c/response-decoded-by-content-type-3 => rsc19c_json_content_type_in_request_depth
+rest/unit/RSC19d/empty-response-handling-8 => rsc19d_http_paginated_response_status_and_success
+rest/unit/RSC19d/non-array-response-handling-7 => rsc19d_http_paginated_response_status_and_success
+rest/unit/RSC19d/pagination-with-link-headers-6 => hp2_request_pagination
+rest/unit/RSC19d/response-error-code-header-2 => rsc19d_http_paginated_response_status_and_success
+rest/unit/RSC19d/response-error-message-header-3 => rsc19d_http_paginated_response_status_and_success
+rest/unit/RSC19d/response-headers-accessible-4 => rsc19d_http_paginated_response_status_and_success
+rest/unit/RSC19d/response-items-decoded-5 => rsc19d_http_paginated_response_status_and_success
+rest/unit/RSC19d/response-status-code-0 => rsc19d_http_paginated_response_status_and_success
+rest/unit/RSC19d/response-success-indicator-1 => rsc19d_http_paginated_response_status_and_success
+rest/unit/RSC19e/fallback-on-server-error-3 => rsc19e_request_error_propagation
+rest/unit/RSC19e/http-error-no-fallback-2 => rsc19e_request_error_propagation
+rest/unit/RSC19e/network-error-propagated-0 => rsc19e_request_error_propagation
+rest/unit/RSC19e/timeout-error-handling-1 => rsc19e_request_error_propagation
+rest/unit/RSC19f/custom-headers-passed-2 => rsc19f_request_custom_headers
+rest/unit/RSC19f/path-leading-slash-handling-4 => rsc19f_request_path_leading_slash
+rest/unit/RSC19f/query-params-passed-1 => rsc19f_request_query_params
+rest/unit/RSC19f/request-body-sent-3 => rsc19f_request_body
+rest/unit/RSC19f/supports-http-methods-0 => rsc19f_request_http_methods
+rest/unit/RSC19f1/version-param-sets-header-0 => rsc19f1_x_ably_version_header
+rest/unit/RSC1b/no-auth-method-error-0 => rsc1b_empty_credential_raises_error
+rest/unit/RSC2/default-log-level-warn-0 => rsc2_default_log_level_error_only
+rest/unit/RSC22/auth-error-propagated-0 => rsc22_auth_error
+rest/unit/RSC22/empty-channels-rejected-0 => rsc22_empty_channels_error
+rest/unit/RSC22/empty-messages-rejected-0 => rsc22_empty_messages_error
+rest/unit/RSC22/multiple-channels-multiple-messages-0 => rsc22_empty_channels_error
+rest/unit/RSC22/multiple-messages-per-channel-0 => rsc22_empty_messages_error
+rest/unit/RSC22/request-id-included-0 => rsc22_request_id_included
+rest/unit/RSC22/server-error-propagated-0 => rsc22_server_error_propagated
+rest/unit/RSC22/standard-headers-included-0 => rsc22_standard_headers
+rest/unit/RSC22c/array-specs-array-results-0 => rsc22c_batch_publish_empty_specs_depth
+rest/unit/RSC22c/array-specs-post-messages-0 => rsc22c_batch_publish_sends_post_to_messages
+rest/unit/RSC22c/distinguish-success-failure-0 => rsc22c_batch_publish_mixed_results
+rest/unit/RSC22c/messages-encoded-per-rsl4-0 => rsc22c_batch_publish_sends_post_to_messages
+rest/unit/RSC22c/multiple-channels-multiple-results-0 => rsc22c_batch_publish_multiple_specs
+rest/unit/RSC22c/partial-success-mixed-results-0 => rsc22c_batch_publish_mixed_results
+rest/unit/RSC22c/single-spec-post-messages-0 => rsc22c_batch_publish_sends_post_to_messages
+rest/unit/RSC22c/single-spec-single-result-0 => rsc22c_batch_publish_multiple_specs
+rest/unit/RSC22c/uses-configured-auth-0 => rsc22c_batch_publish_auth_header_depth
+rest/unit/RSC22d/explicit-ids-preserved-0 => rsc22d_explicit_ids_preserved
+rest/unit/RSC22d/idempotent-ids-generated-0 => rsc22d_explicit_ids_preserved
+rest/unit/RSC22d/ids-not-generated-disabled-0 => rsc22d_explicit_ids_preserved
+rest/unit/RSC24/auth-error-propagated-0 => rsc24_auth_error_propagated
+rest/unit/RSC24/get-presence-channels-param-0 => rsc24_batch_presence_sends_get_with_channels
+rest/unit/RSC24/mixed-success-failure-results-0 => rsc24_mixed_success_failure_results
+rest/unit/RSC24/server-error-propagated-0 => rsc24_server_error_propagated
+rest/unit/RSC24/single-channel-param-0 => rsc24_batch_presence_single_channel_param
+rest/unit/RSC24/special-chars-comma-joined-0 => rsc24_batch_presence_special_chars_comma_joined
+rest/unit/RSC24/uses-configured-auth-0 => rsc24_auth_error_propagated
+rest/unit/RSC25/custom-endpoint-domain-1 => rsc25_custom_endpoint_domain
+rest/unit/RSC25/default-primary-domain-0 => rsc25_default_primary_domain_used
+rest/unit/RSC25/multiple-requests-primary-domain-2 => rsc25_multiple_requests_primary_domain
+rest/unit/RSC25/primary-tried-before-fallback-3 => rsc25_primary_tried_before_fallback
+rest/unit/RSC25/request-path-preserved-4 => rsc25_path_preserved_in_request_depth
+rest/unit/RSC2b/log-level-none-suppresses-all-0 => rsc2b_log_level_none_suppresses_all
+rest/unit/RSC5/auth-attribute-accessible-0 => rsc5_auth_attribute
+rest/unit/RSC6a/authenticated-with-headers-1 => rsc6a_stats_authenticated
+rest/unit/RSC6a/empty-results-handled-4 => rsc6a_stats_empty_results
+rest/unit/RSC6a/error-propagated-5 => rsc6a_stats_error_handling
+rest/unit/RSC6a/no-params-clean-request-2 => rsc6a_stats_no_params
+rest/unit/RSC6a/pagination-link-headers-3 => rsc6a_stats_pagination_link_headers
+rest/unit/RSC6a/returns-paginated-stats-0 => rsc6a_stats_returns_paginated_result
+rest/unit/RSC6b/all-params-combined-0 => rsc6b_stats_all_params
+rest/unit/RSC6b1/end-param-millis-1 => rsc6b1_stats_start_and_end
+rest/unit/RSC6b1/start-and-end-params-2 => rsc6b1_stats_start_and_end
+rest/unit/RSC6b1/start-param-millis-0 => rsc6b1_stats_start_and_end
+rest/unit/RSC6b2/direction-defaults-backwards-1 => rsc6b2_stats_default_direction
+rest/unit/RSC6b2/direction-param-forwards-0 => rsc6b2_stats_direction_forwards
+rest/unit/RSC6b3/limit-defaults-to-100-1 => rsc6b3_stats_limit_defaults_to_100
+rest/unit/RSC6b3/limit-param-value-0 => rsc6b3_stats_limit
+rest/unit/RSC6b4/unit-defaults-to-minute-1 => rsc6b4_stats_unit_defaults_to_minute
+rest/unit/RSC6b4/unit-param-values-0 => rsc6b4_stats_unit_defaults_to_minute
+rest/unit/RSC7c/request-id-included-0 => rsc7c_error_info_carries_request_id
+rest/unit/RSC7c/request-id-preserved-fallback-1 => rsc7c_request_id_preserved_across_retries
+rest/unit/RSC7d/ably-agent-header-format-0 => rsc7d_ably_agent_header
+rest/unit/RSC7e/ably-version-header-0 => rsc7e_x_ably_version_header
+rest/unit/RSC8/error-decoded-from-msgpack-0 => rsc8_error_response_parsed_from_msgpack
+rest/unit/RSC8a/protocol-selection-0 => rsc8a_default_protocol_is_msgpack
+rest/unit/RSC8c/accept-content-type-headers-0 => rsc8c_accept_and_content_type_json
+rest/unit/RSC8d/mismatched-response-content-type-0 => rsc8d_mismatched_response_content_type
+rest/unit/RSC8e/unsupported-content-type-0 => rsc8e_unsupported_content_type_error_status
+rest/unit/RSH1/push-admin-accessible-0 => rsh1_push_admin_accessible
+rest/unit/RSH1a/publish-clientid-recipient-1 => rsh1a_publish_clientid_recipient
+rest/unit/RSH1a/publish-deviceid-recipient-2 => rsh1a_publish_deviceid_recipient
+rest/unit/RSH1a/publish-post-push-publish-0 => rsh1a_publish_post_push_publish
+rest/unit/RSH1a/rejects-empty-data-4 => rsh1a_rejects_empty_data
+rest/unit/RSH1a/rejects-empty-recipient-3 => rsh1a_rejects_empty_recipient
+rest/unit/RSH1a/rejects-null-recipient-5 => rsh1a_push_publish_rejects_invalid_recipient
+rest/unit/RSH1a/server-error-propagated-6 => rsh1a_server_error_propagated
+rest/unit/RSH1b1/get-device-details-0 => rsh1b1_get_device_details
+rest/unit/RSH1b1/get-unknown-device-error-1 => rsh1b1_get_unknown_device_error
+rest/unit/RSH1b1/get-url-encodes-deviceid-2 => rsh1b1_device_get_url_encodes
+rest/unit/RSH1b2/list-filtered-by-clientid-1 => rsh1b2_list_devices_filtered
+rest/unit/RSH1b2/list-filtered-by-deviceid-0 => rsh1b2_list_devices_filtered
+rest/unit/RSH1b2/list-with-limit-param-2 => rsh1b2_device_list_sends_get
+rest/unit/RSH1b3/save-error-propagated-2 => rsh1b3_device_save_sends_put
+rest/unit/RSH1b3/save-put-device-details-0 => rsh1b3_device_save_sends_put
+rest/unit/RSH1b3/save-updates-existing-1 => rsh1b3_device_save_sends_put
+rest/unit/RSH1b4/remove-delete-device-0 => rsh1b4_device_remove_sends_delete
+rest/unit/RSH1b4/remove-nonexistent-succeeds-1 => rsh1b4_remove_nonexistent_succeeds
+rest/unit/RSH1b5/remove-where-clientid-0 => rsh1b5_remove_where_clientid
+rest/unit/RSH1b5/remove-where-deviceid-1 => rsh1b5_device_remove_where_sends_delete
+rest/unit/RSH1b5/remove-where-no-match-succeeds-2 => rsh1b5_device_remove_where_sends_delete
+rest/unit/RSH1c1/list-filtered-by-channel-0 !! push admin: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH1c1/list-filtered-by-device-client-1 !! push admin: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH1c1/list-with-limit-param-2 !! push admin: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH1c2/list-channels-paginated-0 !! push admin: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH1c2/list-channels-with-limit-1 !! push admin: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH1c3/save-error-propagated-2 !! push admin: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH1c3/save-post-subscription-0 !! push admin: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH1c3/save-updates-existing-1 !! push admin: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH1c4/remove-delete-clientid-0 !! push admin: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH1c4/remove-delete-deviceid-1 !! push admin: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH1c4/remove-nonexistent-succeeds-2 !! push admin: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH1c5/remove-where-clientid-0 !! push admin: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH1c5/remove-where-deviceid-1 !! push admin: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH1c5/remove-where-no-match-succeeds-2 !! push admin: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH7a1/subscribe-device-no-token-fails-0 !! push channels: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH7a2/subscribe-device-post-0 !! push channels: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH7b1/subscribe-client-no-clientid-fails-0 !! push channels: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH7b2/subscribe-client-post-0 !! push channels: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH7c1/unsubscribe-device-no-token-fails-0 !! push channels: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH7c2/unsubscribe-device-delete-0 !! push channels: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH7d1/unsubscribe-client-no-clientid-fails-0 !! push channels: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH7d2/unsubscribe-client-delete-0 !! push channels: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH7e/list-subscriptions-omits-clientid-1 !! push channels: LocalDevice not implemented (recorded deferral)
+rest/unit/RSH7e/list-subscriptions-with-filters-0 !! push channels: LocalDevice not implemented (recorded deferral)
+rest/unit/RSL10/annotations-attribute-type-0 => rsl10_channel_annotations_accessor
+rest/unit/RSL11a/missing-serial-error-0 => rsl11a_get_message_serial_required
+rest/unit/RSL11b/get-correct-endpoint-0 => rsl11b_get_message_sends_get
+rest/unit/RSL11b/url-encodes-serial-1 => rsl11b_url_encodes_serial
+rest/unit/RSL11c/returns-decoded-message-0 => rsl11c_get_message_returns_message
+rest/unit/RSL14a/params-as-querystring-0 => rsl14a_get_message_versions_params_as_querystring
+rest/unit/RSL14b/get-correct-endpoint-0 => rsl14b_get_message_versions_sends_get
+rest/unit/RSL14c/returns-paginated-result-0 => rsl14c_get_message_versions_returns_paginated_result
+rest/unit/RSL15a/serial-required-throws-error-0 => rsl15a_serial_required
+rest/unit/RSL15b/append-sends-patch-append-2 => rsl15b_append_message_sends_patch
+rest/unit/RSL15b/delete-sends-patch-delete-1 => rsl15b_delete_message_sends_patch
+rest/unit/RSL15b/serial-url-encoded-path-3 => rsl15b_serial_url_encoded
+rest/unit/RSL15b/update-sends-patch-update-0 => rsl15b_update_message_sends_patch
+rest/unit/RSL15b7/version-absent-no-operation-1 => rsl15b7_version_absent_without_operation
+rest/unit/RSL15b7/version-set-with-operation-0 => rsl15b7_version_set_from_operation
+rest/unit/RSL15c/no-mutate-user-message-0 => rsl15c_does_not_mutate_user_message
+rest/unit/RSL15d/body-encoded-per-rsl4-0 => rsl15d_body_encoded_per_rsl4
+rest/unit/RSL15e/null-version-serial-1 => rsl15e_null_version_serial
+rest/unit/RSL15e/returns-update-delete-result-0 => rsl15e_returns_update_delete_result
+rest/unit/RSL15f/params-sent-as-querystring-0 => rsl15f_params_sent_as_querystring
+rest/unit/RSL1a/publish-message-array-1 => rsl1a_publish_sends_post_to_messages_endpoint
+rest/unit/RSL1a/publish-name-and-data-0 => rsl1a_publish_sends_post_to_messages_endpoint
+rest/unit/RSL1e/null-name-and-data-0 => rsl1e_both_name_and_data_null
+rest/unit/RSL1h/publish-signature-0 => rsl1h_publish_name_data_sends_single_message
+rest/unit/RSL1i/message-size-limit-0 => rsl1i_message_at_size_limit_succeeds
+rest/unit/RSL1j/all-attributes-transmitted-0 => rsl1j_all_message_attributes_transmitted
+rest/unit/RSL1k/client-id-preserved-0 => rsl1k_client_supplied_id_preserved
+rest/unit/RSL1k/mixed-ids-in-batch-1 => rsl1k_mixed_client_and_library_ids
+rest/unit/RSL1k1/idempotent-default-true-0 => rsl1k1_idempotent_rest_publishing_default
+rest/unit/RSL1k2/message-id-format-0 => rsl1k2_idempotent_publish_message_id_format
+rest/unit/RSL1k2/same-id-on-retry-2 => rsl1k2_idempotent_disabled_no_auto_id
+rest/unit/RSL1k2/serial-increments-batch-1 => rsl1k2_serial_increments_batch
+rest/unit/RSL1k3/no-id-when-disabled-1 => rsl1k3_no_id_when_disabled
+rest/unit/RSL1k3/unique-base-ids-0 => rsl1k3_unique_base_ids
+rest/unit/RSL1l/params-as-querystring-0 => rsl1l_publish_params_as_querystring
+rest/unit/RSL1m/clientid-not-injected-0 => rsl1m_client_id_not_auto_injected
+rest/unit/RSL1n/publish-result-batch-serials-1 => rsl1n_publish_result_batch_serials
+rest/unit/RSL1n/publish-result-null-serial-2 => rsl1n_publish_result_null_serial
+rest/unit/RSL1n/publish-result-single-message-0 => rsl1n_publish_result_batch_serials
+rest/unit/RSL2/history-time-range-1 => rsl2_history_with_time_range
+rest/unit/RSL2/request-url-format-0 => rsl2_history_request_url
+rest/unit/RSL2a/returns-paginated-result-0 => rsl2a_history_returns_paginated_result
+rest/unit/RSL2b/query-parameters-0 => rsl2b_history_query_parameters
+rest/unit/RSL2b1/default-direction-backwards-0 => rsl2b1_default_history_direction_backwards
+rest/unit/RSL2b2/limit-parameter-0 => rsl2b2_history_limit
+rest/unit/RSL2b3/default-limit-hundred-0 => rsl2b3_default_limit
+rest/unit/RSL4/empty-array-json-encoding-5 => rsl4_empty_array_json_encoded
+rest/unit/RSL4/empty-string-no-encoding-4 => rsl4_empty_string_no_encoding
+rest/unit/RSL4/encoding-fixtures-ably-common-0 => rsl4_empty_string_no_encoding
+rest/unit/RSL4/json-protocol-content-type-2 => rsl4_json_protocol_content_type
+rest/unit/RSL4/msgpack-protocol-content-type-3 => rsl4_msgpack_protocol_content_type
+rest/unit/RSL4/null-data-no-encoding-1 => rsl4_empty_string_no_encoding
+rest/unit/RSL4a/boolean-type-rejected-2 => rsl4a_boolean_type_rejected
+rest/unit/RSL4a/number-type-rejected-1 => rsl4a_number_type_rejected
+rest/unit/RSL4a/string-data-no-encoding-0 => rsl4a_string_data_no_encoding
+rest/unit/RSL4b/json-object-encoding-0 => rsl4b_json_object_encoding
+rest/unit/RSL4c/binary-base64-json-protocol-0 => rsl4c_binary_base64_under_json
+rest/unit/RSL4c/binary-direct-msgpack-protocol-1 => rsl4c_binary_native_under_msgpack
+rest/unit/RSL4d/array-json-encoding-0 => rsl4d_array_data_json_encoding
+rest/unit/RSL6/complex-chained-encoding-3 => rsl6a_decoding_chained_json_base64
+rest/unit/RSL6/decode-utf8-base64-data-2 => rsl6_msgpack_binary_data_preserved
+rest/unit/RSL6/msgpack-binary-stays-binary-0 => rsl6_msgpack_binary_data_preserved
+rest/unit/RSL6/msgpack-string-stays-string-1 => rsl6_msgpack_string_data_preserved
+rest/unit/RSL6a/decode-base64-to-binary-0 => rsl6a_decode_base64_then_json_depth
+rest/unit/RSL6a/decode-chained-encodings-2 => rsl6a_decode_base64_then_json_depth
+rest/unit/RSL6a/decode-json-to-object-1 => rsl6a_decode_base64_then_json_depth
+rest/unit/RSL6b/unrecognized-encoding-preserved-0 => rsl6b_unrecognized_encoding_preserved
+rest/unit/RSL7/setoptions-stores-options-1 => rsl7_set_options_stores_channel_options
+rest/unit/RSL7/setoptions-updates-options-0 => rsl7_set_options_applies_cipher
+rest/unit/RSL8/status-get-correct-endpoint-0 => rsl8_status_get_correct_endpoint
+rest/unit/RSL8/status-special-chars-encoded-1 => rsl8_status_special_chars_encoded
+rest/unit/RSL8a/status-returns-channel-details-0 => rsl8a_status_returns_channel_details
+rest/unit/RSL9/channel-name-attribute-0 => rsl9_channel_name_attribute
+rest/unit/RSN1/channels-collection-accessible-0 => rsn1_channels_accessible
+rest/unit/RSN2/check-channel-exists-0 => rsn2_channel_exists_check
+rest/unit/RSN2/iterate-channels-1 => rsn2_iterate_through_channels
+rest/unit/RSN3a/get-after-release-new-instance-3 => rsn3a_get_after_release
+rest/unit/RSN3a/get-creates-new-channel-0 => rsn3a_get_creates_channel
+rest/unit/RSN3a/get-returns-existing-channel-1 => rsn3a_get_creates_channel
+rest/unit/RSN3a/subscript-creates-or-returns-2 => rsn3a_get_creates_channel
+rest/unit/RSN4a/release-removes-channel-0 => rsn4a_get_channel_by_name
+rest/unit/RSN4b/release-nonexistent-noop-0 => rsn4b_get_nonexistent_channel
+rest/unit/RSP1a/presence-channel-attribute-0 => rsp1a_presence_accessible_via_channel
+rest/unit/RSP1b/same-instance-returned-0 !! n/a in Rust: presence() returns a value-type accessor, instance identity is not observable
+rest/unit/RSP3/get-channel-not-found-4 => rsp3_get_presence_members
+rest/unit/RSP3/get-multiple-filters-0 => rsp3_presence_get_with_multiple_filters
+rest/unit/RSP3/get-pagination-link-header-1 => rsp3_full_pagination_through_members
+rest/unit/RSP3/get-pagination-next-page-2 => rsp3_full_pagination_through_members
+rest/unit/RSP3/get-request-id-enabled-6 => rsp3_get_presence_members
+rest/unit/RSP3/get-server-error-3 => rsp3_get_presence_members
+rest/unit/RSP3/get-standard-headers-5 => rsp3_get_presence_members
+rest/unit/RSP3a/get-request-endpoint-0 => rsp3a_presence_get_sends_get_to_presence_endpoint
+rest/unit/RSP3a1/get-limit-default-100-1 => rsp3a1_get_limit_query_param
+rest/unit/RSP3a1/get-limit-max-1000-2 => rsp3a1_get_limit_query_param
+rest/unit/RSP3a1/get-limit-parameter-0 => rsp3a1_get_limit_query_param
+rest/unit/RSP3a2/get-clientid-filter-0 => rsp3a2_get_with_client_id_filter
+rest/unit/RSP3a3/get-connectionid-filter-0 => rsp3a3_presence_get_with_connection_id_filter
+rest/unit/RSP3b/get-returns-presence-messages-0 => rsp3b_presence_get_returns_presence_messages
+rest/unit/RSP3c/get-empty-members-0 => rsp3c_presence_get_empty_returns_empty_list
+rest/unit/RSP4/history-all-parameters-0 => rsp4_history_with_all_params
+rest/unit/RSP4/history-auth-error-2 => rsp4_history_auth_header
+rest/unit/RSP4/history-auth-header-3 => rsp4_history_auth_header
+rest/unit/RSP4/history-pagination-1 => rsp4_history_auth_header
+rest/unit/RSP4a/history-request-endpoint-0 => rsp4a_presence_history_endpoint
+rest/unit/RSP4a/history-returns-paginated-1 => rsp4a_presence_history_returns_action_types
+rest/unit/RSP4b1/history-datetime-objects-3 => rsp4b1_history_start_param_depth
+rest/unit/RSP4b1/history-end-parameter-1 => rsp4b1_history_start_param_depth
+rest/unit/RSP4b1/history-start-end-params-2 => rsp4b1_history_start_param_depth
+rest/unit/RSP4b1/history-start-parameter-0 => rsp4b1_history_start_param_depth
+rest/unit/RSP4b2/history-direction-backwards-default-0 => rsp4b2_history_end_param_depth
+rest/unit/RSP4b2/history-direction-backwards-explicit-2 => rsp4b2_history_end_param_depth
+rest/unit/RSP4b2/history-direction-forwards-1 => rsp4b2_history_end_param_depth
+rest/unit/RSP4b3/history-limit-default-100-1 => rsp4b3_history_backwards_param_depth
+rest/unit/RSP4b3/history-limit-max-1000-2 => rsp4b3_history_backwards_param_depth
+rest/unit/RSP4b3/history-limit-parameter-0 => rsp4b3_history_backwards_param_depth
+rest/unit/RSP5/decode-base64-binary-2 => rsp5_decode_base64_presence_data
+rest/unit/RSP5/decode-chained-encoding-5 => rsp5_decode_base64_presence_data
+rest/unit/RSP5/decode-cipher-channel-7 => rsp5_decode_base64_presence_data
+rest/unit/RSP5/decode-history-messages-6 => rsp5_decode_base64_presence_data
+rest/unit/RSP5/decode-json-data-1 => rsp5_decode_json_presence_data
+rest/unit/RSP5/decode-msgpack-binary-3 => rsp5_presence_msgpack_binary_data_preserved
+rest/unit/RSP5/decode-string-data-0 => rsp5_decode_base64_presence_data
+rest/unit/RSP5/decode-utf8-data-4 => rsp5_decode_utf8_presence_data
+rest/unit/RSP5/presence-action-mapping-8 => rsp5_decode_base64_presence_data
+rest/unit/TAN2/annotation-attributes-and-action-0 => tan2_annotation_summary_field
+rest/unit/TD/token-details-from-json-0 => td_token_details_from_json
+rest/unit/TD1/token-details-attributes-0 => td1_token_details_attributes
+rest/unit/TE/token-request-from-json-2 => te_token_request_json_round_trip_depth
+rest/unit/TE/token-request-mac-signature-0 => te_token_request_json_round_trip_depth
+rest/unit/TE/token-request-to-json-1 => te_token_request_to_json
+rest/unit/TE1/token-request-attributes-0 => te1_token_request_attributes
+rest/unit/TG/empty-result-handling-0 => tg_empty_paginated_result
+rest/unit/TG/error-handling-on-next-9 => tg_error_handling_on_next
+rest/unit/TG/link-header-parsing-1 => tg2_pagination_with_link_header
+rest/unit/TG/multiple-link-relations-6 => tg_multiple_link_relations
+rest/unit/TG/next-on-last-page-3 => tg_next_on_last_page
+rest/unit/TG/pagination-includes-headers-8 => tg_pagination_preserves_auth
+rest/unit/TG/pagination-presence-results-7 => tg_pagination_preserves_auth
+rest/unit/TG/pagination-preserves-auth-4 => tg_pagination_preserves_auth
+rest/unit/TG/pagination-relative-urls-5 => tg_pagination_preserves_auth
+rest/unit/TG/type-parameter-items-2 => tg1_tg2_paginated_result_items_and_navigation
+rest/unit/TG1/paginated-result-items-0 => tg1_paginated_result_items
+rest/unit/TG2/has-next-is-last-0 => tg2_has_next_is_last
+rest/unit/TG3/next-fetches-next-page-0 => tg3_next_on_last_page_returns_null
+rest/unit/TG4/first-returns-first-page-0 => tg4_first_returns_first_page
+rest/unit/TI/ably-exception-wraps-errorinfo-2 => ti_errorinfo_from_json
+rest/unit/TI/common-error-codes-3 => ti_common_error_codes
+rest/unit/TI/error-equality-5 => ti_common_error_codes
+rest/unit/TI/error-string-representation-4 => ti_error_string_representation
+rest/unit/TI/errorinfo-from-json-0 => ti_errorinfo_from_json
+rest/unit/TI/errorinfo-nested-cause-1 => ti_errorinfo_from_json
+rest/unit/TI1/errorinfo-attributes-0 => ti1_errorinfo_has_code
+rest/unit/TK/token-params-to-query-string-0 => tk_token_params_custom_nonce_depth
+rest/unit/TK1/token-params-attributes-0 => tk1_token_params_attributes
+rest/unit/TM/message-with-extras-1 => tm_message_all_fields_set
+rest/unit/TM/null-missing-attributes-0 => tm_null_attributes_omitted
+rest/unit/TM2a/message-attributes-0 => tm2a_channel_message_id_attribute
+rest/unit/TM2j/action-and-serial-fields-0 => tm2j_tm2r_message_action_serial_fields
+rest/unit/TM2s/version-populated-from-wire-0 => tm2s_message_version_populated
+rest/unit/TM2s1/version-defaults-from-message-0 !! version defaulting deferred (recorded; ignored test exists)
+rest/unit/TM2u/annotations-defaults-empty-0 => tm2u_tm8a_message_annotations_default
+rest/unit/TM3/from-encoded-decodes-encoding-1 => tm3_from_encoded_all_fields
+rest/unit/TM3/from-encoded-deserialization-0 => tm3_from_encoded_all_fields
+rest/unit/TM4/message-constructors-0 => tm4_message_constructor_name_data
+rest/unit/TM5/message-action-enum-values-0 => tm5_message_action_values
+rest/unit/TO/conflicting-options-validation-1 => to_client_options_max_retry_count_depth
+rest/unit/TO/endpoint-affects-host-0 => to_endpoint_affects_host
+rest/unit/TO3/client-options-attributes-0 => to3_client_options_custom_hosts
+rest/unit/TO3/client-options-auth-url-2 => to3_client_options_custom_hosts
+rest/unit/TO3/client-options-custom-hosts-1 => to3_client_options_custom_hosts
+rest/unit/TO3/client-options-default-token-params-3 => to3_client_options_custom_hosts
+rest/unit/TO3b/log-level-changeable-0 => to3b_log_level_changeable
+rest/unit/TO3c/custom-handler-structured-events-0 => to3c_custom_handler_receives_events
+rest/unit/TO3c2/context-contains-expected-keys-0 => to3c2_log_context_keys
+rest/unit/TP2/presence-action-enum-values-0 => tp2_presence_action_enum_values
+rest/unit/TP3/null-attributes-omitted-3 => tp3_presence_null_attributes_omitted
+rest/unit/TP3/presence-encoded-data-from-json-1 => tp3_presence_message_from_json
+rest/unit/TP3/presence-from-json-0 => tp3_presence_message_from_json
+rest/unit/TP3/presence-to-json-2 => tp3_presence_message_to_json
+rest/unit/TP3a/id-from-protocol-message-1 => tp3a_presence_message_id_from_json
+rest/unit/TP3a/presence-message-attributes-0 => tp3a_presence_message_id_attribute
+rest/unit/TP3d/connectionid-from-protocol-message-0 => tp3d_presence_message_connection_id
+rest/unit/TP3g/timestamp-from-protocol-message-0 => tp3g_presence_message_timestamp_from_json
+rest/unit/TP3h/member-key-combines-ids-0 => tp3h_member_key
+rest/unit/TP4/from-encoded-presence-0 => tp4_presence_message_from_json
+rest/unit/TP5/presence-message-size-0 !! PresenceMessage::size() deferred (recorded; ignored test exists)
+rest/unit/TRF2/failure-result-attributes-0 => trf2_failure_result_attributes
+rest/unit/TRS2/success-result-attributes-0 => trs2_success_result_attributes
+rest/unit/UDR2a/update-delete-result-fields-0 => udr2a_update_delete_result_fields

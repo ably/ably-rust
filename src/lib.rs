@@ -63,6 +63,8 @@ mod tests_proxy;
 // Design conformance ratchet (DESIGN.md Realtime §14)
 #[cfg(test)]
 mod tests_design_conformance;
+#[cfg(test)]
+mod tests_uts_coverage;
 
 // Realtime unit tests (UTS-derived, stage 5.1+)
 #[cfg(test)]

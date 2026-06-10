@@ -1278,7 +1278,7 @@ async fn rtn12b_close_times_out_without_closed() {
     assert!(await_state(&client.connection, ConnectionState::Closed, 10000).await);
 }
 
-// RTN2b: echo=false is sent when echoMessages is disabled, absent otherwise
+// RTC1a/RTN2b: echo=true by default, echo=false when echoMessages disabled
 #[tokio::test]
 async fn rtn2b_echo_param() {
     let urls: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
@@ -1302,7 +1302,7 @@ async fn rtn2b_echo_param() {
     assert!(await_state(&c2.connection, ConnectionState::Connected, 5000).await);
 
     let urls = urls.lock().unwrap();
-    assert!(!urls[0].contains("echo="), "default: no echo param, got {}", urls[0]);
+    assert!(urls[0].contains("echo=true"), "RTC1a: echo=true by default, got {}", urls[0]);
     assert!(urls[1].contains("echo=false"), "echo=false when disabled, got {}", urls[1]);
     c1.close();
     c2.close();
@@ -1392,7 +1392,11 @@ async fn rtc8_authorize_reauths_in_place() {
     client.connect();
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
 
-    let td = client.auth().authorize().await.expect("authorize");
+    // RTC8a3: authorize resolves only once the server confirms the AUTH
+    let auth = client.auth();
+    let authorize = tokio::spawn(async move { auth.authorize().await });
+    answer_next_auth(&mock, "key-2").await;
+    let td = authorize.await.unwrap().expect("authorize");
     assert_eq!(td.token, "token-2");
 
     // The new token went out as an AUTH protocol message
@@ -1434,4 +1438,632 @@ async fn rtn17_host_reported_when_connected() {
         Some("main.realtime.ably.net")
     );
     client.close();
+}
+
+// ============================================================================
+// RTN13d — deferred pings (UTS connection_ping_test.md)
+// ============================================================================
+
+// UTS: realtime/unit/RTN13d/ping-deferred-connecting-0
+#[tokio::test]
+async fn rtn13d_ping_deferred_while_connecting_runs_on_connected() {
+    let gate: Arc<StdMutex<Option<crate::mock_ws::PendingConnection>>> =
+        Arc::new(StdMutex::new(None));
+    let gate_c = gate.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        *gate_c.lock().unwrap() = Some(conn);
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+    client.connect();
+    tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+    assert_eq!(client.connection.state(), ConnectionState::Connecting);
+
+    let conn_handle = client.connection.clone();
+    let ping = tokio::spawn(async move { conn_handle.ping().await });
+    tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+    // RTN13d: nothing sent while CONNECTING
+    assert!(mock.client_messages().is_empty());
+    assert!(!ping.is_finished());
+
+    // Complete the connection: the deferred ping goes out
+    let pending = gate.lock().unwrap().take().expect("parked attempt");
+    let conn = pending.respond_with_success(connected_msg("id", "key"));
+    let hb = mock.await_message_from_client().await;
+    assert_eq!(hb.action, crate::protocol::action::HEARTBEAT);
+    let mut reply = ProtocolMessage::new(crate::protocol::action::HEARTBEAT);
+    reply.id = hb.id.clone();
+    conn.send_to_client(reply);
+
+    let rtt = ping.await.unwrap().expect("deferred ping resolves");
+    assert!(rtt >= std::time::Duration::ZERO);
+}
+
+// UTS: realtime/unit/RTN13d/ping-deferred-disconnected-1
+#[tokio::test]
+async fn rtn13d_ping_deferred_while_disconnected_runs_on_reconnect() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_connection();
+        c.send_to_client(connected_msg("id", "key"));
+        std::mem::forget(c);
+    });
+    let client = client_with(
+        &mock,
+        default_opts()
+            .auto_connect(false)
+            .disconnected_retry_timeout(std::time::Duration::from_millis(50)),
+    );
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+    await_connection_count(&mock, 1, 5000).await;
+
+    // Drop the transport, then ping during the gap before reconnection
+    mock.active_connection().simulate_disconnect();
+    let conn_handle = client.connection.clone();
+    let ping = tokio::spawn(async move { conn_handle.ping().await });
+
+    // The reconnect completes and the deferred ping goes out
+    await_connection_count(&mock, 2, 5000).await;
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    let hb = loop {
+        if let Some(m) = mock
+            .client_messages()
+            .into_iter()
+            .find(|m| m.action == crate::protocol::action::HEARTBEAT)
+        {
+            break m;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no deferred HEARTBEAT");
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    };
+    let mut reply = ProtocolMessage::new(crate::protocol::action::HEARTBEAT);
+    reply.id = hb.message.id.clone();
+    mock.active_connection().send_to_client(reply);
+    let rtt = ping.await.unwrap().expect("deferred ping resolves after reconnect");
+    assert!(rtt >= std::time::Duration::ZERO);
+}
+
+// UTS: realtime/unit/RTN13b/deferred-ping-error-failed-4
+#[tokio::test]
+async fn rtn13b_deferred_ping_fails_on_failed() {
+    let gate: Arc<StdMutex<Option<crate::mock_ws::PendingConnection>>> =
+        Arc::new(StdMutex::new(None));
+    let gate_c = gate.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        *gate_c.lock().unwrap() = Some(conn);
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+    client.connect();
+    tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+    let conn_handle = client.connection.clone();
+    let ping = tokio::spawn(async move { conn_handle.ping().await });
+    tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+    // The attempt resolves to a fatal ERROR instead of CONNECTED
+    let mut err_msg = ProtocolMessage::new(crate::protocol::action::ERROR);
+    err_msg.error = Some(ErrorInfo::with_status(40400, 404, "Fatal error"));
+    gate.lock().unwrap().take().unwrap().respond_with_error(err_msg);
+    assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+
+    let err = ping.await.unwrap().expect_err("deferred ping fails on FAILED");
+    assert_eq!(err.code, Some(40400));
+}
+
+// UTS: realtime/unit/RTN13b/deferred-ping-error-suspended-5
+#[tokio::test(start_paused = true)]
+async fn rtn13b_deferred_ping_fails_on_suspended() {
+    let mock = MockWebSocket::with_handler(|conn| conn.respond_with_refused());
+    let client = client_with(
+        &mock,
+        default_opts()
+            .auto_connect(false)
+            .fallback_hosts(vec![])
+            .disconnected_retry_timeout(std::time::Duration::from_secs(1))
+            .connection_state_ttl(std::time::Duration::from_secs(5)),
+    );
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
+
+    let conn_handle = client.connection.clone();
+    let ping = tokio::spawn(async move { conn_handle.ping().await });
+    tokio::task::yield_now().await;
+
+    assert!(await_state(&client.connection, ConnectionState::Suspended, 60000).await);
+    let err = ping.await.unwrap().expect_err("deferred ping fails on SUSPENDED");
+    assert!(err.message.unwrap_or_default().to_lowercase().contains("suspended"));
+}
+
+// UTS: realtime/unit/RTN13c/deferred-ping-timeout-1 — the timeout runs from
+// when the HEARTBEAT is sent (on CONNECTED), not from the ping() call
+#[tokio::test(start_paused = true)]
+async fn rtn13c_deferred_ping_times_out_after_send() {
+    let gate: Arc<StdMutex<Option<crate::mock_ws::PendingConnection>>> =
+        Arc::new(StdMutex::new(None));
+    let gate_c = gate.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        *gate_c.lock().unwrap() = Some(conn);
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+    client.connect();
+    tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+    let conn_handle = client.connection.clone();
+    let ping = tokio::spawn(async move { conn_handle.ping().await });
+    tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+    // Connect; the server never answers the HEARTBEAT
+    let pending = gate.lock().unwrap().take().unwrap();
+    let _conn = pending.respond_with_success(connected_msg("id", "key"));
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    let err = ping.await.unwrap().expect_err("deferred ping must time out");
+    assert!(err
+        .message
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains("timed out"));
+}
+
+// ============================================================================
+// RTC8 — authorize() (UTS realtime/unit/auth/realtime_authorize.md)
+// ============================================================================
+
+/// A connected token client whose mock answers every AUTH with a fresh
+/// CONNECTED (successful in-band reauth).
+fn auth_confirming_mock() -> MockWebSocket {
+    MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_connection();
+        c.send_to_client(connected_msg("conn-id", "conn-key"));
+        std::mem::forget(c);
+    })
+}
+
+async fn answer_next_auth(mock: &MockWebSocket, key: &str) {
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    loop {
+        if mock
+            .client_messages()
+            .iter()
+            .any(|m| m.action == action::AUTH)
+        {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no AUTH observed");
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+    }
+    mock.active_connection()
+        .send_to_client(connected_msg("conn-id", key));
+}
+
+// UTS: realtime/unit/RTC8a/authorize-connected-sends-auth-0
+#[tokio::test]
+async fn rtc8a_authorize_connected_sends_auth() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let mock = auth_confirming_mock();
+    let client = token_client(&mock, count.clone());
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+
+    let mut events = client.connection.on_state_change();
+    let auth = client.auth();
+    let authorize = tokio::spawn(async move { auth.authorize().await });
+    answer_next_auth(&mock, "conn-key-2").await;
+    let td = authorize.await.unwrap().expect("authorize resolves");
+
+    // The callback ran twice and the AUTH carried the new token
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+    assert_eq!(td.token, "token-2");
+    let auth_msgs: Vec<_> = mock
+        .client_messages()
+        .into_iter()
+        .filter(|m| m.action == action::AUTH)
+        .collect();
+    assert_eq!(auth_msgs.len(), 1);
+    assert_eq!(
+        auth_msgs[0].message.auth.as_ref().unwrap()["accessToken"],
+        "token-2"
+    );
+
+    // No state transitions occurred (UPDATE only)
+    assert_eq!(client.connection.state(), ConnectionState::Connected);
+    while let Ok(change) = events.try_recv() {
+        assert_eq!(change.previous, change.current, "no state transition");
+    }
+}
+
+// UTS: realtime/unit/RTC8a1/successful-reauth-update-event-0
+#[tokio::test]
+async fn rtc8a1_successful_reauth_update_event() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let mock = auth_confirming_mock();
+    let client = token_client(&mock, count.clone());
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    let mut events = client.connection.on_state_change();
+    let auth = client.auth();
+    let authorize = tokio::spawn(async move { auth.authorize().await });
+    answer_next_auth(&mock, "conn-key-2").await;
+    authorize.await.unwrap().expect("authorize resolves");
+
+    // Exactly one UPDATE, no CONNECTED state event; details refreshed
+    let mut updates = 0;
+    while let Ok(change) = events.try_recv() {
+        assert_eq!(change.event, crate::protocol::ConnectionEvent::Update, "RTN4h: UPDATE only");
+        assert_eq!(change.previous, ConnectionState::Connected);
+        assert_eq!(change.current, ConnectionState::Connected);
+        updates += 1;
+    }
+    assert_eq!(updates, 1);
+    assert_eq!(client.connection.key().as_deref(), Some("conn-key-2"), "RTN21");
+}
+
+// UTS: realtime/unit/RTC8a1/capability-downgrade-channel-failed-1
+#[tokio::test]
+async fn rtc8a1_capability_downgrade_channel_failed() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let mock = auth_confirming_mock();
+    let client = token_client(&mock, count.clone());
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    // Attach a channel
+    let ch = client.channels.get("private-channel");
+    let ch2 = ch.clone();
+    let attach = tokio::spawn(async move { ch2.attach().await });
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
+    loop {
+        if mock.client_messages().iter().any(|m| m.action == action::ATTACH) {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+    }
+    let mut attached = ProtocolMessage::new(action::ATTACHED);
+    attached.channel = Some("private-channel".to_string());
+    mock.active_connection().send_to_client(attached);
+    attach.await.unwrap().unwrap();
+
+    // Reauth succeeds at the connection level...
+    let auth = client.auth();
+    let authorize = tokio::spawn(async move { auth.authorize().await });
+    answer_next_auth(&mock, "conn-key-2").await;
+    authorize.await.unwrap().expect("authorize resolves");
+
+    // ...then the downgraded capability fails the channel
+    let mut chan_err = ProtocolMessage::new(action::ERROR);
+    chan_err.channel = Some("private-channel".to_string());
+    chan_err.error = Some(ErrorInfo::with_status(40160, 401, "Capability downgrade"));
+    mock.active_connection().send_to_client(chan_err);
+
+    assert!(
+        crate::realtime::await_channel_state(
+            &ch,
+            crate::protocol::ChannelState::Failed,
+            5000
+        )
+        .await
+    );
+    assert_eq!(ch.error_reason().and_then(|e| e.code), Some(40160));
+    assert_eq!(
+        client.connection.state(),
+        ConnectionState::Connected,
+        "the connection itself stays CONNECTED"
+    );
+}
+
+// UTS: realtime/unit/RTC8a2/failed-reauth-connection-failed-0
+#[tokio::test]
+async fn rtc8a2_failed_reauth_connection_failed() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let mock = auth_confirming_mock();
+    let client = token_client(&mock, count.clone());
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    let auth = client.auth();
+    let authorize = tokio::spawn(async move { auth.authorize().await });
+    // The server refuses the new token: connection-level ERROR
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    loop {
+        if mock.client_messages().iter().any(|m| m.action == action::AUTH) {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+    }
+    let mut err_msg = ProtocolMessage::new(action::ERROR);
+    err_msg.error = Some(ErrorInfo::with_status(40101, 401, "Incompatible clientId"));
+    mock.active_connection().send_to_client_and_close(err_msg);
+
+    assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+    let err = authorize.await.unwrap().expect_err("authorize fails");
+    assert_eq!(err.code, Some(40101));
+}
+
+// UTS: realtime/unit/RTC8a3/authorize-completes-after-response-0
+#[tokio::test]
+async fn rtc8a3_authorize_completes_after_response() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let mock = auth_confirming_mock();
+    let client = token_client(&mock, count.clone());
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    let auth = client.auth();
+    let authorize = tokio::spawn(async move { auth.authorize().await });
+    // The AUTH is on the wire but unanswered: authorize must not resolve
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    loop {
+        if mock.client_messages().iter().any(|m| m.action == action::AUTH) {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    assert!(!authorize.is_finished(), "RTC8a3: not before the server responds");
+
+    mock.active_connection().send_to_client(connected_msg("conn-id", "conn-key-2"));
+    let td = authorize.await.unwrap().expect("resolves after CONNECTED");
+    assert_eq!(td.token, "token-2");
+}
+
+// UTS: realtime/unit/RTC8b/authorize-connecting-halts-attempt-0
+#[tokio::test]
+async fn rtc8b_authorize_connecting_halts_attempt() {
+    let count = Arc::new(AtomicUsize::new(0));
+    // Park the FIRST attempt forever; answer subsequent attempts
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_c = attempts.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        if attempts_c.fetch_add(1, Ordering::SeqCst) == 0 {
+            std::mem::forget(conn); // parked: never completes
+        } else {
+            let c = conn.respond_with_connection();
+            c.send_to_client(connected_msg("conn-id", "conn-key"));
+            std::mem::forget(c);
+        }
+    });
+    let client = token_client(&mock, count.clone());
+    client.connect();
+    tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+    assert_eq!(client.connection.state(), ConnectionState::Connecting);
+
+    let td = client.auth().authorize().await.expect("authorize resolves");
+    assert_eq!(td.token, "token-2");
+    assert_eq!(client.connection.state(), ConnectionState::Connected);
+    assert_eq!(count.load(Ordering::SeqCst), 2, "two token acquisitions");
+    assert_eq!(mock.connection_count(), 2, "RTC8b: a fresh attempt was made");
+}
+
+// UTS: realtime/unit/RTC8b1/authorize-connecting-fails-on-failed-0
+#[tokio::test]
+async fn rtc8b1_authorize_connecting_fails_on_failed() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_c = attempts.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        if attempts_c.fetch_add(1, Ordering::SeqCst) == 0 {
+            std::mem::forget(conn);
+        } else {
+            // The reconnect with the new token is fatally refused
+            let mut err = ProtocolMessage::new(action::ERROR);
+            err.error = Some(ErrorInfo::with_status(40101, 401, "Invalid credentials"));
+            conn.respond_with_error(err);
+        }
+    });
+    let client = token_client(&mock, count.clone());
+    client.connect();
+    tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+
+    let err = client.auth().authorize().await.expect_err("authorize fails");
+    assert_eq!(err.code, Some(40101));
+    assert_eq!(client.connection.state(), ConnectionState::Failed);
+}
+
+// UTS: realtime/unit/RTC8c/authorize-disconnected-initiates-connection-0
+// (from INITIALIZED, per the spec's setup)
+#[tokio::test]
+async fn rtc8c_authorize_from_initialized_initiates_connection() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let mock = auth_confirming_mock();
+    let client = token_client(&mock, count.clone());
+    assert_eq!(client.connection.state(), ConnectionState::Initialized);
+
+    let mut events = client.connection.on_state_change();
+    let td = client.auth().authorize().await.expect("authorize connects");
+    assert_eq!(td.token, "token-1");
+    assert_eq!(client.connection.state(), ConnectionState::Connected);
+
+    let mut seen = Vec::new();
+    while let Ok(change) = events.try_recv() {
+        seen.push(change.current);
+    }
+    assert_eq!(
+        seen,
+        vec![ConnectionState::Connecting, ConnectionState::Connected],
+        "RTC8c: connecting then connected"
+    );
+}
+
+// UTS: realtime/unit/RTC8c/authorize-failed-initiates-connection-1
+#[tokio::test]
+async fn rtc8c_authorize_from_failed_recovers() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_c = attempts.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        if attempts_c.fetch_add(1, Ordering::SeqCst) == 0 {
+            // First attempt fails fatally
+            let mut err = ProtocolMessage::new(action::ERROR);
+            err.error = Some(ErrorInfo::with_status(40400, 404, "Fatal"));
+            conn.respond_with_error(err);
+        } else {
+            let c = conn.respond_with_connection();
+            c.send_to_client(connected_msg("conn-id", "conn-key"));
+            std::mem::forget(c);
+        }
+    });
+    let client = token_client(&mock, count.clone());
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+
+    let td = client.auth().authorize().await.expect("authorize recovers");
+    assert_eq!(td.token, "token-2");
+    assert_eq!(client.connection.state(), ConnectionState::Connected);
+}
+
+// UTS: realtime/unit/RTC8c/authorize-closed-initiates-connection-2
+#[tokio::test]
+async fn rtc8c_authorize_from_closed_reconnects() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let mock = auth_confirming_mock();
+    let client = token_client(&mock, count.clone());
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    client.close();
+    mock.active_connection().send_to_client(ProtocolMessage::new(action::CLOSED));
+    assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
+
+    let td = client.auth().authorize().await.expect("authorize reconnects");
+    assert_eq!(td.token, "token-2");
+    assert_eq!(client.connection.state(), ConnectionState::Connected);
+}
+
+// ============================================================================
+// Forwards compatibility / misc backfill (coverage audit, 2026-06-10)
+// ============================================================================
+
+// UTS: realtime/unit/RTF1/unknown-action-handled-1
+#[tokio::test]
+async fn rtf1_unknown_action_ignored() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_connection();
+        c.send_to_client(connected_msg("id", "key"));
+        std::mem::forget(c);
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+    let mut events = client.connection.on_state_change();
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    // A protocol message from the future: unknown action value
+    let mut unknown = ProtocolMessage::new(254);
+    unknown.channel = Some("whatever".to_string());
+    mock.active_connection().send_to_client(unknown);
+    // Liveness probe: a heartbeat still round-trips afterwards
+    mock.active_connection().send_to_client(ProtocolMessage::new(action::HEARTBEAT));
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    assert_eq!(client.connection.state(), ConnectionState::Connected);
+    while let Ok(change) = events.try_recv() {
+        assert!(
+            !matches!(
+                change.current,
+                ConnectionState::Disconnected | ConnectionState::Failed
+            ),
+            "RTF1: unknown action must not disturb the connection"
+        );
+    }
+}
+
+// UTS: realtime/unit/RTN22a/forced-disconnect-reauth-failure-0
+#[tokio::test]
+async fn rtn22a_forced_disconnect_carries_reason() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_connection();
+        c.send_to_client(connected_msg("id", "key"));
+        std::mem::forget(c);
+    });
+    let tokens = Arc::new(AtomicUsize::new(0));
+    let client = token_client(&mock, tokens.clone());
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    // Subscribe BEFORE the disconnect: the DISCONNECTED state is transient
+    // (the client renews and reconnects), so the event stream is the witness
+    let mut events = client.connection.on_state_change();
+    let mut msg = ProtocolMessage::new(action::DISCONNECTED);
+    msg.error = Some(ErrorInfo::with_status(40142, 401, "Token expired"));
+    mock.active_connection().send_to_client(msg);
+
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+    loop {
+        let change = tokio::time::timeout_at(deadline, events.recv())
+            .await
+            .expect("DISCONNECTED change must arrive")
+            .expect("stream open");
+        if change.current == ConnectionState::Disconnected {
+            assert_eq!(
+                change.reason.and_then(|e| e.code),
+                Some(40142),
+                "RTN22a: the forced disconnect carries the token error"
+            );
+            break;
+        }
+    }
+    // ...and the client recovers with a renewed token
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+    assert!(tokens.load(Ordering::SeqCst) >= 2, "token was renewed");
+}
+
+// UTS: realtime/unit/RSA4f/callback-oversized-token-format-1
+#[tokio::test]
+async fn rsa4f_oversized_token_disconnects() {
+    struct OversizedCb;
+    impl AuthCallback for OversizedCb {
+        fn token<'a>(
+            &'a self,
+            _params: &'a TokenParams,
+        ) -> std::pin::Pin<
+            Box<dyn Send + futures::Future<Output = crate::error::Result<AuthToken>> + 'a>,
+        > {
+            Box::pin(async move { Ok(AuthToken::Token("x".repeat(200 * 1024))) })
+        }
+    }
+    let mock = MockWebSocket::new();
+    let opts = ClientOptions::with_auth_callback(Arc::new(OversizedCb))
+        .auto_connect(false)
+        .fallback_hosts(vec![]);
+    let client = client_with(&mock, opts);
+    client.connect();
+
+    assert!(
+        await_state(&client.connection, ConnectionState::Disconnected, 5000).await,
+        "RSA4f: oversized token leaves the connection DISCONNECTED"
+    );
+    let err = client.connection.error_reason().expect("errorReason set");
+    assert_eq!(err.code, Some(80019));
+    assert_eq!(err.status_code, Some(401));
+    assert_eq!(mock.connection_count(), 0, "nothing was dialed");
+}
+
+// UTS: realtime/unit/RSA4a1/non-renewable-token-logs-warning-0
+#[tokio::test]
+async fn rsa4a1_non_renewable_token_logs_warning() {
+    let lines: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+    let lines_c = lines.clone();
+    let mock = MockWebSocket::new();
+    let transport = Arc::new(MockTransport::new(mock.inner()));
+    let opts = ClientOptions::with_token("non-renewable-token")
+        .auto_connect(false)
+        .log_level(crate::options::LogLevel::Major)
+        .log_handler(move |_level, msg| {
+            lines_c.lock().unwrap().push(msg.to_string());
+        });
+    let _client = Realtime::with_mock(&opts, transport).unwrap();
+
+    let lines = lines.lock().unwrap();
+    assert!(
+        lines.iter().any(|l| l.contains("40171")),
+        "RSA4a1: a warning mentioning 40171, got {:?}",
+        *lines
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("https://help.ably.io/error/40171")),
+        "RSA4a1: the help URL is included"
+    );
 }
