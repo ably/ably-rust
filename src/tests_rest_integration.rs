@@ -2029,35 +2029,35 @@ async fn rsa17c_mixed_success_failure() {
 
 // UTS: rest/integration/RSL11/get-message-by-serial-0
 #[tokio::test]
-#[ignore = "publish returns no serials; mutable namespace not in test-app-setup"]
+#[ignore = "mutable namespace (mutableMessages: true) not in ably-common test-app-setup.json"]
 async fn rsl11_get_message() {
     todo!()
 }
 
 // UTS: rest/integration/RSL15/update-message-0
 #[tokio::test]
-#[ignore = "publish returns no serials; mutable namespace not in test-app-setup"]
+#[ignore = "mutable namespace (mutableMessages: true) not in ably-common test-app-setup.json"]
 async fn rsl15_update_message() {
     todo!()
 }
 
 // UTS: rest/integration/RSL15/delete-message-1
 #[tokio::test]
-#[ignore = "publish returns no serials; mutable namespace not in test-app-setup"]
+#[ignore = "mutable namespace (mutableMessages: true) not in ably-common test-app-setup.json"]
 async fn rsl15_delete_message() {
     todo!()
 }
 
 // UTS: rest/integration/RSL15/append-message-2
 #[tokio::test]
-#[ignore = "publish returns no serials; mutable namespace not in test-app-setup"]
+#[ignore = "mutable namespace (mutableMessages: true) not in ably-common test-app-setup.json"]
 async fn rsl15_append_message() {
     todo!()
 }
 
 // UTS: rest/integration/RSL14/get-message-versions-0
 #[tokio::test]
-#[ignore = "publish returns no serials; mutable namespace not in test-app-setup"]
+#[ignore = "mutable namespace (mutableMessages: true) not in ably-common test-app-setup.json"]
 async fn rsl14_get_message_versions() {
     todo!()
 }
@@ -2066,14 +2066,14 @@ async fn rsl14_get_message_versions() {
 
 // UTS: rest/integration/RSAN1/annotation-lifecycle-0
 #[tokio::test]
-#[ignore = "publish returns no serials; mutable namespace not in test-app-setup"]
+#[ignore = "mutable namespace (mutableMessages: true) not in ably-common test-app-setup.json"]
 async fn rsan1_rsan2_annotations_lifecycle() {
     todo!()
 }
 
 // UTS: rest/integration/RSAN3/get-annotations-paginated-0
 #[tokio::test]
-#[ignore = "publish returns no serials; mutable namespace not in test-app-setup"]
+#[ignore = "mutable namespace (mutableMessages: true) not in ably-common test-app-setup.json"]
 async fn rsan3_get_annotations() {
     todo!()
 }
