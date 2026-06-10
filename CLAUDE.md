@@ -58,3 +58,28 @@ See `DESIGN.md` for the API surface and the plan in `.claude/plans/noble-strolli
 - One `Message` type shared by REST and Realtime
 - Builder pattern for publish (both REST and Realtime)
 - MessagePack is the default format; JSON is opt-in via `use_binary_protocol(false)`
+
+## Realtime design contract (BINDING — see DESIGN.md "Realtime State & Concurrency")
+
+These are requirements, not guidance. They apply to ALL realtime work (Phase 5+):
+
+1. **One connection loop owns ALL mutable protocol state** (connection state
+   machine, channels, presence, ACKs, queues, timers) as plain owned data.
+   **No locks on protocol state, ever.** Handles interact with the loop only via
+   the LoopInput mpsc, oneshot replies, watch snapshots, and broadcast events.
+2. **Complete allowed lock inventory**: the `Channels` handle registry Mutex,
+   plus the two REST locks (auth_state, fallback_state). Nothing else.
+   `tests_design_conformance.rs` enforces this on every `cargo test` — if it
+   fails, STOP and read its message; never weaken or bypass it. (Two stub
+   presence-map mutexes are temporarily whitelisted until stage 5.7.)
+3. **The loop never awaits I/O.** Blocking work (transport connect, token
+   acquisition, writes) happens in spawned tasks posting LoopInput back,
+   generation-tagged.
+4. **Realtime tests are derived from the UTS specs** (`uts/realtime/unit/*.md`),
+   never from old implementations. The 440 ported tests are a coverage
+   cross-check and quarry only (adopt verbatim only when they match the UTS
+   pseudo-code); each Phase 5 stage records adopted/superseded counts.
+5. **Design-change-before-code**: if an implementation step seems to need a new
+   sync primitive, shared state outside the loop, or a loop bypass, STOP. Propose
+   the change as a DESIGN.md edit and get explicit human approval BEFORE writing
+   the code. This includes anything that would dodge the conformance test.

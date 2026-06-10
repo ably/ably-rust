@@ -1336,3 +1336,365 @@ claim identity coverage.
 - `log_level(LogLevel)` + `log_handler(Fn(LogLevel, &str))`, severity-filtered
   (None suppresses all). Request logs carry method/host/path; failures log at
   Error. Structured context objects (TO3c) are deferred.
+
+---
+
+# Realtime State & Concurrency (Phase 4)
+
+This section defines how realtime state is owned, mutated, and observed. It exists
+because the previous implementation accumulated 18 mutexes on `ConnectionInner` and
+25 on `ChannelInner` with no coherent synchronisation concept. This design has
+**one concept** and derives everything from it. §14 defines how adherence is
+enforced mechanically as implementation proceeds.
+
+## 1. The single synchronisation concept: one event loop owns all state
+
+All mutable realtime state — the connection state machine, every channel's state
+machine, presence maps, pending ACKs, queued messages, timers — is owned exclusively
+by **one tokio task**, the *connection loop*. It is plain owned data (`&mut self`):
+**zero locks on any protocol state**.
+
+Nothing else can read or write that state directly. The world interacts with the
+loop through exactly four primitives:
+
+| Primitive | Direction | Used for |
+|---|---|---|
+| `mpsc::UnboundedSender<LoopInput>` | in | commands from handles, transport events, completions of spawned I/O |
+| `oneshot::Sender<Result<T>>` (carried inside commands) | out | request/response replies (attach, publish, ping, …) |
+| `tokio::sync::watch` | out | state snapshots (`ConnectionState`, per-channel `ChannelSnapshot`) |
+| `tokio::sync::broadcast` | out | ordered state-change event streams |
+
+The loop **never awaits I/O**. Anything that blocks (transport connect, token
+acquisition, transport writes) is done by short-lived spawned tasks that post their
+outcome back into the loop as a `LoopInput`. The loop's body is therefore pure,
+fast state manipulation; every input is processed to completion before the next —
+which is what makes every ordering guarantee in §10 hold by construction.
+
+```
+                 ┌────────────────────────────────────────────────┐
+ Connection ───┐ │            CONNECTION LOOP (one task)          │
+ RealtimeChannel─┤ commands │  owns: ConnectionCtx                 │
+ RealtimePresence┘ (mpsc)   │    state machine, channels map,      │
+                 │          │    presence maps, pending ACKs,      │
+ reader task ──── transport │    queues, timers                    │
+ spawned conn ─── events    │                                      │
+ token task  ──── (same     │  emits: watch snapshots, broadcast   │
+                 │  mpsc)   │  events, oneshot replies             │
+                 └──────────┴──────────────┬───────────────────────┘
+                                           │ try_send (never awaits)
+                                     writer task ──► TransportConnection
+```
+
+### The one lock that is not protocol state
+
+`Channels` (the public collection) holds `Mutex<HashMap<String, Arc<RealtimeChannel>>>`
+— a registry of *handle objects only* (name, command sender, watch receiver). It
+exists because `Channels::get/exists/names` are synchronous API. It contains no
+protocol state, is held only for map operations, and never across an await. Channel
+*state* lives in the loop. This is the entire lock inventory of the realtime client
+(plus the two existing REST locks, §13) — see §14 for how this inventory is enforced.
+
+## 2. State inventory
+
+Everything mutable, its owner, and how the outside world sees it:
+
+| State | Lives in | Written by | Observed via |
+|---|---|---|---|
+| `ConnectionState` + `ConnectionEvent` | `ConnectionCtx` | loop | `watch` snapshot + `broadcast` events |
+| connection `id`, `key`, `error_reason`, current host | `ConnectionCtx` | loop | part of connection `watch` snapshot |
+| `ConnectionDetails` (clientId, connectionStateTtl, maxIdleInterval, maxMessageSize) | `ConnectionCtx` | loop (CONNECTED) | snapshot fields where public |
+| `msg_serial` counter (RTN7b) | `ConnectionCtx` | loop | not observable |
+| pending-ACK queue (serial → oneshot repliers) | `ConnectionCtx` | loop | resolves publish/presence futures |
+| connection-wide queued messages (RTL6c2, queueMessages) | `ConnectionCtx` | loop | not observable |
+| transport generation counter (stale-transport guard) | `ConnectionCtx` | loop | not observable |
+| retry bookkeeping (attempt count, fallback host index) | `ConnectionCtx` | loop | not observable |
+| per-channel `ChannelState`, `error_reason` | `ChannelCtx` | loop | per-channel `watch` + `broadcast` |
+| per-channel options (params, modes, cipher) | `ChannelCtx` | loop | snapshot |
+| `attach_serial`, `channel_serial` (RTL15) | `ChannelCtx` | loop | snapshot |
+| message subscriber registry (id, name filter, sender) | `ChannelCtx` | loop | delivers into subscriber mpsc |
+| presence map + internal (local-member) map, sync state (RTP1/2/17) | `PresenceCtx` in `ChannelCtx` | loop | presence subscriber mpsc; `get` command replies |
+| deferred presence `get(wait_for_sync)` repliers | `PresenceCtx` | loop | replied at sync barrier |
+| pending attach/detach repliers + op timers | `ChannelCtx` | loop | resolves attach()/detach() futures |
+| all timers (§5) | `ConnectionCtx`/`ChannelCtx` | loop | not observable |
+| channel **handle** registry | `Channels` (Mutex) | `Channels::get/release` | sync API |
+| token cache / auth state | shared `Rest` (existing `AuthState` Mutex) | REST auth layer | `Auth`/`RealtimeAuth` |
+
+`ConnectionCtx` and `ChannelCtx` are plain structs with **no `pub` fields and no
+sync primitives inside**; they are moved into the loop task at construction and
+cannot be shared.
+
+## 3. Command/response protocol
+
+`LoopInput` is one enum; a single queue gives a total order over everything the
+loop reacts to:
+
+```rust
+enum LoopInput {
+    Cmd(Command),                  // from public handles
+    Transport(TransportInput),     // from reader tasks: Message(pm) | Closed(reason)
+    ConnectAttempt(Result<Box<dyn TransportConnection>>, Generation),
+    TokenReady(Result<TokenDetails>, Generation),
+}
+
+enum Command {
+    Connect,
+    Close,
+    Ping { reply: oneshot::Sender<Result<Duration>> },
+    Authorize { reply: oneshot::Sender<Result<TokenDetails>> },
+    EnsureChannel { name, snapshot_tx: watch::Sender<ChannelSnapshot>,
+                    events_tx: broadcast::Sender<ChannelStateChange> },
+    ReleaseChannel { name, reply },
+    Attach { name, reply: oneshot::Sender<Result<()>> },
+    Detach { name, reply: oneshot::Sender<Result<()>> },
+    SetChannelOptions { name, options, reply },
+    Publish { name, messages: Vec<Message>, reply: oneshot::Sender<Result<()>> },
+    Subscribe { name, filter: Option<String>,
+                sub: (SubscriptionId, mpsc::UnboundedSender<Message>) },
+    Unsubscribe { name, id: SubscriptionId },
+    PresenceAction { name, action, data, client_id, reply },  // enter/update/leave
+    PresenceGet { name, options, reply: oneshot::Sender<Result<Vec<PresenceMessage>>> },
+    PresenceSubscribe / PresenceUnsubscribe { ... },
+    AnnotationSubscribe / AnnotationUnsubscribe { ... },
+}
+```
+
+Public async methods are thin: build command + oneshot, `send`, `await` the reply.
+Command semantics per connection state follow the spec tables — e.g. `Publish`
+while CONNECTED sends immediately and registers the ACK replier; while
+CONNECTING/DISCONNECTED with `queue_messages` it joins the queue (replier retained);
+while SUSPENDED/CLOSED/FAILED it replies immediately with the spec error. Every
+command has a defined behaviour in every connection state — the match in the loop
+is exhaustive, so the compiler enforces that the table is complete.
+
+`Connect`/`Close` are fire-and-forget (per the existing API); their outcomes are
+observable via snapshots/events. Commands sent after the loop has terminated
+(client dropped) fail fast: the send error maps to an `ErrorInfo` (80017).
+
+## 4. State observation
+
+- **Snapshots**: `Connection::state()/id()/key()/error_reason()` read
+  `watch::Receiver::borrow()` — wait-free, never stale-locked, no loop round trip.
+  `RealtimeChannel::state()` etc. likewise from `ChannelSnapshot`.
+- **Events**: `on_state_change()` returns a `broadcast::Receiver` (existing API).
+  `when_state(target, cb)` spawns a tiny listener task over a receiver.
+- **Consistency contract**: the loop updates the `watch` snapshot **before**
+  emitting the corresponding `broadcast` event. A listener that reads a snapshot
+  while handling event N sees the state from transition ≥ N (never < N). Events
+  on one stream are delivered in transition order (broadcast preserves order;
+  the loop is the only sender). A lagged broadcast receiver (`RecvError::Lagged`)
+  misses intermediate *events* but the snapshot is always current — documented.
+- Snapshots are values (no torn reads by construction).
+
+## 5. Timers
+
+All timers are deadlines stored in the loop's state; the loop's `select!` waits on
+`sleep_until(earliest)` computed each iteration (O(channels) scan; fine for
+realistic counts, a heap is a drop-in optimisation if ever needed). No timer
+wheels, no timer tasks, no cancellation races: cancelling = setting the field to
+`None`, which the next loop iteration observes.
+
+| Timer | Stored | Set on | Fires → |
+|---|---|---|---|
+| connect attempt timeout (`realtime_request_timeout`) | ConnectionCtx | CONNECTING entry | attempt failed → DISCONNECTED, schedule retry |
+| disconnected retry (`disconnected_retry_timeout`, RTN14d) | ConnectionCtx | DISCONNECTED entry | → CONNECTING |
+| suspended retry (`suspended_retry_timeout`, RTN14e) | ConnectionCtx | SUSPENDED entry | → CONNECTING |
+| connection state TTL (RTN14e/RTN15a boundary) | ConnectionCtx | first DISCONNECTED | → SUSPENDED (resume no longer possible) |
+| activity timeout (maxIdleInterval + realtime_request_timeout, RTN23) | ConnectionCtx | every transport input | transport dead → disconnect path |
+| heartbeat/ping deadline (RTN13) | ConnectionCtx | ping sent | ping replier gets timeout error |
+| attach/detach op timeout (RTL4f/RTL5f) | ChannelCtx | ATTACHING/DETACHING entry | op replier errored, state per spec |
+| channel retry (`channel_retry_timeout`, RTL13b) | ChannelCtx | channel SUSPENDED | re-attach |
+
+## 6. Transport integration
+
+`Transport::connect(url)` is called from a **spawned connect task** (never the
+loop): the task first obtains auth (token via the shared REST auth layer if token
+auth — also off-loop), builds the URL (RTN2 params: v=6, format, resume/recover
+keys captured from the loop state at spawn time), calls `connect`, and posts
+`ConnectAttempt(result, generation)`.
+
+On success the loop splits the connection: it spawns a **reader task** (pumps
+`TransportConnection::recv()` → `LoopInput::Transport`, tagged with the
+generation) and a **writer task** (drains an unbounded `mpsc<ProtocolMessage>`
+into `send()`). The loop holds only the writer queue sender + abort handles.
+
+**Generation counter**: every connect attempt increments it; every input from a
+transport carries its generation; the loop discards inputs whose generation ≠
+current (RTN — "operations on superseded transport"). This single integer replaces
+all "is this still the active transport?" reasoning.
+
+Resume/recover (RTN15/RTN16) is loop-side bookkeeping: connection key + serial are
+in `ConnectionCtx`; the connect task is handed the resume params as values.
+CONNECTED processing (fresh vs resumed vs failed-resume) follows RTN15c by
+comparing connection ids and surfacing the error per spec.
+
+## 7. Channel multiplexing: all channels inside the connection loop
+
+Considered: one task per channel. Rejected for v1:
+- The wire protocol is a single serialized stream per connection; per-channel tasks
+  re-serialize at the socket anyway.
+- The coupling RTL specifies (connection state changes fan into every channel:
+  RTN8c/RTN11/RTL3; ACKs are connection-scoped serials routed to channel publishes)
+  becomes inter-task choreography with exactly the ordering hazards this design
+  exists to remove.
+- Per-channel CPU work is small (decode/decrypt of one message); throughput is
+  socket-bound. If profiling ever disagrees, decode can be offloaded per-channel
+  behind the same dispatch point without changing ownership.
+
+So: `channels: HashMap<String, ChannelCtx>` inside the loop; connection-state
+effects on channels are a plain in-loop iteration — atomic with the connection
+transition that caused them (no observable interleaving gap).
+
+## 8. Message routing and backpressure
+
+Inbound path: reader task → `LoopInput::Transport(Message(pm))` → loop:
+1. connection-level actions (ACK/NACK → resolve pending repliers; HEARTBEAT;
+   CONNECTED/DISCONNECTED/CLOSED/ERROR → state machine);
+2. channel-scoped actions dispatch on `pm.channel`: MESSAGE → decode/decrypt
+   (channel cipher) → deliver to matching subscribers; PRESENCE/SYNC → presence
+   engine; ATTACHED/DETACHED → channel state machine + op repliers.
+
+Subscriber delivery: each `subscribe()` gets an **unbounded** `mpsc` and the
+loop `send`s (wait-free). Unbounded is deliberate: dropping messages silently
+would violate correctness expectations, and blocking the loop on a slow consumer
+would stall the whole client. The server already bounds the inbound rate per
+connection; a slow consumer therefore costs memory proportional to its own lag
+only. (A bounded mode with an explicit drop policy can be added later without
+design change.) `unsubscribe` removes the sender; receiver drop is detected on
+next send and the entry pruned.
+
+## 9. Presence
+
+`PresenceCtx` (inside `ChannelCtx`, loop-owned): the members map, the internal
+(local-entries) map (RTP17), sync bookkeeping (`sync_in_progress`, expected
+serial, residual members set for RTP19), and deferred `get(wait_for_sync=true)`
+repliers. The RTP2 newness comparison, SYNC application, RTP17b re-entry on
+attach, and RTP19/19a reconciliation are all plain in-loop functions over that
+struct. Presence events go to presence subscribers (same unbounded-mpsc pattern;
+the public callback API wraps a receiver + spawned dispatch task). `enter/update/
+leave` are `PresenceAction` commands: sent as protocol messages with ACK repliers,
+and recorded in the internal map per RTP17 on ACK.
+
+## 10. Invariants (each holds by construction of §1)
+
+1. Every state transition (connection and channel) is decided by exactly one
+   thread of execution; no transition can be observed "in progress".
+2. `watch` snapshot updates precede their `broadcast` events (§4 contract).
+3. Events on any one stream are delivered in transition order.
+4. ACK/NACK resolution is FIFO over `msg_serial` (RTN7); a publish replier is
+   resolved exactly once (ACK, NACK, or connection-level failure per RTN7c).
+5. Per channel, message delivery order to every subscriber equals wire arrival
+   order; presence events are emitted only after the map mutation they describe.
+6. Inputs from superseded transports are inert (generation guard, §6).
+7. Connection-state side effects on channels are atomic with the connection
+   transition (§7).
+8. After `close()`, queued/pending operations resolve with the spec error —
+   repliers are never leaked (loop drains them on terminal states).
+
+## 11. Alternatives considered
+
+| Alternative | Why rejected |
+|---|---|
+| One coarse `Mutex<AllState>` with methods locking it | Locks held across protocol logic invite await-holding bugs; event callbacks re-entering the API deadlock; readers can observe mid-compound-transition state; the Mutex becomes a de-facto event loop with none of its ordering guarantees. |
+| Fine-grained locks per field (the previous implementation) | The motivating failure: 18+25 mutexes, transitions composed of multiple independently-locked writes, no serialization of compound transitions, races between connection and channel updates. |
+| Actor per channel + connection actor | Maximum parallelism, but RTL/RTP couple channel and connection state tightly; cross-actor invariants (§10.4, §10.7) need message choreography that reintroduces ordering hazards; no profiling evidence the parallelism is needed (socket-bound). Kept as a later optimisation seam at the §8 dispatch point. |
+| Shared state + atomics | Doesn't compose: compound transitions (state + error_reason + id + events) can't be made atomic across several atomics. |
+
+## 12. Test sourcing: regenerate from the UTS; ported tests are raw material
+
+**Decision (approved 2026-06-10): realtime tests are derived from the UTS specs,
+not reused wholesale from the port.** Phase R demonstrated that tests ported from
+an implementation pin that implementation's bugs (rsa9h pinned the RSA5/RSA6
+default bug; tm3 pinned the wrong TM5 wire values) — and that the tests we trust
+most are the ones derived from UTS pseudo-code.
+
+Per Phase 5 stage:
+1. The stage's tests are written from the `uts/realtime/unit/*.md` pseudo-code as
+   the authoritative source (same discipline as Phase R: write the test, see it
+   fail for the right reason, implement).
+2. The 440 ported tests in `tests_realtime_unit_*.rs` serve two subordinate roles:
+   - a **coverage cross-check**: the stage is not done until every ported test in
+     its spec range is either superseded by a UTS-derived test or explicitly
+     adopted; anything the ported tests cover that the UTS does not (the port
+     came from 1,232 ably-js tests) is flagged and kept, marked with its
+     provenance — never silently lost;
+   - a **quarry**: where a ported test already matches the UTS pseudo-code
+     faithfully, it is adopted verbatim (cheaper than rewriting, same provenance
+     guarantee as derivation, recorded as adopted).
+3. Ported tests in the stage's range are deleted only when superseded or adopted;
+   until then they remain `todo!()`-failing in the tree, so the count of remaining
+   ported tests is a live progress metric.
+4. A ported test that cannot be expressed against this design is a design defect
+   to raise at review, not a test to drop.
+
+### Mock infrastructure
+
+The mock surface keeps the shapes the ported tests use (so adoption is cheap) and
+is what UTS-derived tests use too:
+
+- `MockTransport` implements `Transport`; `MockWebSocket` is the test-facing
+  controller. `Transport::connect(url)` (called by the spawned connect task)
+  registers a `PendingConnection{url}` and parks on a oneshot —
+  `await_connection()` hands it to the test; `respond_with_success(msg)` completes
+  it with a `TransportConnection` whose first `recv()` yields `msg`;
+  `respond_with_refused/_with_error` complete it with failure.
+- `MockConnection::send_to_client(pm)` pushes into the connection's event stream
+  → reader task → loop; `simulate_disconnect()` ends the stream.
+- `client_messages()` records everything the writer task sends — outbound
+  protocol assertions. `Realtime::with_mock(&opts, transport)` and `await_state`
+  helpers are kept.
+- Determinism: every externally-visible effect flows through the same single
+  input queue as production; timer tests use `tokio::time::pause()/advance()`
+  (loop timers are `sleep_until`, so virtual time drives them exactly). One loop
+  implementation serves mock and real transports — the old code's duplicated
+  mock/real connection loops cannot reappear.
+
+## 13. Realtime/REST sharing
+
+`Realtime` owns a `Rest` built from the same `ClientOptions`. All REST-over-
+realtime operations (history, REST presence get on a realtime channel, push) call
+it directly from handles — they never touch the loop. Auth state (token cache,
+saved params, forced token auth) stays in `Rest`'s existing `AuthState` Mutex:
+the loop never holds it (token work happens in spawned tasks, §6).
+Server-initiated reauth (RTN22/RTC8): AUTH protocol message → loop spawns token
+task → `TokenReady` → loop sends AUTH with new token over the writer queue.
+`RealtimeAuth::authorize()` delegates to REST authorize, then issues an
+`Authorize` command so the loop applies RTC8 (in-place reauth) with the result.
+
+## 14. Enforcement: how this design stays adhered to
+
+Prose does not survive implementation pressure; these mechanisms do:
+
+1. **The lock-inventory ratchet (mechanical).** `tests_design_conformance.rs`
+   embeds the realtime source files via `include_str!` and fails if any sync
+   primitive (`Mutex`, `RwLock`, `Atomic*`, `OnceLock`, …) appears in them beyond
+   the whitelist documented here. Steady-state whitelist: exactly one — the
+   `Channels` handle registry. Current temporary additions: the two pre-design
+   stub presence-map mutexes in channel.rs, which exist only because ~21 ported
+   presence tests poke them directly; stage 5.7 supersedes those tests per §12
+   and deletes the fields, reducing the channel.rs allowance from 3 to 1 (that
+   reduction is part of 5.7's definition of done). The ratchet runs on every
+   `cargo test`; the first "harmless extra lock" fails the build and forces the
+   design conversation at the moment it matters. Changing the whitelist requires
+   editing the conformance test AND this section in the same commit — which is
+   precisely the review trigger. A companion test rejects `pub` fields on the
+   loop-owned state structs (§2).
+2. **CLAUDE.md binding contract.** CLAUDE.md (loaded into every working session)
+   carries a compact, imperative statement of the invariants with a pointer here.
+   Any change to the contract requires changing this document first, with
+   explicit human approval, before any code.
+3. **Per-stage conformance line.** Every Phase 5 stage's PROGRESS.md entry must
+   state: lock inventory unchanged (conformance test passing), tests derived
+   from UTS (with adopted/superseded counts for the stage's ported-test range).
+4. **Design-change-before-code rule.** If an implementation step appears to need
+   a new sync primitive, a new task with shared state, or loop-bypassing access,
+   work STOPS on that step; the change is proposed as a DESIGN.md edit and
+   reviewed by a human first. A workaround that avoids the conformance test
+   (e.g. hiding a lock in another module) is a violation of the same rule.
+
+## Implementation order note
+
+Phase 5.1 builds: `LoopInput`/`Command`, `ConnectionCtx`, the loop skeleton with
+exhaustive state matching, generation guard, connect/close + mock transport —
+then each subsequent stage (5.2–5.8) adds fields to the same two structs and arms
+to the same matches. Nothing in later stages introduces a new synchronisation
+mechanism (§14.4).

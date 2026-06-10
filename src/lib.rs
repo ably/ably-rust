@@ -58,6 +58,10 @@ mod tests_rest_integration;
 #[cfg(test)]
 mod tests_proxy;
 
+// Design conformance ratchet (DESIGN.md Realtime §14)
+#[cfg(test)]
+mod tests_design_conformance;
+
 // Realtime unit tests
 #[cfg(test)]
 mod tests_realtime_unit_annotations;

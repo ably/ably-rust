@@ -193,6 +193,11 @@ pub struct RealtimePresence {
 }
 
 pub(crate) struct RealtimePresenceInner {
+    // TEMPORARY (pre-design stub): ~21 ported presence tests poke these maps
+    // directly. Per DESIGN.md Realtime §12 they are superseded by UTS-derived
+    // tests in stage 5.7, at which point these fields are deleted — presence
+    // state lives in the loop-owned PresenceCtx (§9). Whitelisted as temporary
+    // in tests_design_conformance.rs; adding any further lock fails the build.
     pub(crate) presence_map: std::sync::Mutex<crate::presence::PresenceMap>,
     pub(crate) local_presence_map: std::sync::Mutex<crate::presence::LocalPresenceMap>,
 }
