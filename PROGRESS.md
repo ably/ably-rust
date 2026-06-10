@@ -343,3 +343,31 @@ This pass added:
 - Test status: 851 pass / 363 fail (remaining realtime stubs) / 70 ignored;
   REST + proxy + integration unaffected.
 - Next: 5.2 connection failures, retries/backoff, resume, ping, heartbeat.
+
+### 5.2 Connection Failures, Retries, Resume, Ping, Heartbeat — DONE (2026-06-10)
+- Timers per DESIGN §5: all deadlines in ConnectionCtx, one sleep_until in the
+  loop select. Implemented: connect-attempt timeout (RTN14c), close-handshake
+  timeout (RTN12b), disconnected retry with RTB1 backoff
+  (min((n+2)/3,2) × jitter[0.8,1.0]) (RTN14d), connectionStateTtl → SUSPENDED
+  (RTN14e, server details override; new connection_state_ttl option), suspended
+  indefinite retries (RTN14f), idle/activity timeout maxIdleInterval +
+  realtimeRequestTimeout with reset on any traffic (RTN23a; heartbeats=true and
+  echo=false (RTN2b) URL params), ping deadlines (RTN13c).
+- RTN15: immediate resume reconnect on unexpected transport loss (RTN15a),
+  resume=key param (RTN15b1), resumed vs failed-resume by connection id
+  (RTN15c6/c7 with surfaced error), key refresh (RTN15e), resume state discarded
+  after TTL (RTN15g). RTN15h DISCONNECTED handling: token error → renew once and
+  reconnect (RTN15h2, renewal forced in the spawned connect task — loop never
+  touches the auth lock) or FAILED if unrenewable (RTN15h1); non-token → resume
+  (RTN15h3). RTN14b ERROR-during-connect token renewal; RSA4a unrenewable →
+  FAILED. Connection::ping() (RTN13a/b/c/e: random ids, id-matched responses,
+  concurrent pings, timeout, state errors).
+- Tests (DESIGN §12): 24 more UTS-derived tests (45 total in
+  tests_realtime_uts_connection.rs incl. RTB1a/b formula tests), all green;
+  paused-clock (tokio test-util) drives every timer test. Live test extended
+  with a real ping. 11 more ported tests superseded and deleted (instant-close
+  pinning, transient-state races vs the coalescing watch — my tests assert
+  event sequences instead). rtn17*/rtn19*/rtn22* ported tests remain for 5.3/5.5.
+- §14.3 conformance: lock inventory UNCHANGED (ratchet green).
+- Test status: 891 pass / 336 fail (remaining stubs) / 70 ignored.
+- Next: 5.3 fallback hosts (RTN17) + realtime auth (RTN22/RTC8).

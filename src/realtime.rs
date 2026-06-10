@@ -150,12 +150,24 @@ impl Connection {
         let _ = self.input_tx.send(LoopInput::Cmd(Command::Close));
     }
 
-    /// RTN13: heartbeat ping (arrives in 5.2).
+    /// RTN13: heartbeat ping over the live connection; resolves with the
+    /// round-trip time.
     pub async fn ping(&self) -> Result<Duration> {
-        Err(ErrorInfo::new(
-            ErrorCode::InternalError.code(),
-            "ping is not implemented until stage 5.2",
-        ))
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.input_tx
+            .send(LoopInput::Cmd(Command::Ping { reply }))
+            .map_err(|_| {
+                ErrorInfo::new(
+                    ErrorCode::ConnectionClosed.code(),
+                    "Connection loop has terminated",
+                )
+            })?;
+        rx.await.map_err(|_| {
+            ErrorInfo::new(
+                ErrorCode::ConnectionClosed.code(),
+                "Connection loop dropped the ping",
+            )
+        })?
     }
 
     /// RTN26: invoke `callback` once when the connection is (or next

@@ -52,6 +52,8 @@ pub struct ClientOptions {
     pub(crate) http_open_timeout: Duration,
     pub(crate) http_request_timeout: Duration,
     pub(crate) realtime_request_timeout: Duration,
+    /// RTN14e default; the server value from ConnectionDetails overrides it.
+    pub(crate) connection_state_ttl: Duration,
     pub(crate) http_max_retry_count: usize,
     pub(crate) http_max_retry_duration: Duration,
     pub(crate) max_message_size: u64,
@@ -292,6 +294,13 @@ impl ClientOptions {
         self
     }
 
+    /// RTN14e: how long a connection may remain DISCONNECTED before being
+    /// SUSPENDED. The server's ConnectionDetails value overrides this.
+    pub fn connection_state_ttl(mut self, ttl: Duration) -> Self {
+        self.connection_state_ttl = ttl;
+        self
+    }
+
     pub fn rest(mut self) -> Result<rest::Rest> {
         // Validate credentials
         self.validate_for_rest()?;
@@ -343,6 +352,7 @@ impl ClientOptions {
             http_open_timeout: self.http_open_timeout,
             http_request_timeout: self.http_request_timeout,
             realtime_request_timeout: self.realtime_request_timeout,
+            connection_state_ttl: self.connection_state_ttl,
             http_max_retry_count: self.http_max_retry_count,
             http_max_retry_duration: self.http_max_retry_duration,
             max_message_size: self.max_message_size,
@@ -549,6 +559,7 @@ impl ClientOptions {
             http_open_timeout: Duration::from_secs(4),
             http_request_timeout: Duration::from_secs(10),
             realtime_request_timeout: Duration::from_secs(10),
+            connection_state_ttl: Duration::from_secs(120),
             http_max_retry_count: 3,
             http_max_retry_duration: Duration::from_secs(15),
             max_message_size: 64 * 1024,

@@ -561,10 +561,744 @@ async fn live_connect_and_close_against_sandbox() {
     assert!(client.connection.id().is_some(), "live connection id assigned");
     assert!(client.connection.key().is_some(), "live connection key assigned");
 
+    // RTN13 live: ping over the real connection
+    let rtt = client.connection.ping().await.expect("live ping");
+    assert!(rtt < std::time::Duration::from_secs(10));
+
     client.close();
     assert!(
         await_state(&client.connection, ConnectionState::Closed, 10000).await,
         "must reach CLOSED after close()"
     );
     assert!(client.connection.id().is_none(), "RTN8c live");
+}
+
+// ============================================================================
+// Stage 5.2 — failures, retries, suspension, resume, ping, heartbeat
+// Sources: uts/realtime/unit/connection/{connection_open_failures,
+// connection_failures, backoff_jitter, connection_ping, heartbeat}_test.md
+// ============================================================================
+
+use crate::auth::{AuthCallback, AuthToken, TokenDetails, TokenParams};
+use std::sync::atomic::AtomicUsize;
+
+/// A renewable token source that never touches the network.
+struct SeqTokenCb {
+    count: Arc<AtomicUsize>,
+}
+impl AuthCallback for SeqTokenCb {
+    fn token<'a>(
+        &'a self,
+        _params: &'a TokenParams,
+    ) -> std::pin::Pin<Box<dyn Send + futures::Future<Output = crate::error::Result<AuthToken>> + 'a>>
+    {
+        let n = self.count.fetch_add(1, Ordering::SeqCst) + 1;
+        Box::pin(async move {
+            Ok(AuthToken::Details(TokenDetails {
+                token: format!("token-{}", n),
+                expires: Some(chrono::Utc::now().timestamp_millis() + 3_600_000),
+                ..Default::default()
+            }))
+        })
+    }
+}
+
+fn token_client(mock: &MockWebSocket, count: Arc<AtomicUsize>) -> Realtime {
+    let opts = ClientOptions::with_auth_callback(Arc::new(SeqTokenCb { count })).auto_connect(false);
+    client_with(mock, opts)
+}
+
+fn token_error_msg() -> ProtocolMessage {
+    let mut msg = ProtocolMessage::new(action::ERROR);
+    msg.error = Some(ErrorInfo::with_status(40142, 401, "Token expired"));
+    msg
+}
+
+/// Await the mock seeing the nth connection attempt — used to step past
+/// transient reconnect states without racing them (per the UTS mock doc).
+async fn await_connection_count(mock: &MockWebSocket, n: u32, timeout_ms: u64) -> bool {
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
+    while mock.connection_count() < n {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+    true
+}
+
+// UTS: realtime/unit/RTB1a/backoff-coefficient-sequence-0
+#[test]
+fn rtb1a_backoff_coefficient_sequence() {
+    use crate::connection::backoff_coefficient;
+    assert_eq!(backoff_coefficient(1), 1.0);
+    assert_eq!(backoff_coefficient(2), 4.0 / 3.0);
+    assert_eq!(backoff_coefficient(3), 5.0 / 3.0);
+    for n in 4..=10 {
+        assert_eq!(backoff_coefficient(n), 2.0, "n={} capped at 2", n);
+    }
+}
+
+// UTS: realtime/unit/RTB1b/jitter-coefficient-range-0
+#[test]
+fn rtb1b_jitter_coefficient_range() {
+    use crate::connection::jitter_coefficient;
+    let samples: Vec<f64> = (0..1000).map(|_| jitter_coefficient()).collect();
+    for j in &samples {
+        assert!((0.8..=1.0).contains(j), "jitter {} out of range", j);
+    }
+    let mean: f64 = samples.iter().sum::<f64>() / samples.len() as f64;
+    assert!((0.85..=0.95).contains(&mean), "mean {} not ~0.9", mean);
+    let (min, max) = samples
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+    assert!(max - min > 0.05, "degenerate jitter distribution");
+}
+
+// UTS: realtime/unit/RTN14a/invalid-key-failed-0
+#[tokio::test]
+async fn rtn14a_fatal_error_during_connect_goes_failed() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        let mut msg = ProtocolMessage::new(action::ERROR);
+        msg.error = Some(ErrorInfo::with_status(40400, 404, "No such app/key"));
+        conn.respond_with_error(msg);
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+    assert_eq!(client.connection.error_reason().and_then(|e| e.code), Some(40400));
+    // FAILED is terminal: no retry
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    assert_eq!(mock.connection_count(), 1);
+}
+
+// UTS: realtime/unit/RTN14b/token-error-with-renewal-0
+#[tokio::test]
+async fn rtn14b_token_error_during_connect_renews_and_retries() {
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_c = attempts.clone();
+    let urls: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+    let urls_c = urls.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        let n = attempts_c.fetch_add(1, Ordering::SeqCst) + 1;
+        urls_c.lock().unwrap().push(conn.url.clone());
+        if n == 1 {
+            conn.respond_with_error(token_error_msg());
+        } else {
+            conn.respond_with_success(connected_msg("id", "key"));
+        }
+    });
+    let tokens = Arc::new(AtomicUsize::new(0));
+    let client = token_client(&mock, tokens.clone());
+
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 2, "renewed and retried once");
+    assert_eq!(tokens.load(Ordering::SeqCst), 2, "a fresh token was acquired");
+    let urls = urls.lock().unwrap();
+    assert!(urls[0].contains("accessToken=token-1"));
+    assert!(urls[1].contains("accessToken=token-2"), "retry uses the new token");
+    client.close();
+}
+
+// UTS: realtime/unit/RSA4a/token-error-no-renewal-0
+#[tokio::test]
+async fn rsa4a_token_error_without_renewal_goes_failed() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        conn.respond_with_error(token_error_msg());
+    });
+    // A static token cannot be renewed
+    let opts = ClientOptions::with_token("static-token".to_string()).auto_connect(false);
+    let client = client_with(&mock, opts);
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+    assert_eq!(client.connection.error_reason().and_then(|e| e.code), Some(40142));
+}
+
+// UTS: realtime/unit/RTN14c/connection-timeout-0
+#[tokio::test(start_paused = true)]
+async fn rtn14c_connect_attempt_times_out() {
+    // The handler never responds: the attempt must time out
+    let mock = MockWebSocket::with_handler(|conn| {
+        std::mem::forget(conn);
+    });
+    let opts = default_opts()
+        .auto_connect(false)
+        .realtime_request_timeout(std::time::Duration::from_secs(2));
+    let client = client_with(&mock, opts);
+    client.connect();
+
+    // Paused clock auto-advances when idle: the timeout fires
+    assert!(await_state(&client.connection, ConnectionState::Disconnected, 10000).await);
+    let reason = client.connection.error_reason().expect("timeout reason");
+    assert_eq!(reason.code, Some(crate::error::ErrorCode::ConnectionTimedOut.code()));
+}
+
+// UTS: realtime/unit/RTN14d/retry-recoverable-failure-0
+#[tokio::test(start_paused = true)]
+async fn rtn14d_retries_after_recoverable_failure() {
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_c = attempts.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        let n = attempts_c.fetch_add(1, Ordering::SeqCst) + 1;
+        if n == 1 {
+            conn.respond_with_refused();
+        } else {
+            conn.respond_with_success(connected_msg("id", "key"));
+        }
+    });
+    let opts = default_opts()
+        .auto_connect(false)
+        .disconnected_retry_timeout(std::time::Duration::from_secs(1));
+    let client = client_with(&mock, opts);
+
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
+    // The retry timer fires (paused clock auto-advances)
+    assert!(await_state(&client.connection, ConnectionState::Connected, 10000).await);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    client.close();
+}
+
+// UTS: realtime/unit/RTN14e/disconnected-to-suspended-0
+#[tokio::test(start_paused = true)]
+async fn rtn14e_disconnected_becomes_suspended_after_ttl() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        conn.respond_with_refused();
+    });
+    let opts = default_opts()
+        .auto_connect(false)
+        .disconnected_retry_timeout(std::time::Duration::from_secs(1))
+        .connection_state_ttl(std::time::Duration::from_secs(5));
+    let client = client_with(&mock, opts);
+
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
+    // After connectionStateTtl the connection rests at SUSPENDED
+    assert!(await_state(&client.connection, ConnectionState::Suspended, 20000).await);
+    assert!(client.connection.error_reason().is_some());
+    client.close();
+}
+
+// UTS: realtime/unit/RTN14f/suspended-retries-indefinitely-0
+#[tokio::test(start_paused = true)]
+async fn rtn14f_suspended_keeps_retrying_then_connects() {
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_c = attempts.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        let n = attempts_c.fetch_add(1, Ordering::SeqCst) + 1;
+        if n < 6 {
+            conn.respond_with_refused();
+        } else {
+            conn.respond_with_success(connected_msg("id", "key"));
+        }
+    });
+    let opts = default_opts()
+        .auto_connect(false)
+        .disconnected_retry_timeout(std::time::Duration::from_secs(1))
+        .suspended_retry_timeout(std::time::Duration::from_secs(3))
+        .connection_state_ttl(std::time::Duration::from_secs(4));
+    let client = client_with(&mock, opts);
+
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Suspended, 30000).await);
+    // Suspended retries continue until the server accepts
+    assert!(await_state(&client.connection, ConnectionState::Connected, 60000).await);
+    assert!(attempts.load(Ordering::SeqCst) >= 6);
+    client.close();
+}
+
+// UTS: realtime/unit/RTN15a/unexpected-transport-disconnect-0
+// UTS: realtime/unit/RTN15b/successful-resume-0 (+RTN15c6, RTN15e)
+#[tokio::test]
+async fn rtn15a_rtn15b_unexpected_disconnect_resumes_immediately() {
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_c = attempts.clone();
+    let urls: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+    let urls_c = urls.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        let n = attempts_c.fetch_add(1, Ordering::SeqCst) + 1;
+        urls_c.lock().unwrap().push(conn.url.clone());
+        if n == 1 {
+            let c = conn.respond_with_success(connected_msg("connection-1", "key-1"));
+            std::mem::forget(c);
+        } else {
+            // Resume succeeds: same connectionId, updated key (RTN15e)
+            let c = conn.respond_with_success(connected_msg("connection-1", "key-1-updated"));
+            std::mem::forget(c);
+        }
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+
+    let changes: Arc<StdMutex<Vec<ConnectionState>>> = Arc::new(StdMutex::new(Vec::new()));
+    let changes_c = changes.clone();
+    let mut events = client.connection.on_state_change();
+    tokio::spawn(async move {
+        while let Ok(change) = events.recv().await {
+            changes_c.lock().unwrap().push(change.current);
+        }
+    });
+
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+    assert_eq!(client.connection.id().as_deref(), Some("connection-1"));
+
+    mock.active_connection().simulate_disconnect();
+    assert!(await_connection_count(&mock, 2, 5000).await, "reconnect attempt expected");
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    // RTN15c6: resumed — same id; RTN15e: key updated
+    assert_eq!(client.connection.id().as_deref(), Some("connection-1"));
+    assert_eq!(client.connection.key().as_deref(), Some("key-1-updated"));
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+    // RTN15b1: the second attempt carried resume=<old key>
+    let urls = urls.lock().unwrap();
+    assert!(!urls[0].contains("resume="), "first attempt has no resume param");
+    assert!(urls[1].contains("resume=key-1"), "resume with previous key: {}", urls[1]);
+
+    // The state sequence passed through disconnected→connecting
+    let seq = changes.lock().unwrap().clone();
+    let expected = [
+        ConnectionState::Connecting,
+        ConnectionState::Connected,
+        ConnectionState::Disconnected,
+        ConnectionState::Connecting,
+        ConnectionState::Connected,
+    ];
+    let mut it = seq.iter();
+    for want in expected {
+        assert!(
+            it.any(|&s| s == want),
+            "sequence {:?} missing {:?} in order",
+            seq,
+            want
+        );
+    }
+    client.close();
+}
+
+// UTS: realtime/unit/RTN15c7/failed-resume-new-id-0
+#[tokio::test]
+async fn rtn15c7_failed_resume_gets_new_connection_id() {
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_c = attempts.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        let n = attempts_c.fetch_add(1, Ordering::SeqCst) + 1;
+        if n == 1 {
+            let c = conn.respond_with_success(connected_msg("connection-1", "key-1"));
+            std::mem::forget(c);
+        } else {
+            // Resume failed: the server assigns a NEW connection id
+            let mut msg = connected_msg("connection-2", "key-2");
+            msg.error = Some(ErrorInfo::with_status(80008, 400, "Unable to recover connection"));
+            let c = conn.respond_with_success(msg);
+            std::mem::forget(c);
+        }
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+    mock.active_connection().simulate_disconnect();
+    assert!(await_connection_count(&mock, 2, 5000).await, "reconnect attempt expected");
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    // RTN15c7: connected with the new id; the failure reason is surfaced
+    assert_eq!(client.connection.id().as_deref(), Some("connection-2"));
+    assert_eq!(client.connection.error_reason().and_then(|e| e.code), Some(80008));
+    client.close();
+}
+
+// UTS: realtime/unit/RTN15h1/token-error-no-renew-0
+#[tokio::test]
+async fn rtn15h1_disconnected_token_error_without_renewal_fails() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_success(connected_msg("id", "key"));
+        std::mem::forget(c);
+    });
+    let opts = ClientOptions::with_token("static-token".to_string()).auto_connect(false);
+    let client = client_with(&mock, opts);
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    let mut msg = ProtocolMessage::new(action::DISCONNECTED);
+    msg.error = Some(ErrorInfo::with_status(40142, 401, "Token expired"));
+    mock.active_connection().send_to_client_and_close(msg);
+
+    assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+    assert_eq!(client.connection.error_reason().and_then(|e| e.code), Some(40142));
+}
+
+// UTS: realtime/unit/RTN15h2/token-error-renew-success-0
+#[tokio::test]
+async fn rtn15h2_disconnected_token_error_renews_and_reconnects() {
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_c = attempts.clone();
+    let urls: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+    let urls_c = urls.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        attempts_c.fetch_add(1, Ordering::SeqCst);
+        urls_c.lock().unwrap().push(conn.url.clone());
+        let c = conn.respond_with_success(connected_msg("id", "key"));
+        std::mem::forget(c);
+    });
+    let tokens = Arc::new(AtomicUsize::new(0));
+    let client = token_client(&mock, tokens.clone());
+
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+    assert_eq!(tokens.load(Ordering::SeqCst), 1);
+
+    let mut msg = ProtocolMessage::new(action::DISCONNECTED);
+    msg.error = Some(ErrorInfo::with_status(40142, 401, "Token expired"));
+    mock.active_connection().send_to_client_and_close(msg);
+
+    assert!(await_connection_count(&mock, 2, 5000).await, "reconnect attempt expected");
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(tokens.load(Ordering::SeqCst), 2, "the token was renewed");
+    let urls = urls.lock().unwrap();
+    assert!(urls[1].contains("accessToken=token-2"));
+    client.close();
+}
+
+// UTS: realtime/unit/RTN15h3/non-token-error-resume-0
+#[tokio::test]
+async fn rtn15h3_disconnected_non_token_error_resumes() {
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_c = attempts.clone();
+    let urls: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+    let urls_c = urls.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        attempts_c.fetch_add(1, Ordering::SeqCst);
+        urls_c.lock().unwrap().push(conn.url.clone());
+        let c = conn.respond_with_success(connected_msg("id", "the-key"));
+        std::mem::forget(c);
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    let mut msg = ProtocolMessage::new(action::DISCONNECTED);
+    msg.error = Some(ErrorInfo::with_status(80003, 400, "Server going away"));
+    mock.active_connection().send_to_client_and_close(msg);
+
+    assert!(await_connection_count(&mock, 2, 5000).await, "reconnect attempt expected");
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert!(urls.lock().unwrap()[1].contains("resume=the-key"));
+    client.close();
+}
+
+// UTS: realtime/unit/RTN15g/state-cleared-after-ttl-0
+#[tokio::test(start_paused = true)]
+async fn rtn15g_resume_state_cleared_after_ttl() {
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_c = attempts.clone();
+    let urls: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+    let urls_c = urls.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        let n = attempts_c.fetch_add(1, Ordering::SeqCst) + 1;
+        urls_c.lock().unwrap().push(conn.url.clone());
+        if n == 1 {
+            let c = conn.respond_with_success(connected_msg("id-1", "key-1"));
+            std::mem::forget(c);
+        } else if n < 4 {
+            conn.respond_with_refused();
+        } else {
+            let c = conn.respond_with_success(connected_msg("id-2", "key-2"));
+            std::mem::forget(c);
+        }
+    });
+    let opts = default_opts()
+        .auto_connect(false)
+        .disconnected_retry_timeout(std::time::Duration::from_secs(2))
+        .suspended_retry_timeout(std::time::Duration::from_secs(2))
+        .connection_state_ttl(std::time::Duration::from_secs(3));
+    let client = client_with(&mock, opts);
+
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+    mock.active_connection().simulate_disconnect();
+
+    // Retries fail until the TTL passes and the connection suspends...
+    assert!(await_state(&client.connection, ConnectionState::Suspended, 60000).await);
+    // ...then a retry succeeds with a clean (resume-free) connection
+    assert!(await_state(&client.connection, ConnectionState::Connected, 60000).await);
+
+    let urls = urls.lock().unwrap();
+    let last = urls.last().unwrap();
+    assert!(
+        !last.contains("resume="),
+        "RTN15g: no resume after the TTL passed, got {}",
+        last
+    );
+    client.close();
+}
+
+// UTS: realtime/unit/RTN13a/ping-heartbeat-roundtrip-0
+// UTS: realtime/unit/RTN13e/heartbeat-random-id-0
+#[tokio::test]
+async fn rtn13a_ping_sends_heartbeat_and_resolves_roundtrip() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_success(connected_msg("id", "key"));
+        std::mem::forget(c);
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    let connection = client.connection.clone();
+    let ping = tokio::spawn(async move { connection.ping().await });
+
+    // The client sent HEARTBEAT with a random id (RTN13e)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let sent = loop {
+        if let Some(m) = mock
+            .client_messages()
+            .into_iter()
+            .find(|m| m.action == action::HEARTBEAT)
+        {
+            break m;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    };
+    let id = sent.message.id.clone().expect("ping HEARTBEAT carries an id");
+    assert!(!id.is_empty());
+
+    // The server echoes the HEARTBEAT with the same id
+    let mut reply = ProtocolMessage::new(action::HEARTBEAT);
+    reply.id = Some(id);
+    mock.active_connection().send_to_client(reply);
+
+    let rtt = ping.await.unwrap().expect("ping resolves");
+    assert!(rtt >= std::time::Duration::ZERO);
+    client.close();
+}
+
+// UTS: realtime/unit/RTN13e/no-id-heartbeat-ignored-1 + RTN13c timeout
+#[tokio::test(start_paused = true)]
+async fn rtn13c_rtn13e_idless_heartbeat_ignored_and_ping_times_out() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_success(connected_msg("id", "key"));
+        std::mem::forget(c);
+    });
+    let opts = default_opts()
+        .auto_connect(false)
+        .realtime_request_timeout(std::time::Duration::from_secs(2));
+    let client = client_with(&mock, opts);
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    let connection = client.connection.clone();
+    let ping = tokio::spawn(async move { connection.ping().await });
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // An id-less HEARTBEAT must NOT resolve the ping (RTN13e)
+    mock.active_connection().send_to_client(ProtocolMessage::new(action::HEARTBEAT));
+
+    // ...and with no matching response, the ping times out (RTN13c)
+    let result = ping.await.unwrap();
+    let err = result.expect_err("ping must time out");
+    assert_eq!(err.status_code, Some(408));
+    client.close();
+}
+
+// UTS: realtime/unit/RTN13e/concurrent-pings-unique-ids-2
+#[tokio::test]
+async fn rtn13e_concurrent_pings_resolve_independently() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_success(connected_msg("id", "key"));
+        std::mem::forget(c);
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    let c1 = client.connection.clone();
+    let c2 = client.connection.clone();
+    let ping1 = tokio::spawn(async move { c1.ping().await });
+    let ping2 = tokio::spawn(async move { c2.ping().await });
+
+    // Collect the two HEARTBEAT ids
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let ids = loop {
+        let ids: Vec<String> = mock
+            .client_messages()
+            .into_iter()
+            .filter(|m| m.action == action::HEARTBEAT)
+            .filter_map(|m| m.message.id)
+            .collect();
+        if ids.len() == 2 {
+            break ids;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    };
+    assert_ne!(ids[0], ids[1], "concurrent pings use unique ids");
+
+    // Answer in reverse order: each ping resolves on its own id
+    for id in ids.iter().rev() {
+        let mut reply = ProtocolMessage::new(action::HEARTBEAT);
+        reply.id = Some(id.clone());
+        mock.active_connection().send_to_client(reply);
+    }
+    assert!(ping1.await.unwrap().is_ok());
+    assert!(ping2.await.unwrap().is_ok());
+    client.close();
+}
+
+// RTN13b: ping outside CONNECTED errors (INITIALIZED and CLOSED)
+#[tokio::test]
+async fn rtn13b_ping_in_non_connected_state_errors() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        conn.respond_with_success(connected_msg("id", "key"));
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+    assert_eq!(client.connection.state(), ConnectionState::Initialized);
+    let err = client.connection.ping().await.expect_err("ping must fail");
+    assert!(err.message.unwrap_or_default().contains("Initialized"));
+
+    // ...and in CLOSED
+    client.close();
+    assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
+    let err = client.connection.ping().await.expect_err("ping must fail when closed");
+    assert!(err.message.unwrap_or_default().contains("Closed"));
+}
+
+// UTS: realtime/unit/RTN23a/heartbeats-true-query-param-0
+#[tokio::test]
+async fn rtn23a_url_carries_heartbeats_true() {
+    let captured: Arc<StdMutex<Option<String>>> = Arc::new(StdMutex::new(None));
+    let captured_c = captured.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        *captured_c.lock().unwrap() = Some(conn.url.clone());
+        conn.respond_with_success(connected_msg("id", "key"));
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+    let url = captured.lock().unwrap().clone().unwrap();
+    assert!(url.contains("heartbeats=true"), "got {}", url);
+    client.close();
+}
+
+// UTS: realtime/unit/RTN23a/idle-timeout-reconnect-1 (+reconnect-uses-resume-5)
+#[tokio::test(start_paused = true)]
+async fn rtn23a_idle_timeout_triggers_resume_reconnect() {
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_c = attempts.clone();
+    let urls: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+    let urls_c = urls.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        attempts_c.fetch_add(1, Ordering::SeqCst);
+        urls_c.lock().unwrap().push(conn.url.clone());
+        // ConnectionDetails carries maxIdleInterval=15000 (template default);
+        // the server then goes silent
+        let c = conn.respond_with_success(connected_msg("id", "idle-key"));
+        std::mem::forget(c);
+    });
+    let opts = default_opts()
+        .auto_connect(false)
+        .realtime_request_timeout(std::time::Duration::from_secs(5));
+    let client = client_with(&mock, opts);
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    // No traffic: after maxIdleInterval + realtimeRequestTimeout the client
+    // declares the transport dead and reconnects (paused clock auto-advances)
+    assert!(await_state(&client.connection, ConnectionState::Disconnected, 60000).await
+        || client.connection.state() == ConnectionState::Connected);
+    assert!(await_state(&client.connection, ConnectionState::Connected, 60000).await);
+    assert!(attempts.load(Ordering::SeqCst) >= 2, "reconnected after idle timeout");
+    assert!(
+        urls.lock().unwrap().last().unwrap().contains("resume=idle-key"),
+        "idle reconnect uses resume"
+    );
+    client.close();
+}
+
+// UTS: realtime/unit/RTN23a/heartbeat-resets-timer-2
+#[tokio::test]
+async fn rtn23a_heartbeat_traffic_keeps_connection_alive() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        // A short maxIdleInterval so the test runs in real time
+        let mut msg = connected_msg("id", "key");
+        if let Some(details) = &mut msg.connection_details {
+            details.max_idle_interval = Some(200);
+        }
+        let c = conn.respond_with_success(msg);
+        std::mem::forget(c);
+    });
+    let opts = default_opts()
+        .auto_connect(false)
+        .realtime_request_timeout(std::time::Duration::from_millis(300));
+    let client = client_with(&mock, opts);
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    // Heartbeats every 100ms keep resetting the (500ms) idle deadline
+    for _ in 0..10 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        mock.active_connection().send_to_client(ProtocolMessage::new(action::HEARTBEAT));
+    }
+    assert_eq!(
+        client.connection.state(),
+        ConnectionState::Connected,
+        "regular heartbeats must keep the connection alive"
+    );
+    assert_eq!(mock.connection_count(), 1, "no reconnect happened");
+    client.close();
+}
+
+// RTN12b: if the server never answers CLOSE with CLOSED, the connection
+// closes anyway after realtimeRequestTimeout
+#[tokio::test(start_paused = true)]
+async fn rtn12b_close_times_out_without_closed() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_success(connected_msg("id", "key"));
+        std::mem::forget(c); // the server will never answer CLOSE
+    });
+    let opts = default_opts()
+        .auto_connect(false)
+        .realtime_request_timeout(std::time::Duration::from_secs(2));
+    let client = client_with(&mock, opts);
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    client.close();
+    assert!(await_state(&client.connection, ConnectionState::Closed, 10000).await);
+}
+
+// RTN2b: echo=false is sent when echoMessages is disabled, absent otherwise
+#[tokio::test]
+async fn rtn2b_echo_param() {
+    let urls: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+    let urls_c = urls.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        urls_c.lock().unwrap().push(conn.url.clone());
+        conn.respond_with_success(connected_msg("id", "key"));
+    });
+    let transport = Arc::new(MockTransport::new(mock.inner()));
+
+    let c1 = Realtime::with_mock(&default_opts().auto_connect(false), transport.clone()).unwrap();
+    c1.connect();
+    assert!(await_state(&c1.connection, ConnectionState::Connected, 5000).await);
+
+    let c2 = Realtime::with_mock(
+        &default_opts().auto_connect(false).echo_messages(false),
+        transport,
+    )
+    .unwrap();
+    c2.connect();
+    assert!(await_state(&c2.connection, ConnectionState::Connected, 5000).await);
+
+    let urls = urls.lock().unwrap();
+    assert!(!urls[0].contains("echo="), "default: no echo param, got {}", urls[0]);
+    assert!(urls[1].contains("echo=false"), "echo=false when disabled, got {}", urls[1]);
+    c1.close();
+    c2.close();
 }

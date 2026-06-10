@@ -272,6 +272,13 @@ impl Rest {
         }
     }
 
+    /// Invalidate the cached library token so the next acquisition renews it
+    /// (used by realtime token-error recovery, RTN14b/RTN15h2; called from
+    /// spawned connect tasks, never the connection loop).
+    pub(crate) fn invalidate_cached_token(&self) {
+        self.inner.auth_state.lock().unwrap().cached_token = None;
+    }
+
     /// Resolve the auth configuration: the client's credential plus any
     /// options stored by authorize() (RSA10h).
     pub(crate) fn auth_config(&self) -> auth::AuthConfig {
