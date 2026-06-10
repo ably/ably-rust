@@ -3100,11 +3100,18 @@ use crate::crypto::CipherParams;
             .rest_with_mock(mock)
             .unwrap();
 
-        let result = client.request("GET", "/channels/test").send().await;
-        assert!(result.is_err(), "Should eventually fail after renewal limit");
-        // Should have made more than 1 request (initial + at least one retry)
+        // A typed request propagates the token error after exactly one renewal
+        let err = client
+            .channels()
+            .get("test")
+            .history()
+            .send()
+            .await
+            .expect_err("Should eventually fail after renewal limit");
+        assert_eq!(err.code, Some(40142));
+        // initial token + request (401) + renewed token + retry (401): no loop
         let count = call_count.load(Ordering::SeqCst);
-        assert!(count > 1, "Expected multiple requests before giving up, got {}", count);
+        assert_eq!(count, 4, "exactly one renewal cycle, got {} requests", count);
         Ok(())
     }
 

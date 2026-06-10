@@ -5,14 +5,16 @@ use crate::auth::{self, AuthCallback, Credential};
 use crate::error::{ErrorCode, ErrorInfo, Result};
 use crate::rest;
 
-static REST_HOST: &str = "rest.ably.io";
+/// REC1a: the default primary domain.
+pub(crate) static DEFAULT_PRIMARY_DOMAIN: &str = "main.realtime.ably.net";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
-    None,
-    Error,
-    Major,
-    Minor,
-    Micro,
+    None = 0,
+    Error = 1,
+    Major = 2,
+    Minor = 3,
+    Micro = 4,
 }
 
 pub struct ClientOptions {
@@ -20,9 +22,11 @@ pub struct ClientOptions {
     pub(crate) tls: bool,
     pub(crate) client_id: Option<String>,
     pub(crate) use_token_auth: bool,
+    pub(crate) endpoint: Option<String>,
     pub(crate) environment: Option<String>,
     pub(crate) idempotent_rest_publishing: bool,
-    pub(crate) fallback_hosts: Vec<String>,
+    /// REC2a: explicit fallback hosts. None means derive per REC2c.
+    pub(crate) fallback_hosts: Option<Vec<String>>,
     pub(crate) format: rest::Format,
     pub(crate) query_time: bool,
     pub(crate) auth_method: Option<String>,
@@ -30,8 +34,13 @@ pub struct ClientOptions {
     pub(crate) auth_params: Vec<(String, String)>,
     pub(crate) default_token_params: Option<auth::TokenParams>,
     pub(crate) auto_connect: bool,
-    pub(crate) rest_host: String,
-    pub(crate) realtime_host: String,
+    /// Deprecated REC1d1 override. None means derive per REC1.
+    pub(crate) rest_host: Option<String>,
+    pub(crate) realtime_host: Option<String>,
+    /// The REC1 primary domain, resolved at build time.
+    pub(crate) primary_host: String,
+    /// The REC2 fallback domains, resolved at build time.
+    pub(crate) resolved_fallback_hosts: Vec<String>,
     pub(crate) port: u32,
     pub(crate) tls_port: u32,
     pub(crate) echo_messages: bool,
@@ -50,6 +59,17 @@ pub struct ClientOptions {
     pub(crate) fallback_retry_timeout: Duration,
     pub(crate) add_request_ids: bool,
     pub(crate) http_client: Option<Box<dyn crate::http_client::HttpClient>>,
+    /// RSC2: minimum severity that is emitted. Defaults to Error.
+    pub(crate) log_level: LogLevel,
+    pub(crate) log_handler: Option<Arc<dyn Fn(LogLevel, &str) + Send + Sync>>,
+}
+
+/// How the REC1 primary domain was determined — drives REC2c fallback derivation.
+enum PrimaryDomainSource {
+    Default,
+    Hostname,
+    ProdPolicy(String),
+    NonprodPolicy(String),
 }
 
 impl ClientOptions {
@@ -124,19 +144,36 @@ impl ClientOptions {
         self
     }
 
-    pub fn environment(mut self, env: impl Into<String>) -> Result<Self> {
-        if self.rest_host != REST_HOST {
+    /// REC1b: the endpoint option — a routing policy ID ("main"),
+    /// a non-production routing policy ID ("nonprod:sandbox"), or a hostname.
+    pub fn endpoint(mut self, endpoint: impl Into<String>) -> Result<Self> {
+        // REC1b1: endpoint is mutually exclusive with the deprecated options
+        if self.environment.is_some() || self.rest_host.is_some() || self.realtime_host.is_some() {
             return Err(ErrorInfo::new(
                 ErrorCode::BadRequest.code(),
-                "Cannot set both environment and rest_host",
+                "endpoint cannot be combined with environment, rest_host or realtime_host",
             ));
         }
-        let env = env.into();
-        self.rest_host = format!("{}-rest.ably.io", env);
-        self.fallback_hosts = ('a'..='e')
-            .map(|c| format!("{}-{}-fallback.ably-realtime.com", env, c))
-            .collect();
-        self.environment = Some(env);
+        self.endpoint = Some(endpoint.into());
+        Ok(self)
+    }
+
+    /// Deprecated (REC1c): use `endpoint` with a routing policy ID instead.
+    pub fn environment(mut self, env: impl Into<String>) -> Result<Self> {
+        if self.endpoint.is_some() {
+            return Err(ErrorInfo::new(
+                ErrorCode::BadRequest.code(),
+                "endpoint cannot be combined with environment",
+            ));
+        }
+        // REC1c1: environment is mutually exclusive with host overrides
+        if self.rest_host.is_some() || self.realtime_host.is_some() {
+            return Err(ErrorInfo::new(
+                ErrorCode::BadRequest.code(),
+                "Cannot set both environment and rest_host/realtime_host",
+            ));
+        }
+        self.environment = Some(env.into());
         Ok(self)
     }
 
@@ -159,20 +196,21 @@ impl ClientOptions {
         self
     }
 
+    /// Deprecated (REC1d1): use `endpoint` with a hostname instead.
     pub fn rest_host(mut self, host: impl Into<String>) -> Result<Self> {
-        if self.environment.is_some() {
+        if self.environment.is_some() || self.endpoint.is_some() {
             return Err(ErrorInfo::new(
                 ErrorCode::BadRequest.code(),
-                "Cannot set both environment and rest_host",
+                "Cannot set both rest_host and environment/endpoint",
             ));
         }
-        self.fallback_hosts = Vec::new();
-        self.rest_host = host.into();
+        self.rest_host = Some(host.into());
         Ok(self)
     }
 
+    /// REC2a2: explicit fallback hosts override the derived set.
     pub fn fallback_hosts(mut self, hosts: Vec<String>) -> Self {
-        self.fallback_hosts = hosts;
+        self.fallback_hosts = Some(hosts);
         self
     }
 
@@ -191,11 +229,15 @@ impl ClientOptions {
         self
     }
 
-    pub fn log_level(self, _level: LogLevel) -> Self {
+    /// TO3b: the minimum severity emitted to the log handler (RSC2).
+    pub fn log_level(mut self, level: LogLevel) -> Self {
+        self.log_level = level;
         self
     }
 
-    pub fn log_handler(self, _handler: impl Fn(LogLevel, &str) + Send + Sync + 'static) -> Self {
+    /// TO3c: a custom log handler receiving (level, message) events (RSC2c).
+    pub fn log_handler(mut self, handler: impl Fn(LogLevel, &str) + Send + Sync + 'static) -> Self {
+        self.log_handler = Some(Arc::new(handler));
         self
     }
 
@@ -204,8 +246,9 @@ impl ClientOptions {
         self
     }
 
+    /// Deprecated (REC1d2): use `endpoint` with a hostname instead.
     pub fn realtime_host(mut self, host: impl Into<String>) -> Self {
-        self.realtime_host = host.into();
+        self.realtime_host = Some(host.into());
         self
     }
 
@@ -257,7 +300,7 @@ impl ClientOptions {
         let client: Box<dyn crate::http_client::HttpClient> = if let Some(c) = self.http_client.take() {
             c
         } else {
-            Box::new(crate::http_client::ReqwestHttpClient::new())
+            Box::new(crate::http_client::ReqwestHttpClient::new(self.http_open_timeout))
         };
         self.build_rest(client)
     }
@@ -333,7 +376,77 @@ impl ClientOptions {
         Ok(())
     }
 
-    fn build_rest(self, client: Box<dyn crate::http_client::HttpClient>) -> Result<rest::Rest> {
+    /// REC1: resolve the primary domain from endpoint/deprecated options.
+    fn resolve_primary_domain(&self) -> (String, PrimaryDomainSource) {
+        if let Some(ep) = &self.endpoint {
+            // REC1b2: a hostname contains '.', "::", or is "localhost"
+            if ep.contains('.') || ep.contains("::") || ep == "localhost" {
+                return (ep.clone(), PrimaryDomainSource::Hostname);
+            }
+            // REC1b3: non-production routing policy "nonprod:[id]"
+            if let Some(id) = ep.strip_prefix("nonprod:") {
+                return (
+                    format!("{}.realtime.ably-nonprod.net", id),
+                    PrimaryDomainSource::NonprodPolicy(id.to_string()),
+                );
+            }
+            // REC1b4: production routing policy
+            return (
+                format!("{}.realtime.ably.net", ep),
+                PrimaryDomainSource::ProdPolicy(ep.clone()),
+            );
+        }
+        // REC1c2 (deprecated): environment is a production routing policy ID
+        if let Some(env) = &self.environment {
+            return (
+                format!("{}.realtime.ably.net", env),
+                PrimaryDomainSource::ProdPolicy(env.clone()),
+            );
+        }
+        // REC1d (deprecated): explicit host overrides
+        if let Some(host) = &self.rest_host {
+            return (host.clone(), PrimaryDomainSource::Hostname);
+        }
+        if let Some(host) = &self.realtime_host {
+            return (host.clone(), PrimaryDomainSource::Hostname);
+        }
+        // REC1a: the default
+        (
+            DEFAULT_PRIMARY_DOMAIN.to_string(),
+            PrimaryDomainSource::Default,
+        )
+    }
+
+    /// REC1 + REC2: resolve the primary domain and fallback domains.
+    pub(crate) fn resolve_hosts(&mut self) {
+        let (primary, source) = self.resolve_primary_domain();
+        // REC2a2: explicit fallbackHosts win
+        let fallbacks = if let Some(hosts) = &self.fallback_hosts {
+            hosts.clone()
+        } else {
+            match source {
+                // REC2c1: default fallback domains
+                PrimaryDomainSource::Default => ('a'..='e')
+                    .map(|c| format!("main.{}.fallback.ably-realtime.com", c))
+                    .collect(),
+                // REC2c2/REC2c6: explicit hostname — no fallbacks
+                PrimaryDomainSource::Hostname => Vec::new(),
+                // REC2c3: nonprod routing policy fallbacks
+                PrimaryDomainSource::NonprodPolicy(id) => ('a'..='e')
+                    .map(|c| format!("{}.{}.fallback.ably-realtime-nonprod.com", id, c))
+                    .collect(),
+                // REC2c4/REC2c5: production routing policy fallbacks
+                PrimaryDomainSource::ProdPolicy(id) => ('a'..='e')
+                    .map(|c| format!("{}.{}.fallback.ably-realtime.com", id, c))
+                    .collect(),
+            }
+        };
+        self.primary_host = primary;
+        self.resolved_fallback_hosts = fallbacks;
+    }
+
+    fn build_rest(mut self, client: Box<dyn crate::http_client::HttpClient>) -> Result<rest::Rest> {
+        self.resolve_hosts();
         // Pre-populate cached token if credential is TokenDetails
         let cached_token = match &self.credential {
             auth::Credential::TokenDetails(td) => Some(td.clone()),
@@ -364,15 +477,10 @@ impl ClientOptions {
             tls: true,
             client_id: None,
             use_token_auth: false,
+            endpoint: None,
             environment: None,
             idempotent_rest_publishing: true, // TO3n: default true for >= 1.2
-            fallback_hosts: vec![
-                "a.ably-realtime.com".to_string(),
-                "b.ably-realtime.com".to_string(),
-                "c.ably-realtime.com".to_string(),
-                "d.ably-realtime.com".to_string(),
-                "e.ably-realtime.com".to_string(),
-            ],
+            fallback_hosts: None,
             format: rest::Format::MessagePack,
             query_time: false,
             auth_method: None,
@@ -380,8 +488,10 @@ impl ClientOptions {
             auth_params: Vec::new(),
             default_token_params: None,
             auto_connect: true,
-            rest_host: REST_HOST.to_string(),
-            realtime_host: "realtime.ably.io".to_string(),
+            rest_host: None,
+            realtime_host: None,
+            primary_host: DEFAULT_PRIMARY_DOMAIN.to_string(),
+            resolved_fallback_hosts: Vec::new(),
             port: 80,
             tls_port: 443,
             echo_messages: true,
@@ -400,6 +510,23 @@ impl ClientOptions {
             fallback_retry_timeout: Duration::from_secs(10 * 60),
             add_request_ids: false,
             http_client: None,
+            log_level: LogLevel::Error,
+            log_handler: None,
+        }
+    }
+}
+
+impl ClientOptions {
+    /// RSC2: emit a log event if a handler is configured and `level` is at
+    /// or below the configured severity threshold.
+    pub(crate) fn log(&self, level: LogLevel, msg: &str) {
+        if level == LogLevel::None || self.log_level == LogLevel::None {
+            return;
+        }
+        if level <= self.log_level {
+            if let Some(handler) = &self.log_handler {
+                handler(level, msg);
+            }
         }
     }
 }

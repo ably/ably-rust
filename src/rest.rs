@@ -604,7 +604,13 @@ impl Rest {
     }
 
     /// Build the base URL for a request.
-    fn build_url(&self, host: &str, path: &str, params: &[(&str, &str)]) -> Result<url::Url> {
+    fn build_url(
+        &self,
+        host: &str,
+        path: &str,
+        params: &[(&str, &str)],
+        request_id: Option<&str>,
+    ) -> Result<url::Url> {
         let scheme = if self.inner.opts.tls { "https" } else { "http" };
         let port = if self.inner.opts.tls {
             self.inner.opts.tls_port
@@ -627,15 +633,20 @@ impl Rest {
             url.query_pairs_mut().append_pair(k, v);
         }
 
-        // Add request_id if configured
-        if self.inner.opts.add_request_ids {
-            let mut buf = [0u8; 16];
-            rand::thread_rng().fill(&mut buf);
-            let request_id = base64::encode_config(&buf, base64::URL_SAFE_NO_PAD);
-            url.query_pairs_mut().append_pair("request_id", &request_id);
+        // RSC7c: the request_id is generated once per logical request and
+        // remains the same across fallback retries
+        if let Some(rid) = request_id {
+            url.query_pairs_mut().append_pair("request_id", rid);
         }
 
         Ok(url)
+    }
+
+    /// RSC7c: a fresh request id — url-safe base64 of random bytes.
+    fn generate_request_id() -> String {
+        let mut buf = [0u8; 12];
+        rand::thread_rng().fill(&mut buf);
+        base64::encode_config(buf, base64::URL_SAFE_NO_PAD)
     }
 
     /// Internal do_request that adds auth automatically.
@@ -685,7 +696,76 @@ impl Rest {
         body: Option<Vec<u8>>,
         auth_header: Option<&AuthHeader>,
     ) -> Result<HttpResponse> {
-        // Build standard headers
+        self.execute_request(method, path, extra_headers, params, body, auth_header, false)
+            .await
+    }
+
+    /// As do_request, but returns non-2xx responses as Ok for inspection
+    /// (HP4/HP5 semantics for Rest::request()). Token renewal on a 401 token
+    /// error still applies (RSA4b), as does fallback (RSC19e).
+    pub(crate) async fn do_request_raw(
+        &self,
+        method: &str,
+        path: &str,
+        extra_headers: &[(&str, &str)],
+        params: &[(&str, &str)],
+        body: Option<Vec<u8>>,
+    ) -> Result<HttpResponse> {
+        let auth_header = self.get_auth_header().await?;
+        let resp = self
+            .execute_request(method, path, extra_headers, params, body.clone(), Some(&auth_header), true)
+            .await?;
+        if resp.status == 401 {
+            let code = self.parse_error_body(&resp).and_then(|e| e.code).unwrap_or(0);
+            let cfg = self.auth_config();
+            let can_renew = cfg.callback.is_some() || cfg.url.is_some() || cfg.key.is_some();
+            if (40140..=40149).contains(&code) && can_renew {
+                {
+                    let mut state = self.inner.auth_state.lock().unwrap();
+                    state.cached_token = None;
+                }
+                let new_auth = self.get_auth_header().await?;
+                return self
+                    .execute_request(method, path, extra_headers, params, body, Some(&new_auth), true)
+                    .await;
+            }
+        }
+        Ok(resp)
+    }
+
+    /// Parse an Ably error body ({"error": {...}}) if present.
+    fn parse_error_body(&self, resp: &HttpResponse) -> Option<ErrorInfo> {
+        let ct = resp
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("");
+        let parsed: Option<WrappedError> = if ct.contains("application/x-msgpack") {
+            rmp_serde::from_slice(&resp.body).ok()
+        } else {
+            serde_json::from_slice(&resp.body).ok()
+        };
+        parsed.map(|w| w.error)
+    }
+
+    /// The request pipeline: standard headers, fallback rotation bounded by
+    /// httpMaxRetryCount (RSC15a) and httpMaxRetryDuration (TO3l6), cached
+    /// fallback host (RSC15f), and a stable request_id across retries (RSC7c).
+    /// In `raw` mode, HTTP error statuses are returned as Ok responses.
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_request(
+        &self,
+        method: &str,
+        path: &str,
+        extra_headers: &[(&str, &str)],
+        params: &[(&str, &str)],
+        body: Option<Vec<u8>>,
+        auth_header: Option<&AuthHeader>,
+        raw: bool,
+    ) -> Result<HttpResponse> {
+        // Build standard headers; extra headers override same-named standard
+        // ones (e.g. a per-request X-Ably-Version, RSC19f1)
         let mut all_headers: Vec<(String, String)> = vec![
             ("x-ably-version".to_string(), "6".to_string()),
             ("ably-agent".to_string(), format!("ably-rust/{}", env!("CARGO_PKG_VERSION"))),
@@ -708,14 +788,31 @@ impl Rest {
             }
         }
 
-        // Add extra headers (lowercase names for consistency)
         for (k, v) in extra_headers {
-            all_headers.push((k.to_lowercase(), v.to_string()));
+            let k = k.to_lowercase();
+            if let Some(existing) = all_headers.iter_mut().find(|(name, _)| *name == k) {
+                existing.1 = v.to_string();
+            } else {
+                all_headers.push((k, v.to_string()));
+            }
         }
 
-        let primary_host = self.inner.opts.rest_host.clone();
+        // RSC7c: one request id for the whole logical request
+        let request_id = if self.inner.opts.add_request_ids {
+            Some(Self::generate_request_id())
+        } else {
+            None
+        };
+        let attach_request_id = |mut err: ErrorInfo| -> ErrorInfo {
+            if err.request_id.is_none() {
+                err.request_id = request_id.clone();
+            }
+            err
+        };
 
-        // RSC15f: Check for a cached successful fallback host
+        let primary_host = self.inner.opts.primary_host.clone();
+
+        // RSC15f: a valid cached fallback host is tried first
         let first_host = {
             let fb = self.inner.fallback_state.lock().unwrap();
             match &*fb {
@@ -724,7 +821,15 @@ impl Rest {
             }
         };
 
-        let url = self.build_url(&first_host, path, params)?;
+        let timeout_duration = self.inner.opts.http_request_timeout;
+        let started = std::time::Instant::now();
+        let retry_budget = self.inner.opts.http_max_retry_duration;
+
+        let url = self.build_url(&first_host, path, params, request_id.as_deref())?;
+        self.inner.opts.log(
+            crate::options::LogLevel::Micro,
+            &format!("HTTP request: method={} host={} path={}", method, first_host, path),
+        );
         let req = HttpRequest {
             method: method.to_string(),
             url: url.to_string(),
@@ -733,26 +838,24 @@ impl Rest {
         };
 
         let mut last_error;
-        let timeout_duration = self.inner.opts.http_request_timeout;
-        let result = tokio::time::timeout(
-            timeout_duration,
-            self.inner.http_client.execute(req),
-        ).await;
+        let result = tokio::time::timeout(timeout_duration, self.inner.http_client.execute(req)).await;
         match result {
             Ok(Ok(resp)) => {
                 let retriable = Self::is_retriable_response(&resp);
+                if raw && !retriable {
+                    return Ok(resp);
+                }
                 match self.check_response(resp) {
                     Ok(outcome) => return Ok(outcome),
                     Err(e) => {
                         if !retriable && !Self::is_retriable_error(&e) {
-                            return Err(e);
+                            return Err(attach_request_id(e));
                         }
                         last_error = e;
                     }
                 }
             }
             Ok(Err(network_err)) => {
-                // Network error - fall through to fallback
                 last_error = ErrorInfo::with_status(
                     ErrorCode::InternalError.code(),
                     500,
@@ -760,7 +863,6 @@ impl Rest {
                 );
             }
             Err(_elapsed) => {
-                // Timeout - fall through to fallback
                 last_error = ErrorInfo::with_status(
                     ErrorCode::TimeoutError.code(),
                     408,
@@ -769,33 +871,43 @@ impl Rest {
             }
         }
 
-        // Build the retry host list.
-        // If we used a cached fallback as first_host, include primary in the retry list.
-        let fallback_hosts = &self.inner.opts.fallback_hosts;
+        // Build the retry host list. If the cached fallback was tried first,
+        // clear the cache and retry the primary first (RSC15f).
+        let fallback_hosts = &self.inner.opts.resolved_fallback_hosts;
         use rand::seq::SliceRandom;
         let mut retry_hosts: Vec<String> = Vec::new();
         if first_host != primary_host {
-            // Cached fallback failed — clear the cache and try primary first
             {
                 let mut fb = self.inner.fallback_state.lock().unwrap();
                 *fb = None;
             }
             retry_hosts.push(primary_host.clone());
         }
-        let mut remaining: Vec<&String> = fallback_hosts.iter()
+        let mut remaining: Vec<&String> = fallback_hosts
+            .iter()
             .filter(|h| h.as_str() != first_host)
             .collect();
         remaining.shuffle(&mut rand::thread_rng());
         retry_hosts.extend(remaining.into_iter().cloned());
 
         if retry_hosts.is_empty() {
-            return Err(last_error);
+            return Err(attach_request_id(last_error));
         }
 
         let max_retries = self.inner.opts.http_max_retry_count.min(retry_hosts.len());
 
         for host in retry_hosts.iter().take(max_retries) {
-            let url = self.build_url(host, path, params)?;
+            // TO3l6: the total time spent on retries must not exceed
+            // httpMaxRetryDuration
+            if started.elapsed() >= retry_budget {
+                break;
+            }
+
+            self.inner.opts.log(
+                crate::options::LogLevel::Minor,
+                &format!("Retrying against fallback host: method={} host={} path={}", method, host, path),
+            );
+            let url = self.build_url(host, path, params, request_id.as_deref())?;
             let req = HttpRequest {
                 method: method.to_string(),
                 url: url.to_string(),
@@ -803,26 +915,31 @@ impl Rest {
                 body: body.clone(),
             };
 
-            let result = tokio::time::timeout(
-                timeout_duration,
-                self.inner.http_client.execute(req),
-            ).await;
+            let result =
+                tokio::time::timeout(timeout_duration, self.inner.http_client.execute(req)).await;
             match result {
                 Ok(Ok(resp)) => {
                     let retriable = Self::is_retriable_response(&resp);
+                    if raw && !retriable {
+                        return Ok(resp);
+                    }
                     match self.check_response(resp) {
                         Ok(resp) => {
-                            // Cache successful fallback host
-                            let mut fb = self.inner.fallback_state.lock().unwrap();
-                            *fb = Some(CachedFallback {
-                                host: host.to_string(),
-                                expires: std::time::Instant::now() + self.inner.opts.fallback_retry_timeout,
-                            });
+                            // RSC15f: remember a successful fallback host
+                            // (the primary is not a fallback)
+                            if host.as_str() != primary_host {
+                                let mut fb = self.inner.fallback_state.lock().unwrap();
+                                *fb = Some(CachedFallback {
+                                    host: host.to_string(),
+                                    expires: std::time::Instant::now()
+                                        + self.inner.opts.fallback_retry_timeout,
+                                });
+                            }
                             return Ok(resp);
                         }
                         Err(e) => {
                             if !retriable && !Self::is_retriable_error(&e) {
-                                return Err(e);
+                                return Err(attach_request_id(e));
                             }
                             last_error = e;
                         }
@@ -833,7 +950,6 @@ impl Rest {
                     continue;
                 }
                 Err(_elapsed) => {
-                    // Timeout on fallback, continue trying
                     last_error = ErrorInfo::with_status(
                         ErrorCode::TimeoutError.code(),
                         408,
@@ -844,7 +960,11 @@ impl Rest {
             }
         }
 
-        Err(last_error)
+        self.inner.opts.log(
+            crate::options::LogLevel::Error,
+            &format!("HTTP request failed: method={} path={} error={}", method, path, last_error),
+        );
+        Err(attach_request_id(last_error))
     }
 
     /// Check an HTTP response, returning Ok(resp) for success or Err for errors.
@@ -900,7 +1020,8 @@ impl Rest {
     }
 
     fn is_retriable_response(resp: &HttpResponse) -> bool {
-        if resp.status >= 500 {
+        // RSC15l3: 500 <= status <= 504 qualifies for fallback
+        if (500..=504).contains(&resp.status) {
             return true;
         }
         // RSC15l4: CloudFront errors (status >= 400 with Server: CloudFront) are retriable
@@ -916,7 +1037,8 @@ impl Rest {
 
     fn is_retriable_error(err: &ErrorInfo) -> bool {
         if let Some(status) = err.status_code {
-            status >= 500
+            // RSC15l3 (and 408 for our internal timeout marker)
+            (500..=504).contains(&status) || status == 408
         } else {
             false
         }

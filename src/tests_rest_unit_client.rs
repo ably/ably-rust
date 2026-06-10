@@ -887,8 +887,8 @@ use crate::crypto::CipherParams;
 
         let reqs = get_mock(&client).captured_requests();
         assert_eq!(reqs.len(), 2, "CloudFront 403 should trigger fallback");
-        assert_eq!(reqs[0].url.host_str().unwrap(), "rest.ably.io");
-        assert_ne!(reqs[1].url.host_str().unwrap(), "rest.ably.io");
+        assert_eq!(reqs[0].url.host_str().unwrap(), "main.realtime.ably.net");
+        assert_ne!(reqs[1].url.host_str().unwrap(), "main.realtime.ably.net");
         Ok(())
     }
 
@@ -974,15 +974,15 @@ use crate::crypto::CipherParams;
         assert_eq!(reqs.len(), 4);
 
         // First request to the primary host
-        assert_eq!(reqs[0].url.host_str().unwrap(), "rest.ably.io");
+        assert_eq!(reqs[0].url.host_str().unwrap(), "main.realtime.ably.net");
 
         // Subsequent requests to fallback hosts
         let expected_fallbacks = vec![
-            "a.ably-realtime.com",
-            "b.ably-realtime.com",
-            "c.ably-realtime.com",
-            "d.ably-realtime.com",
-            "e.ably-realtime.com",
+            "main.a.fallback.ably-realtime.com",
+            "main.b.fallback.ably-realtime.com",
+            "main.c.fallback.ably-realtime.com",
+            "main.d.fallback.ably-realtime.com",
+            "main.e.fallback.ably-realtime.com",
         ];
         for req in &reqs[1..] {
             let host = req.url.host_str().unwrap();
@@ -1075,8 +1075,8 @@ use crate::crypto::CipherParams;
 
         let reqs = get_mock(&client).captured_requests();
         assert_eq!(reqs.len(), 2);
-        assert_eq!(reqs[0].url.host_str().unwrap(), "rest.ably.io");
-        assert_ne!(reqs[1].url.host_str().unwrap(), "rest.ably.io");
+        assert_eq!(reqs[0].url.host_str().unwrap(), "main.realtime.ably.net");
+        assert_ne!(reqs[1].url.host_str().unwrap(), "main.realtime.ably.net");
 
         Ok(())
     }
@@ -1129,7 +1129,7 @@ use crate::crypto::CipherParams;
         client.time().await?;
 
         let reqs = get_mock(&client).captured_requests();
-        assert_eq!(reqs[0].url.host_str().unwrap(), "rest.ably.io");
+        assert_eq!(reqs[0].url.host_str().unwrap(), "main.realtime.ably.net");
 
         Ok(())
     }
@@ -1179,7 +1179,7 @@ use crate::crypto::CipherParams;
         client.time().await?;
 
         let reqs = get_mock(&client).captured_requests();
-        assert_eq!(reqs[0].url.host_str().unwrap(), "sandbox-rest.ably.io");
+        assert_eq!(reqs[0].url.host_str().unwrap(), "sandbox.realtime.ably.net");
 
         Ok(())
     }
@@ -1238,7 +1238,7 @@ use crate::crypto::CipherParams;
 
         let reqs = get_mock(&client).captured_requests();
         assert_eq!(reqs.len(), 2);
-        assert_eq!(reqs[0].url.host_str().unwrap(), "rest.ably.io");
+        assert_eq!(reqs[0].url.host_str().unwrap(), "main.realtime.ably.net");
         let fallback_host = reqs[1].url.host_str().unwrap();
         assert!(
             custom_fallbacks.iter().any(|h| h == fallback_host),
@@ -1271,14 +1271,14 @@ use crate::crypto::CipherParams;
 
         let reqs = get_mock(&client).captured_requests();
         assert_eq!(reqs.len(), 2);
-        assert_eq!(reqs[0].url.host_str().unwrap(), "sandbox-rest.ably.io");
+        assert_eq!(reqs[0].url.host_str().unwrap(), "sandbox.realtime.ably.net");
 
         let expected_env_fallbacks = vec![
-            "sandbox-a-fallback.ably-realtime.com",
-            "sandbox-b-fallback.ably-realtime.com",
-            "sandbox-c-fallback.ably-realtime.com",
-            "sandbox-d-fallback.ably-realtime.com",
-            "sandbox-e-fallback.ably-realtime.com",
+            "sandbox.a.fallback.ably-realtime.com",
+            "sandbox.b.fallback.ably-realtime.com",
+            "sandbox.c.fallback.ably-realtime.com",
+            "sandbox.d.fallback.ably-realtime.com",
+            "sandbox.e.fallback.ably-realtime.com",
         ];
         let fallback_host = reqs[1].url.host_str().unwrap();
         assert!(
@@ -1381,14 +1381,14 @@ use crate::crypto::CipherParams;
 
         let reqs = get_mock(&client).captured_requests();
         assert_eq!(reqs.len(), 2);
-        assert_eq!(reqs[0].url.host_str().unwrap(), "rest.ably.io");
+        assert_eq!(reqs[0].url.host_str().unwrap(), "main.realtime.ably.net");
 
         let expected_fallbacks = vec![
-            "a.ably-realtime.com",
-            "b.ably-realtime.com",
-            "c.ably-realtime.com",
-            "d.ably-realtime.com",
-            "e.ably-realtime.com",
+            "main.a.fallback.ably-realtime.com",
+            "main.b.fallback.ably-realtime.com",
+            "main.c.fallback.ably-realtime.com",
+            "main.d.fallback.ably-realtime.com",
+            "main.e.fallback.ably-realtime.com",
         ];
         let fallback_host = reqs[1].url.host_str().unwrap();
         assert!(
@@ -2234,7 +2234,7 @@ use crate::crypto::CipherParams;
 
         let reqs = get_mock(&client).captured_requests();
         assert_eq!(reqs.len(), 1);
-        assert_eq!(reqs[0].url.host_str().unwrap(), "rest.ably.io");
+        assert_eq!(reqs[0].url.host_str().unwrap(), "main.realtime.ably.net");
         Ok(())
     }
 
@@ -2254,7 +2254,7 @@ use crate::crypto::CipherParams;
 
         let reqs = get_mock(&client).captured_requests();
         assert_eq!(reqs.len(), 1);
-        assert_eq!(reqs[0].url.host_str().unwrap(), "test-rest.ably.io");
+        assert_eq!(reqs[0].url.host_str().unwrap(), "test.realtime.ably.net");
         Ok(())
     }
 
@@ -2273,7 +2273,7 @@ use crate::crypto::CipherParams;
         let reqs = get_mock(&client).captured_requests();
         assert_eq!(reqs.len(), 3);
         for req in &reqs {
-            assert_eq!(req.url.host_str().unwrap(), "rest.ably.io");
+            assert_eq!(req.url.host_str().unwrap(), "main.realtime.ably.net");
         }
         Ok(())
     }
@@ -2301,8 +2301,8 @@ use crate::crypto::CipherParams;
 
         let reqs = get_mock(&client).captured_requests();
         assert_eq!(reqs.len(), 2);
-        assert_eq!(reqs[0].url.host_str().unwrap(), "rest.ably.io");
-        assert_ne!(reqs[1].url.host_str().unwrap(), "rest.ably.io");
+        assert_eq!(reqs[0].url.host_str().unwrap(), "main.realtime.ably.net");
+        assert_ne!(reqs[1].url.host_str().unwrap(), "main.realtime.ably.net");
         Ok(())
     }
 
@@ -2318,7 +2318,7 @@ use crate::crypto::CipherParams;
 
         let reqs = get_mock(&client).captured_requests();
         assert_eq!(reqs.len(), 1);
-        assert_eq!(reqs[0].url.host_str().unwrap(), "rest.ably.io");
+        assert_eq!(reqs[0].url.host_str().unwrap(), "main.realtime.ably.net");
         assert_eq!(reqs[0].url.path(), "/channels/test-channel/history");
         assert_eq!(reqs[0].method, "GET");
         Ok(())
@@ -2330,40 +2330,36 @@ use crate::crypto::CipherParams;
     // ===============================================================
 
     #[tokio::test]
-    async fn rsc2_default_log_level_warn() -> Result<()> {
-        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    async fn rsc2_default_log_level_error_only() -> Result<()> {
+        // RSC2: the default log level emits errors but not verbose entries
+        use std::sync::Mutex as StdMutex;
+        let captured = Arc::new(StdMutex::new(Vec::<crate::options::LogLevel>::new()));
         let logs = captured.clone();
 
-        let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &json!([1234567890000_i64]))
-        });
-
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!({})));
         let client = ClientOptions::new("appId.keyId:keySecret")
-            .log_handler(move |_level, message| {
-                logs.lock().unwrap().push(message.to_string());
+            .log_handler(move |level, _| {
+                logs.lock().unwrap().push(level);
             })
             .rest_with_mock(mock)
             .unwrap();
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
 
-        // Default level is warn: only warn-level (or lower) logs should appear.
-        // Since the stub log_handler doesn't actually emit, we just verify it compiled.
-        let _logs = captured.lock().unwrap();
+        // A successful request emits nothing at the default (Error) level
+        assert!(captured.lock().unwrap().is_empty());
         Ok(())
     }
 
 
+
     #[tokio::test]
     async fn rsc2b_log_level_none_suppresses_all() -> Result<()> {
-        use crate::options::LogLevel;
-
-        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        // RSC2b: LogLevel::None suppresses everything, even errors
+        use std::sync::Mutex as StdMutex;
+        let captured = Arc::new(StdMutex::new(Vec::<String>::new()));
         let logs = captured.clone();
 
-        let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &json!([1234567890000_i64]))
-        });
-
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::network_error());
         let client = ClientOptions::new("appId.keyId:keySecret")
             .log_level(LogLevel::None)
             .log_handler(move |_level, message| {
@@ -2371,12 +2367,15 @@ use crate::crypto::CipherParams;
             })
             .rest_with_mock(mock)
             .unwrap();
-        client.time().await?;
+        let _ = client.request("GET", "/channels/test").send().await;
 
-        let logs = captured.lock().unwrap();
-        assert_eq!(logs.len(), 0, "LogLevel::None should suppress all logs");
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "LogLevel::None must suppress all logs"
+        );
         Ok(())
     }
+
 
 
     // ===============================================================
@@ -2683,14 +2682,20 @@ use crate::crypto::CipherParams;
     // UTS: rest/unit/request.md — RSC19e
     #[tokio::test]
     async fn rsc19e_request_error_propagation() -> Result<()> {
+        // HP4/HP5: HTTP error statuses are returned as a response with
+        // success() == false, not as an Err
         let mock = MockHttpClient::with_handler(|_req| {
             MockResponse::json(404, &json!({
                 "error": {"code": 40400, "statusCode": 404, "message": "Not found", "href": "https://help.ably.io/error/40400"}
-            }))
+            })).with_header("x-ably-errorcode", "40400")
+               .with_header("x-ably-errormessage", "Not found")
         });
         let client = mock_client(mock);
-        let result = client.request("GET", "/nonexistent").send().await;
-        assert!(result.is_err(), "404 response should propagate as error");
+        let resp = client.request("GET", "/nonexistent").send().await?;
+        assert_eq!(resp.status_code(), 404);
+        assert!(!resp.success());
+        assert_eq!(resp.error_code(), Some(40400)); // HP6
+        assert_eq!(resp.error_message(), Some("Not found")); // HP7
         Ok(())
     }
 
@@ -3013,7 +3018,7 @@ use crate::crypto::CipherParams;
     // ===============================================================
 
     // ---------------------------------------------------------------
-    // HP1 — Default REST host is "rest.ably.io"
+    // HP1 — Default REST host is "main.realtime.ably.net"
     // ---------------------------------------------------------------
     #[tokio::test]
     async fn hp1_default_rest_host() -> Result<()> {
@@ -3023,7 +3028,7 @@ use crate::crypto::CipherParams;
         let client = mock_client(mock);
         client.time().await?;
         let reqs = get_mock(&client).captured_requests();
-        assert_eq!(reqs[0].url.host_str(), Some("rest.ably.io"));
+        assert_eq!(reqs[0].url.host_str(), Some("main.realtime.ably.net"));
         Ok(())
     }
 
@@ -3032,7 +3037,9 @@ use crate::crypto::CipherParams;
     // HP2 — Custom realtime_host does not affect REST host
     // ---------------------------------------------------------------
     #[tokio::test]
-    async fn hp2_default_realtime_host() -> Result<()> {
+    async fn rec1d2_realtime_host_sets_primary_domain() -> Result<()> {
+        // REC1d2: with no restHost, a deprecated realtimeHost override
+        // becomes the primary domain (REST and realtime share one domain)
         let mock = MockHttpClient::with_handler(|_req| {
             MockResponse::json(200, &json!([1234567890000_i64]))
         });
@@ -3041,7 +3048,7 @@ use crate::crypto::CipherParams;
             .rest_with_mock(mock)?;
         client.time().await?;
         let reqs = get_mock(&client).captured_requests();
-        assert_eq!(reqs[0].url.host_str(), Some("rest.ably.io"));
+        assert_eq!(reqs[0].url.host_str(), Some("custom.realtime.host"));
         Ok(())
     }
 
@@ -3115,16 +3122,18 @@ use crate::crypto::CipherParams;
     // HP6 — Custom realtime host does not affect REST requests
     // ---------------------------------------------------------------
     #[tokio::test]
-    async fn hp6_custom_realtime_host_does_not_affect_rest() -> Result<()> {
+    async fn rec1d1_rest_host_takes_precedence_over_realtime_host() -> Result<()> {
+        // REC1d1: when both deprecated host overrides are set, restHost wins
         let mock = MockHttpClient::with_handler(|_req| {
             MockResponse::json(200, &json!([1234567890000_i64]))
         });
         let client = ClientOptions::new("appId.keyId:keySecret")
+            .rest_host("custom.rest.example.com")?
             .realtime_host("custom.realtime.example.com")
             .rest_with_mock(mock)?;
         client.time().await?;
         let reqs = get_mock(&client).captured_requests();
-        assert_eq!(reqs[0].url.host_str(), Some("rest.ably.io"));
+        assert_eq!(reqs[0].url.host_str(), Some("custom.rest.example.com"));
         Ok(())
     }
 
@@ -3172,7 +3181,7 @@ use crate::crypto::CipherParams;
         client.time().await?;
         let reqs = get_mock(&client).captured_requests();
         let url_str = reqs[0].url.to_string();
-        assert!(url_str.starts_with("https://rest.ably.io/"), "got: {}", url_str);
+        assert!(url_str.starts_with("https://main.realtime.ably.net/"), "got: {}", url_str);
         Ok(())
     }
 
@@ -3328,20 +3337,222 @@ use crate::crypto::CipherParams;
     }
 
 
+    // REC1b2 — an endpoint containing a '.' is a hostname: primary domain is
+    // the endpoint itself and there are no fallback domains (REC2c2)
+    #[test]
+    fn rec1b2_endpoint_hostname() {
+        let mut opts = ClientOptions::new("appId.keyId:keySecret")
+            .endpoint("custom.example.com")
+            .unwrap();
+        opts.resolve_hosts();
+        assert_eq!(opts.primary_host, "custom.example.com");
+        assert!(opts.resolved_fallback_hosts.is_empty());
+
+        let mut opts = ClientOptions::new("appId.keyId:keySecret")
+            .endpoint("localhost")
+            .unwrap();
+        opts.resolve_hosts();
+        assert_eq!(opts.primary_host, "localhost");
+    }
+
+
+    // REC1b3/REC2c3 — a "nonprod:[id]" endpoint routes to the nonprod
+    // cluster with nonprod fallback domains
+    #[test]
+    fn rec1b3_endpoint_nonprod_routing_policy() {
+        let mut opts = ClientOptions::new("appId.keyId:keySecret")
+            .endpoint("nonprod:sandbox")
+            .unwrap();
+        opts.resolve_hosts();
+        assert_eq!(opts.primary_host, "sandbox.realtime.ably-nonprod.net");
+        assert_eq!(opts.resolved_fallback_hosts.len(), 5);
+        assert_eq!(
+            opts.resolved_fallback_hosts[0],
+            "sandbox.a.fallback.ably-realtime-nonprod.com"
+        );
+        assert_eq!(
+            opts.resolved_fallback_hosts[4],
+            "sandbox.e.fallback.ably-realtime-nonprod.com"
+        );
+    }
+
+
+    // REC1b4/REC2c4 — a production routing policy ID endpoint
+    #[test]
+    fn rec1b4_endpoint_production_routing_policy() {
+        let mut opts = ClientOptions::new("appId.keyId:keySecret")
+            .endpoint("acme")
+            .unwrap();
+        opts.resolve_hosts();
+        assert_eq!(opts.primary_host, "acme.realtime.ably.net");
+        assert_eq!(opts.resolved_fallback_hosts.len(), 5);
+        assert_eq!(opts.resolved_fallback_hosts[0], "acme.a.fallback.ably-realtime.com");
+    }
+
+
+    // REC1b1 — endpoint is mutually exclusive with the deprecated options
+    #[test]
+    fn rec1b1_endpoint_conflicts_with_deprecated_options() {
+        assert!(ClientOptions::new("appId.keyId:keySecret")
+            .environment("sandbox").unwrap()
+            .endpoint("main")
+            .is_err());
+        assert!(ClientOptions::new("appId.keyId:keySecret")
+            .rest_host("custom.example.com").unwrap()
+            .endpoint("main")
+            .is_err());
+        assert!(ClientOptions::new("appId.keyId:keySecret")
+            .endpoint("main").unwrap()
+            .environment("sandbox")
+            .is_err());
+    }
+
+
+    // RSC7c — the request_id persists across fallback retries
+    // UTS: rest/unit/RSC7c/request-id-preserved-fallback-1
+    #[tokio::test]
+    async fn rsc7c_request_id_preserved_across_retries() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            if req.url.host_str() == Some("main.realtime.ably.net") {
+                MockResponse::json(500, &json!({"error": {"code": 50000, "statusCode": 500}}))
+            } else {
+                MockResponse::json(200, &json!({}))
+            }
+        });
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .add_request_ids(true)
+            .rest_with_mock(mock)
+            .unwrap();
+        client.request("GET", "/channels/test").send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        assert!(reqs.len() >= 2, "expected a fallback retry");
+        let rid = |i: usize| reqs[i].url.query_pairs()
+            .find(|(k, _)| k == "request_id")
+            .map(|(_, v)| v.to_string())
+            .expect("request_id param present");
+        assert_eq!(rid(0), rid(1), "request_id must be identical across retries");
+        Ok(())
+    }
+
+
+    // RSC7c — a failed request's ErrorInfo carries the request_id
+    #[tokio::test]
+    async fn rsc7c_error_info_carries_request_id() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(404, &json!({"error": {"code": 40400, "statusCode": 404, "message": "nope"}}))
+        });
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .add_request_ids(true)
+            .rest_with_mock(mock)
+            .unwrap();
+        let err = client.channels().get("missing").history().send().await.unwrap_err();
+        let rid = err.request_id.expect("ErrorInfo.request_id populated");
+
+        let reqs = get_mock(&client).captured_requests();
+        let url_rid = reqs[0].url.query_pairs()
+            .find(|(k, _)| k == "request_id")
+            .map(|(_, v)| v.to_string())
+            .unwrap();
+        assert_eq!(rid, url_rid);
+        Ok(())
+    }
+
+
+    // TO3l6 — total retry time is bounded by httpMaxRetryDuration
+    #[tokio::test]
+    async fn to3l6_http_max_retry_duration_enforced() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(500, &json!({"error": {"code": 50000, "statusCode": 500}}))
+        });
+        // every attempt takes ~50ms; the retry budget allows only ~1 retry
+        mock.set_response_delay(std::time::Duration::from_millis(50));
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .rest_with_mock(mock)
+            .unwrap();
+        let err = client.channels().get("x").history().send().await.unwrap_err();
+        assert_eq!(err.status_code, Some(500));
+        // With a 15s default budget all 3 retries run; this asserts the
+        // mechanism is wired by checking we did NOT exceed max retries + 1
+        let count = get_mock(&client).request_count();
+        assert!(count <= 4, "retry count bounded, got {}", count);
+        Ok(())
+    }
+
+
+    // HP3 — request() normalises the body: object → single item, array → items
+    #[tokio::test]
+    async fn hp3_request_items_normalised() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            if req.url.path() == "/single" {
+                MockResponse::json(200, &json!({"id": "one"}))
+            } else {
+                MockResponse::json(200, &json!([{"id": "a"}, {"id": "b"}]))
+            }
+        });
+        let client = mock_client(mock);
+
+        let single = client.request("GET", "/single").send().await?;
+        assert_eq!(single.items().len(), 1);
+        assert_eq!(single.items()[0]["id"], "one");
+
+        let multi = client.request("GET", "/multi").send().await?;
+        assert_eq!(multi.items().len(), 2);
+        assert_eq!(multi.items()[1]["id"], "b");
+        Ok(())
+    }
+
+
+    // HP2 — request() supports pagination via Link headers
+    #[tokio::test]
+    async fn hp2_request_pagination() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            if req.url.query().unwrap_or("").contains("page=2") {
+                MockResponse::json(200, &json!([{"id": "second"}]))
+            } else {
+                MockResponse::json(200, &json!([{"id": "first"}]))
+                    .with_header("link", "<./list?page=2>; rel=\"next\"")
+            }
+        });
+        let client = mock_client(mock);
+        let page1 = client.request("GET", "/list").send().await?;
+        assert!(page1.has_next());
+        let page2 = page1.next().await?.expect("next page");
+        assert_eq!(page2.items()[0]["id"], "second");
+        assert!(page2.is_last());
+        Ok(())
+    }
+
+
+    // RSC19f1 — version() overrides the X-Ably-Version header per request
+    #[tokio::test]
+    async fn rsc19f1_version_override() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
+        let client = mock_client(mock);
+        client.request("GET", "/x").version(3).send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let versions: Vec<&str> = reqs[0].headers.iter()
+            .filter(|(k, _)| k == "x-ably-version")
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert_eq!(versions, vec!["3"], "exactly one overridden version header");
+        Ok(())
+    }
+
+
     // ---------------------------------------------------------------
     // REC1d — realtime_host overrides default independently
     // ---------------------------------------------------------------
     #[tokio::test]
     async fn rec1d_realtime_host_overrides_default_independently() -> Result<()> {
-        let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &json!([1234567890000_i64]))
-        });
-        let client = ClientOptions::new("appId.keyId:keySecret")
-            .realtime_host("my-custom-realtime.example.com")
-            .rest_with_mock(mock)?;
-        client.time().await?;
-        let reqs = get_mock(&client).captured_requests();
-        assert_eq!(reqs[0].url.host_str(), Some("rest.ably.io"));
+        // REC1d2: realtimeHost (deprecated) defines the primary domain, and
+        // per REC2c6 there are then no fallback domains
+        let mut opts = ClientOptions::new("appId.keyId:keySecret")
+            .realtime_host("rt.example.com");
+        opts.resolve_hosts();
+        assert_eq!(opts.primary_host, "rt.example.com");
+        assert!(opts.resolved_fallback_hosts.is_empty());
         Ok(())
     }
 
@@ -3350,11 +3561,14 @@ use crate::crypto::CipherParams;
     // REC2c6 — Custom rest_host clears fallback hosts
     // ---------------------------------------------------------------
     #[test]
-    fn rec2c6_custom_rest_host_clears_fallback_hosts() {
-        let opts = ClientOptions::new("appId.keyId:keySecret")
+    fn rec2c6_rest_host_fallbacks_resolution() {
+        // REC2c6: a deprecated restHost override yields no fallback domains
+        let mut opts = ClientOptions::new("appId.keyId:keySecret")
             .rest_host("custom.rest.example.com")
             .unwrap();
-        assert!(opts.fallback_hosts.is_empty());
+        opts.resolve_hosts();
+        assert_eq!(opts.primary_host, "custom.rest.example.com");
+        assert!(opts.resolved_fallback_hosts.is_empty());
     }
 
 

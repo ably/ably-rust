@@ -196,3 +196,33 @@
 - DESIGN.md not yet updated for API changes (PublishResult, messages(), auth
   signatures) — do at end of Phase R.
 - Next: R4 endpoint spec + request pipeline.
+
+### R4 Endpoint Spec + Request Pipeline — DONE (2026-06-10)
+- REC1/REC2: new `endpoint` option (hostname | routing policy | "nonprod:[id]");
+  primary domain resolution at build time with REC1b1 mutual-exclusion checks;
+  defaults now main.realtime.ably.net + main.[a-e].fallback.ably-realtime.com;
+  environment() maps to [env].realtime.ably.net (REC1c2); rest_host/realtime_host
+  deprecated hostname overrides (REC1d, no fallbacks per REC2c6); explicit
+  fallbackHosts always win (REC2a2). ClientOptions host fields are now Options
+  with resolve_hosts() populating primary_host/resolved_fallback_hosts.
+- RSC7c: one request_id per logical request, stable across fallback retries,
+  attached to ErrorInfo.request_id on failure.
+- TO3l6: httpMaxRetryDuration enforced as an elapsed-time budget on retries;
+  RSC15l3: retriable statuses bounded to 500-504; primary host success is no
+  longer cached as a "fallback"; http_open_timeout wired to reqwest connect_timeout.
+- HP1-HP8/RSC19: Rest::request() now returns HttpPaginatedResponse — items
+  normalised (object→1, array→n), statusCode/success/errorCode/errorMessage from
+  X-Ably-Errorcode/-Errormessage headers, headers(), Link-header pagination
+  (next/first); HTTP error statuses are inspectable responses, not Errs;
+  version() per-request X-Ably-Version override (RSC19f1); token renewal on 401
+  token errors preserved in raw mode.
+- RSC2/TO3b/TO3c: logging implemented — LogLevel ordering, log_handler invoked
+  with (level, message); request logs carry method/host/path; errors at Error
+  level; None suppresses all. (Structured context objects deferred.)
+- Tests: legacy-domain expectations migrated to REC domains; falsely-IDed
+  REC/HP tests rewritten to real behaviors (rec1b1/b2/b3/b4, rec1d1/d2, rsc7c x2,
+  to3l6, hp2/hp3 request, rsc19f1 override, rsc19e per HP4/5); logging tests are
+  real; renewal tests moved to typed requests with exact request-count asserts.
+- Test status: unit 751 pass / 439 fail (realtime stubs) / 91 ignored;
+  integration 47/47 vs sandbox.
+- Next: R5 remaining unit-test repair, then R6 integration hardening.

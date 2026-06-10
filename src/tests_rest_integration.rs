@@ -177,17 +177,25 @@ async fn rsa4_invalid_credentials_rejected() {
     let client = sandbox_client(&invalid_key);
 
     let channel_name = format!("test-RSA4-invalid-{}", random_id());
-    match client
+    // request() surfaces HTTP errors as an inspectable response (HP4/HP5)
+    let resp = client
         .request("GET", &format!("/channels/{}", channel_name))
         .send()
         .await
-    {
-        Err(err) => {
-            assert_eq!(err.status_code, Some(401));
-            assert_eq!(err.code_value(), 40400, "Expected 40400 (key not found)");
-        }
-        Ok(_) => panic!("Expected auth error for invalid key"),
-    }
+        .expect("request() must not error on HTTP error statuses");
+    assert_eq!(resp.status_code(), 401);
+    assert!(!resp.success());
+    assert_eq!(resp.error_code(), Some(40400), "Expected 40400 (key not found)");
+
+    // A typed method propagates the same condition as an error
+    let err = client
+        .channels()
+        .get(&channel_name)
+        .history()
+        .send()
+        .await
+        .expect_err("typed request must error for invalid key");
+    assert_eq!(err.status_code, Some(401));
 }
 
 // ============================================================================

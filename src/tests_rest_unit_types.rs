@@ -1285,77 +1285,65 @@ use crate::crypto::CipherParams;
 
     #[tokio::test]
     async fn to3b_log_level_changeable() -> Result<()> {
-        use crate::options::LogLevel;
-
-        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        // TO3b: raising logLevel to Micro emits request-level logs
+        use std::sync::Mutex as StdMutex;
+        let captured = Arc::new(StdMutex::new(Vec::<(crate::options::LogLevel, String)>::new()));
         let logs = captured.clone();
 
-        let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &json!([1234567890000_i64]))
-        });
-
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!({})));
         let client = ClientOptions::new("appId.keyId:keySecret")
-            .log_level(LogLevel::Micro)
-            .log_handler(move |_level, message| {
-                logs.lock().unwrap().push(message.to_string());
+            .log_level(crate::options::LogLevel::Micro)
+            .log_handler(move |level, message| {
+                logs.lock().unwrap().push((level, message.to_string()));
             })
             .rest_with_mock(mock)
             .unwrap();
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
 
-        // Log handler is a stub, so we just verify the client was created and used
+        let logs = captured.lock().unwrap();
+        assert!(!logs.is_empty(), "Micro level must emit request logs");
+        // TO3c2: HTTP request logs carry method, host and path
+        let req_log = logs.iter().find(|(_, m)| m.contains("HTTP request"))
+            .expect("expected an HTTP request log entry");
+        assert!(req_log.1.contains("method=GET"));
+        assert!(req_log.1.contains("host="));
+        assert!(req_log.1.contains("path=/channels/test"));
         Ok(())
     }
 
 
     #[tokio::test]
-    async fn to3c_custom_handler_structured_events() -> Result<()> {
-        use crate::options::LogLevel;
-
-        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    async fn to3c_custom_handler_receives_events() -> Result<()> {
+        // TO3c: a custom handler receives (level, message) log events
+        use std::sync::Mutex as StdMutex;
+        let captured = Arc::new(StdMutex::new(Vec::<crate::options::LogLevel>::new()));
         let logs = captured.clone();
 
-        let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &json!([1234567890000_i64]))
-        });
-
+        // A request that fails entirely emits an Error-level log
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::network_error());
         let client = ClientOptions::new("appId.keyId:keySecret")
-            .log_level(LogLevel::Minor)
-            .log_handler(move |_level, message| {
-                logs.lock().unwrap().push(message.to_string());
+            .log_handler(move |level, _message| {
+                logs.lock().unwrap().push(level);
             })
             .rest_with_mock(mock)
             .unwrap();
-        client.time().await?;
+        let _ = client.request("GET", "/channels/test").send().await;
 
-        // Log handler is a stub — just verify compilation and client creation
+        let logs = captured.lock().unwrap();
+        assert!(
+            logs.contains(&crate::options::LogLevel::Error),
+            "failed request must emit an Error log, got {:?}",
+            *logs
+        );
         Ok(())
     }
 
 
-    #[tokio::test]
-    async fn to3c2_context_contains_expected_keys() -> Result<()> {
-        use crate::options::LogLevel;
 
-        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let logs = captured.clone();
 
-        let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &json!([1234567890000_i64]))
-        });
 
-        let client = ClientOptions::new("appId.keyId:keySecret")
-            .log_level(LogLevel::Micro)
-            .log_handler(move |_level, message| {
-                logs.lock().unwrap().push(message.to_string());
-            })
-            .rest_with_mock(mock)
-            .unwrap();
-        client.time().await?;
 
-        // Log handler is a stub — just verify compilation and client creation
-        Ok(())
-    }
+
 
 
     // ===============================================================
@@ -1583,8 +1571,11 @@ use crate::crypto::CipherParams;
             .rest_host("custom.ably.io")
             .unwrap()
             .fallback_hosts(vec!["fb1.ably.io".to_string(), "fb2.ably.io".to_string()]);
-        assert_eq!(opts.rest_host, "custom.ably.io");
-        assert_eq!(opts.fallback_hosts.len(), 2);
+        let mut opts = opts;
+        opts.resolve_hosts();
+        assert_eq!(opts.primary_host, "custom.ably.io");
+        // REC2a2: explicit fallbackHosts win
+        assert_eq!(opts.resolved_fallback_hosts.len(), 2);
     }
 
 

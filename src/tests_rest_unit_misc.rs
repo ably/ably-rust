@@ -847,10 +847,13 @@ use crate::crypto::CipherParams;
             .use_binary_protocol(false)
             .rest_with_mock(mock)
             .unwrap();
-        match client.request("GET", "/missing").send().await {
-            Err(err) => assert_eq!(err.error_code(), crate::error::ErrorCode::NotFound),
-            Ok(_) => panic!("Expected 404 error"),
-        }
+        // Typed methods propagate HTTP errors as Err
+        let err = client.channels().get("missing").history().send().await.unwrap_err();
+        assert_eq!(err.error_code(), crate::error::ErrorCode::NotFound);
+        // request() returns the error status for inspection (HP4/HP5)
+        let resp = client.request("GET", "/missing").send().await.unwrap();
+        assert_eq!(resp.status_code(), 404);
+        assert!(!resp.success());
     }
 
 
@@ -862,10 +865,8 @@ use crate::crypto::CipherParams;
             }))
         });
         let client = mock_client(mock);
-        match client.request("GET", "/error").send().await {
-            Err(err) => assert_eq!(err.error_code(), crate::error::ErrorCode::InternalError),
-            Ok(_) => panic!("Expected 500 error"),
-        }
+        let err = client.channels().get("err-ch").history().send().await.unwrap_err();
+        assert_eq!(err.error_code(), crate::error::ErrorCode::InternalError);
     }
 
 

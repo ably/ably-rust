@@ -3333,7 +3333,7 @@ use crate::crypto::CipherParams;
 
             let transport = Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
             let mut opts = ClientOptions::new("appId.keyId:keySecret").auto_connect(false);
-            opts.fallback_hosts = fallback_hosts.clone();
+            opts.fallback_hosts = Some(fallback_hosts.clone());
             let client = Realtime::with_mock(&opts, transport).unwrap();
 
             client.connect();

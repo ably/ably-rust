@@ -26,9 +26,15 @@ pub(crate) struct ReqwestHttpClient {
 }
 
 impl ReqwestHttpClient {
-    pub fn new() -> Self {
+    /// `connect_timeout` is the TO3l3 httpOpenTimeout — connection
+    /// establishment only; the per-attempt request timeout is enforced by
+    /// the caller.
+    pub fn new(connect_timeout: std::time::Duration) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(connect_timeout)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 }
