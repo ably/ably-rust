@@ -39,6 +39,7 @@ pub(crate) struct MockWebSocketInner {
     activity: Notify,
 }
 
+#[derive(Clone)]
 pub(crate) struct MockWebSocket {
     inner: Arc<MockWebSocketInner>,
 }

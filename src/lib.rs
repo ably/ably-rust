@@ -67,6 +67,8 @@ mod tests_design_conformance;
 // Realtime unit tests (UTS-derived, stage 5.1+)
 #[cfg(test)]
 mod tests_realtime_uts_connection;
+#[cfg(test)]
+mod tests_realtime_uts_channels;
 
 // Realtime unit tests
 #[cfg(test)]

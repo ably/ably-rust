@@ -403,3 +403,57 @@ This pass added:
   presence/annotations + misc) / 70 ignored.
 - Next: 5.4 channel lifecycle (RTS, RTL2-5, RTL16) — ChannelCtx, EnsureChannel,
   per-channel snapshots, attach/detach.
+
+### 5.4 Channel Lifecycle — DONE (2026-06-10)
+- ChannelCtx joins the loop-owned state: per-channel state machine, serials,
+  modes, op deadlines, pending attach/detach repliers — all plain owned data,
+  zero locks. Per-channel watch snapshot (state/errorReason/serials/modes) +
+  broadcast event stream, published snapshot-before-event per the §4 contract.
+- Channels handle registry: the design's ONE sanctioned realtime lock (a
+  Mutex<HashMap<name, Arc<RealtimeChannel>>> of handles only). get/
+  get_with_options sends Command::EnsureChannel (RTS3a identity, RTS3b options
+  on create); release sends Command::ReleaseChannel (detach-then-remove,
+  RTS4a). RealtimeChannel handle: snapshot reads, attach/detach oneshot
+  round-trips, on_state_change/when_state (RTL25, one-shot semantics).
+- Attach (RTL4): a no-op when attached; shares the in-flight op (RTL4h, incl.
+  attach-while-detaching continuation); errors on Closed/Closing/Failed/
+  Suspended connections (RTL4b); queues while CONNECTING/DISCONNECTED with
+  immediate ATTACHING (RTL4i); ATTACH carries channelSerial on reattach
+  (RTL4c1), params (RTL4k), mode flags (RTL4l), ATTACH_RESUME (RTL4j); timeout
+  → SUSPENDED (RTL4f); granted modes from ATTACHED flags (RTL4m); attach from
+  FAILED clears errorReason (RTL4g/RTL4c).
+- Detach (RTL5): no-op from Initialized/Detached (RTL5a); error from Failed
+  (RTL5b); Suspended → immediate Detached (RTL5j); queued behind in-flight
+  attach/detach (RTL5i); RTL5l immediate local detach when the connection
+  isn't CONNECTED — including abandoning a QUEUED (RTL4i) attach, a real gap
+  the ported cross-check caught (the queued detach would have waited forever);
+  detach timeout reverts to the prior state (RTL5f); ATTACHED while detaching
+  → fresh DETACH (RTL5k).
+- Connection effects (RTL3): Failed/Closed/Suspended fail/detach/suspend
+  attached AND attaching channels (in-flight attach repliers resolved with the
+  error); Disconnected is a channel no-op (RTL3e); on CONNECTED, attached/
+  attaching/suspended channels reattach with serial + ATTACH_RESUME (RTL3d).
+- Events: state-snapshot-then-event ordering; no duplicate state events
+  (RTL2g); additional ATTACHED → UPDATE with resumed=false, SUPPRESSED when
+  the RESUMED flag is set (RTL12 — fixed during UTS test derivation);
+  resumed/hasBacklog propagated from flags (RTL2d/RTL2i/TH6). RTL15b1:
+  channelSerial cleared on Detached/Suspended/Failed transitions.
+- Tests: 37 UTS-derived in tests_realtime_uts_channels.rs (RTS, RTL2, RTL3,
+  RTL4, RTL5, RTL15b1, RTL23, RTL25 — all green), incl. a live sandbox
+  attach/detach proof. Ported cross-check (tests_realtime_unit_channel.rs):
+  68 5.4-scope tests ADOPTED (13 needed only the mechanical #[test] →
+  #[tokio::test] conversion since client construction now spawns the loop);
+  12 SUPERSEDED and deleted (transient-state races vs the coalescing watch,
+  mock-shape close timeouts, a self-contradictory rtl25a, a hang-prone
+  release test, and 2 rts3c1 tests whose error assertions had been stripped
+  in porting — RTS3c/RTS3c1/RTL16 are regenerated from UTS in 5.6). Remaining
+  ported failures are honest stubs for 5.5+ (publish/subscribe/rtl32/options/
+  derived channels). The full suite has NO hanging tests (23s wall).
+- §14.3 conformance: channel.rs registry Mutex occupies the 1 occurrence the
+  allowance budgeted (fully-qualified decl, Default::default() init); the 2
+  temporary presence-stub mutexes remain (allowance stays 3 until 5.7).
+  Ratchet green; no-pub-fields green (ChannelCtx loop-private).
+- Test status: 1029 pass / 224 fail (remaining stubs: messages/presence/
+  annotations/options/derived) / 70 ignored.
+- Next: 5.5 channel messages — publish/subscribe, ACK/NACK, msgSerial,
+  queueing (RTL6/7/8, RTN7, RTN19 resend), RTL15b serial updates from MESSAGE.

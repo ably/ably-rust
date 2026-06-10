@@ -48,7 +48,7 @@ impl Realtime {
         };
         let realtime = Self {
             connection,
-            channels: Channels::new(),
+            channels: Channels::new(input_tx),
             rest,
         };
         if auto_connect {
@@ -265,11 +265,26 @@ pub(crate) async fn await_state(
         && connection.snapshot_rx.borrow().state == target
 }
 
+/// Test helper: await a channel state via the snapshot watch.
 #[cfg(test)]
 pub(crate) async fn await_channel_state(
-    _channel: &Arc<crate::channel::RealtimeChannel>,
-    _target: crate::protocol::ChannelState,
-    _timeout_ms: u64,
+    channel: &Arc<crate::channel::RealtimeChannel>,
+    target: crate::protocol::ChannelState,
+    timeout_ms: u64,
 ) -> bool {
-    todo!("channel state machine arrives in stage 5.4")
+    let mut rx = channel.snapshot_rx.clone();
+    let deadline = tokio::time::Duration::from_millis(timeout_ms);
+    tokio::time::timeout(deadline, async {
+        loop {
+            if rx.borrow().state == target {
+                return;
+            }
+            if rx.changed().await.is_err() {
+                return;
+            }
+        }
+    })
+    .await
+    .is_ok()
+        && channel.snapshot_rx.borrow().state == target
 }

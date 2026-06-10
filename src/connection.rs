@@ -23,7 +23,8 @@ use tokio::time::Instant;
 use crate::auth::Credential;
 use crate::error::{ErrorCode, ErrorInfo, Result};
 use crate::protocol::{
-    action, ConnectionDetails, ConnectionEvent, ConnectionState, ConnectionStateChange,
+    action, flags, ChannelEvent, ChannelMode, ChannelState, ChannelStateChange,
+    ConnectionDetails, ConnectionEvent, ConnectionState, ConnectionStateChange,
     ProtocolMessage,
 };
 use crate::rest::{AuthHeader, Format, Rest};
@@ -66,6 +67,46 @@ pub(crate) enum Command {
     },
     /// RTC8: apply an externally obtained token to the live connection.
     Reauth { access_token: String },
+    /// RTS3a: register a channel's observation channels with the loop.
+    EnsureChannel {
+        name: String,
+        options: ChannelOptionsSpec,
+        snapshot_tx: watch::Sender<ChannelSnapshot>,
+        events_tx: broadcast::Sender<ChannelStateChange>,
+    },
+    /// RTL4: attach a channel.
+    Attach {
+        name: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// RTL5: detach a channel.
+    Detach {
+        name: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// RTS4a: detach (if needed) and remove a channel.
+    ReleaseChannel {
+        name: String,
+        reply: oneshot::Sender<()>,
+    },
+}
+
+/// The channel options the loop needs (RTL4k params, RTL4l modes).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ChannelOptionsSpec {
+    pub params: Vec<(String, String)>,
+    pub modes: Vec<ChannelMode>,
+}
+
+/// The per-channel snapshot observable by handles (DESIGN.md §4).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ChannelSnapshot {
+    pub state: ChannelState,
+    pub error_reason: Option<ErrorInfo>,
+    pub channel_serial: Option<String>,
+    pub attach_serial: Option<String>,
+    /// RTL4m: the modes granted in ATTACHED.
+    pub modes: Option<Vec<ChannelMode>>,
 }
 
 /// The connection-state snapshot observable by handles (DESIGN.md §4).
@@ -100,6 +141,113 @@ struct PendingPing {
     sent_at: Instant,
     deadline: Instant,
     reply: oneshot::Sender<Result<Duration>>,
+}
+
+/// All mutable per-channel state, owned exclusively by the loop task
+/// (DESIGN.md §2/§7).
+struct ChannelCtx {
+    name: String,
+    state: ChannelState,
+    error_reason: Option<ErrorInfo>,
+    channel_serial: Option<String>,
+    attach_serial: Option<String>,
+    options: ChannelOptionsSpec,
+    /// RTL4m: modes granted by the server in ATTACHED.
+    attached_modes: Option<Vec<ChannelMode>>,
+    /// RTL4j: a previous attach succeeded; reattaches set ATTACH_RESUME.
+    has_been_attached: bool,
+    /// RTL4h/RTL4i: attach requested while it could not be sent.
+    attach_pending: bool,
+    /// RTL5i: detach requested while attaching/detaching.
+    detach_pending: bool,
+    /// RTS4a: remove this channel once the detach completes.
+    release_on_detach: bool,
+    release_reply: Option<oneshot::Sender<()>>,
+    pending_attach: Vec<oneshot::Sender<Result<()>>>,
+    pending_detach: Vec<oneshot::Sender<Result<()>>>,
+    /// RTL4f/RTL5f: in-flight attach/detach op deadline.
+    op_deadline: Option<Instant>,
+    /// RTL5f: the state to return to if a detach times out.
+    op_revert_state: ChannelState,
+    snapshot_tx: watch::Sender<ChannelSnapshot>,
+    events_tx: broadcast::Sender<ChannelStateChange>,
+}
+
+impl ChannelCtx {
+    /// Transition the channel state machine: snapshot first, then the event
+    /// (DESIGN.md §4 contract). RTL2g: no event when the state is unchanged.
+    fn transition(&mut self, to: ChannelState, reason: Option<ErrorInfo>, resumed: bool, has_backlog: bool) {
+        let previous = self.state;
+        self.state = to;
+        if let Some(err) = &reason {
+            self.error_reason = Some(err.clone());
+        }
+        // RTL15b1: DETACHED/SUSPENDED/FAILED clear the channelSerial
+        if matches!(
+            to,
+            ChannelState::Detached | ChannelState::Suspended | ChannelState::Failed
+        ) {
+            self.channel_serial = None;
+        }
+        self.publish_snapshot();
+        if previous != to {
+            let _ = self.events_tx.send(ChannelStateChange {
+                previous,
+                current: to,
+                event: channel_state_event(to),
+                reason,
+                resumed,
+                has_backlog,
+            });
+        }
+    }
+
+    /// RTL2g: an UPDATE event for condition changes without a state change.
+    fn emit_update(&mut self, reason: Option<ErrorInfo>, resumed: bool, has_backlog: bool) {
+        self.publish_snapshot();
+        let _ = self.events_tx.send(ChannelStateChange {
+            previous: self.state,
+            current: self.state,
+            event: ChannelEvent::Update,
+            reason,
+            resumed,
+            has_backlog,
+        });
+    }
+
+    fn publish_snapshot(&self) {
+        let _ = self.snapshot_tx.send(ChannelSnapshot {
+            state: self.state,
+            error_reason: self.error_reason.clone(),
+            channel_serial: self.channel_serial.clone(),
+            attach_serial: self.attach_serial.clone(),
+            modes: self.attached_modes.clone(),
+        });
+    }
+
+    fn resolve_attach(&mut self, result: Result<()>) {
+        for replier in self.pending_attach.drain(..) {
+            let _ = replier.send(result.clone());
+        }
+    }
+
+    fn resolve_detach(&mut self, result: Result<()>) {
+        for replier in self.pending_detach.drain(..) {
+            let _ = replier.send(result.clone());
+        }
+    }
+}
+
+fn channel_state_event(state: ChannelState) -> ChannelEvent {
+    match state {
+        ChannelState::Initialized => ChannelEvent::Initialized,
+        ChannelState::Attaching => ChannelEvent::Attaching,
+        ChannelState::Attached => ChannelEvent::Attached,
+        ChannelState::Detaching => ChannelEvent::Detaching,
+        ChannelState::Detached => ChannelEvent::Detached,
+        ChannelState::Suspended => ChannelEvent::Suspended,
+        ChannelState::Failed => ChannelEvent::Failed,
+    }
 }
 
 /// All mutable connection state, owned exclusively by the loop task.
@@ -149,6 +297,9 @@ struct ConnectionCtx {
     /// RTN13 pings in flight.
     pending_pings: Vec<PendingPing>,
 
+    /// All channel state, inside the loop (DESIGN.md §7).
+    channels: std::collections::HashMap<String, ChannelCtx>,
+
     snapshot_tx: watch::Sender<ConnectionSnapshot>,
     events_tx: broadcast::Sender<ConnectionStateChange>,
     input_tx: mpsc::UnboundedSender<LoopInput>,
@@ -173,8 +324,15 @@ impl ConnectionCtx {
             previous,
             current: to,
             event: state_event(to),
-            reason,
+            reason: reason.clone(),
         });
+        // RTL3: connection-state effects on channels, atomic with the
+        // connection transition (DESIGN.md §7)
+        self.apply_connection_effects_to_channels(to, &reason);
+        if to == ConnectionState::Connected {
+            // RTL3d/RTL4i: (re)attach channels
+            self.reattach_channels_on_connected();
+        }
     }
 
     /// RTN4h: an event that is not a state change (additional CONNECTED).
@@ -379,6 +537,54 @@ impl ConnectionCtx {
                 | ConnectionState::Closed
                 | ConnectionState::Failed => {}
             },
+            Command::EnsureChannel { name, options, snapshot_tx, events_tx } => {
+                self.channels.entry(name.clone()).or_insert_with(|| ChannelCtx {
+                    name,
+                    state: ChannelState::Initialized,
+                    error_reason: None,
+                    channel_serial: None,
+                    attach_serial: None,
+                    options,
+                    attached_modes: None,
+                    has_been_attached: false,
+                    attach_pending: false,
+                    detach_pending: false,
+                    release_on_detach: false,
+                    release_reply: None,
+                    pending_attach: Vec::new(),
+                    pending_detach: Vec::new(),
+                    op_deadline: None,
+                    op_revert_state: ChannelState::Initialized,
+                    snapshot_tx,
+                    events_tx,
+                });
+            }
+            Command::Attach { name, reply } => self.handle_attach(name, reply),
+            Command::Detach { name, reply } => self.handle_detach(name, reply),
+            Command::ReleaseChannel { name, reply } => {
+                let mut reply = Some(reply);
+                let detach_first = match self.channels.get_mut(&name) {
+                    Some(ch)
+                        if matches!(ch.state, ChannelState::Attached | ChannelState::Attaching)
+                            && self.state == ConnectionState::Connected =>
+                    {
+                        // RTS4a: detach first, remove when the detach resolves
+                        ch.release_on_detach = true;
+                        ch.release_reply = reply.take();
+                        true
+                    }
+                    _ => false,
+                };
+                if detach_first {
+                    let (tx, _rx) = oneshot::channel();
+                    self.handle_detach(name, tx);
+                } else {
+                    self.channels.remove(&name);
+                    if let Some(reply) = reply {
+                        let _ = reply.send(());
+                    }
+                }
+            }
             Command::Reauth { access_token } => {
                 // RTC8: apply an externally obtained token in place
                 if self.state == ConnectionState::Connected {
@@ -484,6 +690,9 @@ impl ConnectionCtx {
                 self.transition(ConnectionState::Closed, None);
             }
             action::ERROR if pm.channel.is_none() => self.handle_error_message(pm),
+            action::ERROR => self.handle_channel_error(pm),
+            action::ATTACHED => self.handle_attached(pm),
+            action::DETACHED => self.handle_detached(pm),
             action::HEARTBEAT => {
                 // RTN13e: only a HEARTBEAT carrying a known ping id resolves a
                 // ping; id-less heartbeats are server liveness traffic only
@@ -658,6 +867,295 @@ impl ConnectionCtx {
         self.transition(ConnectionState::Failed, pm.error);
     }
 
+    // --- Channel lifecycle (RTL2/RTL3/RTL4/RTL5, DESIGN.md §7) ---
+
+    /// RTL4: attach a channel.
+    fn handle_attach(&mut self, name: String, reply: oneshot::Sender<Result<()>>) {
+        let conn_state = self.state;
+        let rtt = self.rest.inner.opts.realtime_request_timeout;
+        let Some(ch) = self.channels.get_mut(&name) else {
+            let _ = reply.send(Err(ErrorInfo::new(
+                ErrorCode::ChannelOperationFailed.code(),
+                "Channel has been released",
+            )));
+            return;
+        };
+        match ch.state {
+            // RTL4a: already attached — immediate success
+            ChannelState::Attached => {
+                let _ = reply.send(Ok(()));
+            }
+            // RTL4h: attach in progress — share its outcome
+            ChannelState::Attaching => {
+                ch.pending_attach.push(reply);
+            }
+            // RTL4h: detaching — attach once the detach completes
+            ChannelState::Detaching => {
+                ch.attach_pending = true;
+                ch.pending_attach.push(reply);
+            }
+            // RTL4g covers Failed (proceeds, clearing errorReason via RTL4c)
+            ChannelState::Initialized
+            | ChannelState::Detached
+            | ChannelState::Suspended
+            | ChannelState::Failed => match conn_state {
+                // RTL4b: invalid connection states
+                ConnectionState::Closing
+                | ConnectionState::Closed
+                | ConnectionState::Failed
+                | ConnectionState::Suspended => {
+                    let _ = reply.send(Err(ErrorInfo::new(
+                        ErrorCode::ChannelOperationFailedInvalidChannelState.code(),
+                        format!("Cannot attach while the connection is {:?}", conn_state),
+                    )));
+                }
+                // RTL4i: queue until the connection is CONNECTED
+                ConnectionState::Initialized
+                | ConnectionState::Connecting
+                | ConnectionState::Disconnected => {
+                    // RTL4c: a new attach clears errorReason
+                    ch.error_reason = None;
+                    ch.pending_attach.push(reply);
+                    ch.attach_pending = true;
+                    ch.transition(ChannelState::Attaching, None, false, false);
+                }
+                ConnectionState::Connected => {
+                    ch.error_reason = None;
+                    ch.pending_attach.push(reply);
+                    ch.transition(ChannelState::Attaching, None, false, false);
+                    ch.op_deadline = Some(Instant::now() + rtt);
+                    let msg = attach_message(ch);
+                    self.send_protocol(msg);
+                }
+            },
+        }
+    }
+
+    /// RTL5: detach a channel.
+    fn handle_detach(&mut self, name: String, reply: oneshot::Sender<Result<()>>) {
+        let conn_state = self.state;
+        let rtt = self.rest.inner.opts.realtime_request_timeout;
+        let Some(ch) = self.channels.get_mut(&name) else {
+            let _ = reply.send(Ok(()));
+            return;
+        };
+        match ch.state {
+            // RTL5a: nothing to detach
+            ChannelState::Initialized | ChannelState::Detached => {
+                let _ = reply.send(Ok(()));
+            }
+            // RTL5b: detach from FAILED is an error
+            ChannelState::Failed => {
+                let _ = reply.send(Err(ErrorInfo::new(
+                    ErrorCode::ChannelOperationFailedInvalidChannelState.code(),
+                    "Cannot detach a failed channel",
+                )));
+            }
+            // RTL5j: suspended → detached immediately
+            ChannelState::Suspended => {
+                let _ = reply.send(Ok(()));
+                ch.transition(ChannelState::Detached, None, false, false);
+            }
+            // RTL5i: detach in progress — share its outcome
+            ChannelState::Detaching => {
+                ch.pending_detach.push(reply);
+            }
+            // RTL5i: attaching — detach once the attach completes
+            ChannelState::Attaching => {
+                if conn_state == ConnectionState::Connected {
+                    ch.detach_pending = true;
+                    ch.pending_detach.push(reply);
+                } else {
+                    // RTL5l: no live connection — abandon the queued attach
+                    // and go straight to DETACHED, nothing on the wire
+                    ch.attach_pending = false;
+                    ch.op_deadline = None;
+                    ch.resolve_attach(Err(ErrorInfo::new(
+                        ErrorCode::ChannelOperationFailedInvalidChannelState.code(),
+                        "Attach superseded by detach",
+                    )));
+                    let _ = reply.send(Ok(()));
+                    ch.transition(ChannelState::Detached, None, false, false);
+                }
+            }
+            ChannelState::Attached => {
+                if conn_state == ConnectionState::Connected {
+                    // RTL5d: DETACH on the wire, await DETACHED
+                    ch.op_revert_state = ch.state;
+                    ch.pending_detach.push(reply);
+                    ch.transition(ChannelState::Detaching, None, false, false);
+                    ch.op_deadline = Some(Instant::now() + rtt);
+                    let mut msg = ProtocolMessage::new(action::DETACH);
+                    msg.channel = Some(ch.name.clone());
+                    self.send_protocol(msg);
+                } else {
+                    // RTL5l: no live connection — detached immediately
+                    let _ = reply.send(Ok(()));
+                    ch.transition(ChannelState::Detached, None, false, false);
+                }
+            }
+        }
+    }
+
+    /// ATTACHED received from the server.
+    fn handle_attached(&mut self, pm: ProtocolMessage) {
+        let Some(name) = pm.channel.clone() else { return };
+        let rtt = self.rest.inner.opts.realtime_request_timeout;
+        let Some(ch) = self.channels.get_mut(&name) else { return };
+        let resumed = pm.flags.map(|f| f & flags::RESUMED != 0).unwrap_or(false);
+        let has_backlog = pm.flags.map(|f| f & flags::HAS_BACKLOG != 0).unwrap_or(false);
+        match ch.state {
+            ChannelState::Attaching => {
+                ch.attach_serial = pm.channel_serial.clone();
+                ch.channel_serial = pm.channel_serial.clone();
+                // RTL4m: modes granted by the server
+                ch.attached_modes = pm.flags.map(modes_from_flags);
+                ch.has_been_attached = true;
+                ch.op_deadline = None;
+                ch.resolve_attach(Ok(()));
+                ch.transition(ChannelState::Attached, pm.error, resumed, has_backlog);
+                // RTL5i: a queued detach proceeds now
+                if std::mem::take(&mut ch.detach_pending) {
+                    let (tx, _rx) = oneshot::channel();
+                    self.handle_detach(name, tx);
+                }
+            }
+            ChannelState::Attached => {
+                // RTL12-shaped: an additional ATTACHED is an UPDATE
+                ch.attach_serial = pm.channel_serial.clone();
+                ch.channel_serial = pm.channel_serial.clone();
+                if let Some(f) = pm.flags {
+                    ch.attached_modes = Some(modes_from_flags(f));
+                }
+                // RTL12: RESUMED means continuity was preserved — no UPDATE
+                if !resumed {
+                    ch.emit_update(pm.error, resumed, has_backlog);
+                }
+            }
+            // RTL5k: an ATTACHED while detaching/detached is answered with DETACH
+            ChannelState::Detaching | ChannelState::Detached => {
+                ch.op_deadline = Some(Instant::now() + rtt);
+                let mut msg = ProtocolMessage::new(action::DETACH);
+                msg.channel = Some(name);
+                self.send_protocol(msg);
+            }
+            _ => {}
+        }
+    }
+
+    /// DETACHED received from the server.
+    fn handle_detached(&mut self, pm: ProtocolMessage) {
+        let Some(name) = pm.channel.clone() else { return };
+        let Some(ch) = self.channels.get_mut(&name) else { return };
+        match ch.state {
+            ChannelState::Detaching => {
+                ch.op_deadline = None;
+                ch.resolve_detach(Ok(()));
+                ch.transition(ChannelState::Detached, pm.error, false, false);
+                if ch.release_on_detach {
+                    if let Some(reply) = ch.release_reply.take() {
+                        let _ = reply.send(());
+                    }
+                    self.channels.remove(&name);
+                    return;
+                }
+                // RTL4h: a queued attach proceeds now
+                let attach_now = std::mem::take(&mut self.channels.get_mut(&name).unwrap().attach_pending);
+                if attach_now {
+                    let (tx, _rx) = oneshot::channel();
+                    self.handle_attach(name, tx);
+                }
+            }
+            // Server-initiated DETACHED while attached/attaching → 5.6 (RTL13);
+            // minimal: surface as Detached for now? Deferred to 5.6 — ignore.
+            _ => {}
+        }
+    }
+
+    /// ERROR with a channel set: the attach/detach failed (RTL4e/RTL5e-shaped).
+    fn handle_channel_error(&mut self, pm: ProtocolMessage) {
+        let Some(name) = pm.channel.clone() else { return };
+        let Some(ch) = self.channels.get_mut(&name) else { return };
+        ch.op_deadline = None;
+        let err = pm.error.clone().unwrap_or_else(|| {
+            ErrorInfo::new(ErrorCode::ChannelOperationFailed.code(), "Channel error")
+        });
+        ch.resolve_attach(Err(err.clone()));
+        ch.resolve_detach(Err(err.clone()));
+        ch.transition(ChannelState::Failed, Some(err), false, false);
+    }
+
+    /// RTL3: connection-state side effects on channels — applied atomically
+    /// with the connection transition (DESIGN.md §7).
+    fn apply_connection_effects_to_channels(&mut self, conn_state: ConnectionState, reason: &Option<ErrorInfo>) {
+        match conn_state {
+            // RTL3a: FAILED fails attached/attaching channels
+            ConnectionState::Failed => {
+                for ch in self.channels.values_mut() {
+                    if matches!(ch.state, ChannelState::Attached | ChannelState::Attaching) {
+                        ch.op_deadline = None;
+                        ch.resolve_attach(Err(reason.clone().unwrap_or_else(|| {
+                            ErrorInfo::new(ErrorCode::ConnectionFailed.code(), "Connection failed")
+                        })));
+                        ch.transition(ChannelState::Failed, reason.clone(), false, false);
+                    }
+                }
+            }
+            // RTL3b: CLOSED detaches attached/attaching channels
+            ConnectionState::Closed => {
+                for ch in self.channels.values_mut() {
+                    if matches!(ch.state, ChannelState::Attached | ChannelState::Attaching) {
+                        ch.op_deadline = None;
+                        ch.resolve_attach(Err(ErrorInfo::new(
+                            ErrorCode::ConnectionClosed.code(),
+                            "Connection closed",
+                        )));
+                        ch.transition(ChannelState::Detached, None, false, false);
+                    }
+                }
+            }
+            // RTL3c: SUSPENDED suspends attached/attaching channels
+            ConnectionState::Suspended => {
+                for ch in self.channels.values_mut() {
+                    if matches!(ch.state, ChannelState::Attached | ChannelState::Attaching) {
+                        ch.op_deadline = None;
+                        ch.resolve_attach(Err(reason.clone().unwrap_or_else(|| {
+                            ErrorInfo::new(ErrorCode::ConnectionSuspended.code(), "Connection suspended")
+                        })));
+                        ch.transition(ChannelState::Suspended, reason.clone(), false, false);
+                    }
+                }
+            }
+            // RTL3e: DISCONNECTED leaves channel states untouched
+            _ => {}
+        }
+    }
+
+    /// RTL3d: on CONNECTED, (re)attach channels that were attached, attaching,
+    /// suspended, or queued (RTL4i).
+    fn reattach_channels_on_connected(&mut self) {
+        let rtt = self.rest.inner.opts.realtime_request_timeout;
+        let mut to_send = Vec::new();
+        for ch in self.channels.values_mut() {
+            let queued = std::mem::take(&mut ch.attach_pending);
+            let needs_attach = queued
+                || matches!(
+                    ch.state,
+                    ChannelState::Attached | ChannelState::Attaching | ChannelState::Suspended
+                );
+            if needs_attach {
+                if ch.state != ChannelState::Attaching {
+                    ch.transition(ChannelState::Attaching, None, false, false);
+                }
+                ch.op_deadline = Some(Instant::now() + rtt);
+                to_send.push(attach_message(ch));
+            }
+        }
+        for msg in to_send {
+            self.send_protocol(msg);
+        }
+    }
+
     fn can_renew_token(&self) -> bool {
         let cfg = self.rest.auth_config();
         cfg.callback.is_some() || cfg.url.is_some() || cfg.key.is_some()
@@ -681,6 +1179,7 @@ impl ConnectionCtx {
         consider(self.suspend_at);
         consider(self.idle_deadline);
         consider(self.pending_pings.iter().map(|p| p.deadline).min());
+        consider(self.channels.values().filter_map(|c| c.op_deadline).min());
         next
     }
 
@@ -758,6 +1257,43 @@ impl ConnectionCtx {
             }
         }
 
+        // RTL4f/RTL5f: channel attach/detach op timeouts
+        let timed_out: Vec<String> = self
+            .channels
+            .values()
+            .filter(|c| c.op_deadline.map(|d| d <= now).unwrap_or(false))
+            .map(|c| c.name.clone())
+            .collect();
+        for name in timed_out {
+            if let Some(ch) = self.channels.get_mut(&name) {
+                ch.op_deadline = None;
+                match ch.state {
+                    // RTL4f: attach timeout → SUSPENDED with the error
+                    ChannelState::Attaching => {
+                        let err = ErrorInfo::with_status(
+                            ErrorCode::ChannelOperationFailedNoResponseFromServer.code(),
+                            408,
+                            "Attach timed out",
+                        );
+                        ch.resolve_attach(Err(err.clone()));
+                        ch.transition(ChannelState::Suspended, Some(err), false, false);
+                    }
+                    // RTL5f: detach timeout → return to the previous state
+                    ChannelState::Detaching => {
+                        let err = ErrorInfo::with_status(
+                            ErrorCode::ChannelOperationFailedNoResponseFromServer.code(),
+                            408,
+                            "Detach timed out",
+                        );
+                        ch.resolve_detach(Err(err.clone()));
+                        let revert = ch.op_revert_state;
+                        ch.transition(revert, Some(err), false, false);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // RTN13c: ping timeouts
         let mut idx = 0;
         while idx < self.pending_pings.len() {
@@ -773,6 +1309,63 @@ impl ConnectionCtx {
             }
         }
     }
+}
+
+/// RTL4c/RTL4c1/RTL4k/RTL4l/RTL4j: build the ATTACH message for a channel.
+fn attach_message(ch: &ChannelCtx) -> ProtocolMessage {
+    let mut msg = ProtocolMessage::new(action::ATTACH);
+    msg.channel = Some(ch.name.clone());
+    // RTL4c1: include the channelSerial from the previous attachment
+    if let Some(serial) = &ch.channel_serial {
+        msg.channel_serial = Some(serial.clone());
+    }
+    // RTL4k: requested channel params
+    if !ch.options.params.is_empty() {
+        let map: serde_json::Map<String, serde_json::Value> = ch
+            .options
+            .params
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+            .collect();
+        msg.params = Some(serde_json::Value::Object(map));
+    }
+    // RTL4l: requested modes as flags; RTL4j: ATTACH_RESUME on reattach
+    let mut flag_bits: u64 = ch
+        .options
+        .modes
+        .iter()
+        .map(|m| match m {
+            ChannelMode::Presence => flags::PRESENCE,
+            ChannelMode::Publish => flags::PUBLISH,
+            ChannelMode::Subscribe => flags::SUBSCRIBE,
+            ChannelMode::PresenceSubscribe => flags::PRESENCE_SUBSCRIBE,
+        })
+        .fold(0, |acc, f| acc | f);
+    if ch.has_been_attached {
+        flag_bits |= flags::ATTACH_RESUME;
+    }
+    if flag_bits != 0 {
+        msg.flags = Some(flag_bits);
+    }
+    msg
+}
+
+/// RTL4m: decode the mode flags granted in ATTACHED.
+fn modes_from_flags(f: u64) -> Vec<ChannelMode> {
+    let mut modes = Vec::new();
+    if f & flags::PRESENCE != 0 {
+        modes.push(ChannelMode::Presence);
+    }
+    if f & flags::PUBLISH != 0 {
+        modes.push(ChannelMode::Publish);
+    }
+    if f & flags::SUBSCRIBE != 0 {
+        modes.push(ChannelMode::Subscribe);
+    }
+    if f & flags::PRESENCE_SUBSCRIBE != 0 {
+        modes.push(ChannelMode::PresenceSubscribe);
+    }
+    modes
 }
 
 fn state_event(state: ConnectionState) -> ConnectionEvent {
@@ -942,6 +1535,7 @@ pub(crate) fn spawn_connection_loop(
         close_deadline: None,
         idle_deadline: None,
         pending_pings: Vec::new(),
+        channels: std::collections::HashMap::new(),
         snapshot_tx,
         events_tx: events_tx.clone(),
         input_tx: input_tx.clone(),

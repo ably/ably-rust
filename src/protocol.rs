@@ -38,8 +38,9 @@ pub struct ConnectionStateChange {
     pub reason: Option<ErrorInfo>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ChannelState {
+    #[default]
     Initialized,
     Attaching,
     Attached,

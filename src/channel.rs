@@ -17,40 +17,91 @@ use crate::rest::{
 
 // --- Channels collection ---
 
-pub struct Channels {}
+use crate::connection::{ChannelOptionsSpec, ChannelSnapshot, Command, LoopInput};
+use tokio::sync::{oneshot, watch};
+
+/// RTS1: the realtime channels collection. The registry Mutex holds HANDLE
+/// objects only — all channel protocol state lives in the connection loop
+/// (DESIGN.md §1: this is the one sanctioned realtime lock).
+pub struct Channels {
+    registry: std::sync::Mutex<HashMap<String, Arc<RealtimeChannel>>>,
+    input_tx: mpsc::UnboundedSender<LoopInput>,
+}
 
 impl Channels {
-    pub(crate) fn new() -> Self {
-        // The handle registry and EnsureChannel wiring arrive in stage 5.4.
-        Self {}
+    pub(crate) fn new(input_tx: mpsc::UnboundedSender<LoopInput>) -> Self {
+        Self {
+            registry: Default::default(),
+            input_tx,
+        }
     }
 
-    pub fn get(&self, _name: &str) -> Arc<RealtimeChannel> {
-        todo!()
+    /// RTS3a: get-or-create a channel. Repeated gets return the same instance.
+    pub fn get(&self, name: &str) -> Arc<RealtimeChannel> {
+        self.get_with_options(name, RealtimeChannelOptions::default())
     }
 
+    /// RTS3c: get with options (applied only on first creation here; use
+    /// set_options to change an existing channel's options).
     pub fn get_with_options(
         &self,
-        _name: &str,
-        _options: RealtimeChannelOptions,
+        name: &str,
+        options: RealtimeChannelOptions,
     ) -> Arc<RealtimeChannel> {
-        todo!()
+        let mut registry = self.registry.lock().unwrap();
+        if let Some(existing) = registry.get(name) {
+            return existing.clone();
+        }
+        let spec = ChannelOptionsSpec {
+            params: options
+                .params
+                .clone()
+                .map(|m| m.into_iter().collect())
+                .unwrap_or_default(),
+            modes: options.modes.clone().unwrap_or_default(),
+        };
+        let (snapshot_tx, snapshot_rx) = watch::channel(ChannelSnapshot::default());
+        let (events_tx, _) = broadcast::channel(64);
+        let _ = self.input_tx.send(LoopInput::Cmd(Command::EnsureChannel {
+            name: name.to_string(),
+            options: spec,
+            snapshot_tx,
+            events_tx: events_tx.clone(),
+        }));
+        let channel = Arc::new(RealtimeChannel {
+            name: name.to_string(),
+            options,
+            input_tx: self.input_tx.clone(),
+            snapshot_rx,
+            events_tx,
+        });
+        registry.insert(name.to_string(), channel.clone());
+        channel
     }
 
     pub fn get_derived(&self, _name: &str, _derive: DeriveOptions) -> Arc<RealtimeChannel> {
-        todo!()
+        todo!("derived channels arrive in a later stage")
     }
 
-    pub fn exists(&self, _name: &str) -> bool {
-        todo!()
+    /// RTS2: whether a channel instance exists in the collection.
+    pub fn exists(&self, name: &str) -> bool {
+        self.registry.lock().unwrap().contains_key(name)
     }
 
+    /// RTS2: the names of all channel instances.
     pub fn names(&self) -> Vec<String> {
-        todo!()
+        self.registry.lock().unwrap().keys().cloned().collect()
     }
 
-    pub async fn release(&self, _name: &str) {
-        todo!()
+    /// RTS4a: detach (if needed) and remove the channel.
+    pub async fn release(&self, name: &str) {
+        let (reply, rx) = oneshot::channel();
+        let _ = self.input_tx.send(LoopInput::Cmd(Command::ReleaseChannel {
+            name: name.to_string(),
+            reply,
+        }));
+        let _ = rx.await;
+        self.registry.lock().unwrap().remove(name);
     }
 }
 
@@ -89,36 +140,136 @@ pub struct SubscriptionId(pub(crate) u64);
 
 // --- RealtimeChannel ---
 
+/// The channel handle: snapshot reads, event subscription, and commands.
+/// Holds no protocol state (DESIGN.md §4).
 pub struct RealtimeChannel {
-    pub(crate) inner: Arc<RealtimeChannelInner>,
+    pub(crate) name: String,
+    pub(crate) options: RealtimeChannelOptions,
+    pub(crate) input_tx: mpsc::UnboundedSender<LoopInput>,
+    pub(crate) snapshot_rx: watch::Receiver<ChannelSnapshot>,
+    pub(crate) events_tx: broadcast::Sender<ChannelStateChange>,
 }
 
-pub(crate) struct RealtimeChannelInner {}
-
 impl RealtimeChannel {
-    pub(crate) fn new(_name: &str) -> Self {
-        todo!()
+    /// TEST-ONLY: a detached handle with no connection loop behind it.
+    /// Ported tests using this pattern cannot be expressed against the
+    /// design (channels exist only within a client) and are rewritten from
+    /// the UTS in their stages (DESIGN.md Realtime §12); until then this
+    /// keeps them compiling as failing stubs.
+    #[cfg(test)]
+    pub(crate) fn new(name: &str) -> Self {
+        let (_input_tx, _input_rx) = mpsc::unbounded_channel();
+        let (_snapshot_tx, snapshot_rx) = watch::channel(ChannelSnapshot::default());
+        let (events_tx, _) = broadcast::channel(8);
+        Self {
+            name: name.to_string(),
+            options: RealtimeChannelOptions::default(),
+            input_tx: _input_tx,
+            snapshot_rx,
+            events_tx,
+        }
     }
 
-    pub fn name(&self) -> &str { todo!() }
-    pub fn state(&self) -> ChannelState { todo!() }
-    pub fn error_reason(&self) -> Option<ErrorInfo> { todo!() }
-    pub fn options(&self) -> RealtimeChannelOptions { todo!() }
-    pub fn modes(&self) -> Option<Vec<ChannelMode>> { todo!() }
-    pub fn channel_serial(&self) -> Option<String> { todo!() }
-    pub fn attach_serial(&self) -> Option<String> { todo!() }
+    fn snapshot(&self) -> ChannelSnapshot {
+        self.snapshot_rx.borrow().clone()
+    }
 
-    pub async fn attach(&self) -> Result<()> { todo!() }
-    pub async fn detach(&self) -> Result<()> { todo!() }
-    pub async fn set_options(&self, _options: RealtimeChannelOptions) -> Result<()> { todo!() }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 
-    pub fn on_state_change(&self) -> broadcast::Receiver<ChannelStateChange> { todo!() }
+    /// RTL2b: the current channel state.
+    pub fn state(&self) -> ChannelState {
+        self.snapshot().state
+    }
+
+    /// RTL24-shaped: the last error that affected this channel.
+    pub fn error_reason(&self) -> Option<ErrorInfo> {
+        self.snapshot().error_reason
+    }
+
+    pub fn options(&self) -> RealtimeChannelOptions {
+        self.options.clone()
+    }
+
+    /// RTL4m: the modes granted by the server on attach.
+    pub fn modes(&self) -> Option<Vec<ChannelMode>> {
+        self.snapshot().modes
+    }
+
+    pub fn channel_serial(&self) -> Option<String> {
+        self.snapshot().channel_serial
+    }
+
+    pub fn attach_serial(&self) -> Option<String> {
+        self.snapshot().attach_serial
+    }
+
+    /// RTL4: attach this channel; resolves when the server confirms.
+    pub async fn attach(&self) -> Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.input_tx
+            .send(LoopInput::Cmd(Command::Attach {
+                name: self.name.clone(),
+                reply,
+            }))
+            .map_err(|_| closed_loop_error())?;
+        rx.await.map_err(|_| closed_loop_error())?
+    }
+
+    /// RTL5: detach this channel; resolves when the server confirms.
+    pub async fn detach(&self) -> Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.input_tx
+            .send(LoopInput::Cmd(Command::Detach {
+                name: self.name.clone(),
+                reply,
+            }))
+            .map_err(|_| closed_loop_error())?;
+        rx.await.map_err(|_| closed_loop_error())?
+    }
+
+    pub async fn set_options(&self, _options: RealtimeChannelOptions) -> Result<()> {
+        todo!("set_options arrives with RTL16 in stage 5.6")
+    }
+
+    /// RTL2a: subscribe to channel state changes.
+    pub fn on_state_change(&self) -> broadcast::Receiver<ChannelStateChange> {
+        self.events_tx.subscribe()
+    }
+
+    /// Invoke `callback` once when the channel is (or next becomes) `target`.
     pub fn when_state(
         &self,
-        _target: ChannelState,
-        _callback: impl FnOnce(ChannelStateChange) + Send + 'static,
+        target: ChannelState,
+        callback: impl FnOnce(ChannelStateChange) + Send + 'static,
     ) {
-        todo!()
+        let mut events = self.events_tx.subscribe();
+        let current = self.snapshot();
+        if current.state == target {
+            callback(ChannelStateChange {
+                previous: current.state,
+                current: current.state,
+                event: channel_state_to_event(current.state),
+                reason: current.error_reason,
+                resumed: false,
+                has_backlog: false,
+            });
+            return;
+        }
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(change) if change.current == target => {
+                        callback(change);
+                        return;
+                    }
+                    Ok(_) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
     }
 
     pub fn publish(&self) -> RealtimePublishBuilder<'_> {
@@ -260,4 +411,23 @@ impl<'a> RealtimeAnnotations<'a> {
     ) -> SubscriptionId { todo!() }
     pub fn unsubscribe(&self, _id: SubscriptionId) { todo!() }
     pub fn unsubscribe_all(&self) { todo!() }
+}
+
+fn closed_loop_error() -> ErrorInfo {
+    ErrorInfo::new(
+        crate::error::ErrorCode::ConnectionClosed.code(),
+        "Connection loop has terminated",
+    )
+}
+
+pub(crate) fn channel_state_to_event(state: ChannelState) -> ChannelEvent {
+    match state {
+        ChannelState::Initialized => ChannelEvent::Initialized,
+        ChannelState::Attaching => ChannelEvent::Attaching,
+        ChannelState::Attached => ChannelEvent::Attached,
+        ChannelState::Detaching => ChannelEvent::Detaching,
+        ChannelState::Detached => ChannelEvent::Detached,
+        ChannelState::Suspended => ChannelEvent::Suspended,
+        ChannelState::Failed => ChannelEvent::Failed,
+    }
 }

@@ -10,7 +10,7 @@ These are the same value. The versioning scheme changed from decimal (e.g. "1.2"
 
 ## Test baseline
 
-768 pass / 440 fail / 70 ignored (post Phase P, 2026-06-10). ALL failures are
+1029 pass / 224 fail / 70 ignored (post stage 5.4, 2026-06-10). ALL failures are
 unimplemented realtime stubs in tests_realtime_* files — every test in tests_rest_*
 and tests_proxy passes. Integration: 62 pass / 15 ignored against the live nonprod
 sandbox; proxy: 8/8 via uts-proxy. Run integration/proxy with --test-threads=1
