@@ -93,19 +93,64 @@ impl Rest {
         }
     }
 
-    pub async fn batch_presence(&self, channels: &[&str]) -> Result<Vec<BatchPresenceResult>> {
-        let params: Vec<(&str, &str)> = channels.iter().map(|c| ("channels", *c)).collect();
-        let resp = self.do_request("GET", "/presence", &[], &params, None).await?;
-        self.deserialize_response(&resp)
+    /// RSC24: batch presence. Channel names are joined as a single
+    /// comma-separated `channels` query parameter; the server responds with a
+    /// BatchResult envelope (successCount/failureCount/results).
+    pub async fn batch_presence(&self, channels: &[&str]) -> Result<BatchPresenceResponse> {
+        let joined = channels.join(",");
+        let resp = self
+            .do_request("GET", "/presence", &[], &[("channels", &joined)], None)
+            .await?;
+        let mut response: BatchPresenceResponse = self.deserialize_response(&resp)?;
+        for result in &mut response.results {
+            if let BatchPresenceResult::Success(s) = result {
+                for pm in &mut s.presence {
+                    pm.decode();
+                }
+            }
+        }
+        Ok(response)
     }
 
     pub async fn batch_publish(
         &self,
         specs: Vec<BatchPublishSpec>,
     ) -> Result<Vec<BatchPublishResult>> {
-        let body = self.serialize_body(&specs)?;
+        // RSC22: reject empty input client-side
+        if specs.is_empty() {
+            return Err(ErrorInfo::new(
+                ErrorCode::InvalidParameterValue.code(),
+                "Batch publish requires at least one BatchPublishSpec",
+            ));
+        }
+        for spec in &specs {
+            if spec.channels.is_empty() || spec.messages.is_empty() {
+                return Err(ErrorInfo::new(
+                    ErrorCode::InvalidParameterValue.code(),
+                    "Each BatchPublishSpec requires at least one channel and one message",
+                ));
+            }
+        }
+        // RSC22c6: encode messages per RSL4
+        let format = self.inner.opts.format;
+        let wire_specs: Vec<BatchPublishSpec> = specs
+            .iter()
+            .map(|spec| BatchPublishSpec {
+                channels: spec.channels.clone(),
+                messages: spec.messages.iter().map(|m| m.encode_for_wire(format)).collect(),
+            })
+            .collect();
+        let body = self.serialize_body(&wire_specs)?;
         let resp = self.do_request("POST", "/messages", &[], &[], Some(body)).await?;
-        self.deserialize_response(&resp)
+        // The server returns a single result object for a single-channel spec,
+        // or an array of per-channel results (RSC22c3/RSC22c4).
+        let value: serde_json::Value = self.deserialize_response(&resp)?;
+        if value.is_array() {
+            serde_json::from_value(value).map_err(ErrorInfo::from)
+        } else {
+            let single: BatchPublishResult = serde_json::from_value(value)?;
+            Ok(vec![single])
+        }
     }
 
     pub fn request(&self, method: &str, path: &str) -> RequestBuilder<'_> {
@@ -682,52 +727,19 @@ impl<'a> Channel<'a> {
     pub async fn update_message(
         &self,
         msg: &Message,
-        op: &MessageOperation,
+        op: Option<&MessageOperation>,
         params: Option<&[(&str, &str)]>,
     ) -> Result<UpdateDeleteResult> {
-        let serial = msg.serial.as_deref().unwrap_or("");
-        if serial.is_empty() {
-            return Err(ErrorInfo::new(ErrorCode::BadRequest.code(), "Message serial is required"));
-        }
-        let path = format!("/channels/{}/messages/{}", urlencoding::encode(&self.name), urlencoding::encode(serial));
-        let mut body_map = serde_json::Map::new();
-        body_map.insert("action".to_string(), serde_json::json!(MessageAction::Update));
-        // Include version only if operation has non-default fields
-        let op_value = serde_json::to_value(op).unwrap_or_default();
-        if let Some(obj) = op_value.as_object() {
-            if !obj.is_empty() && obj.values().any(|v| !v.is_null()) {
-                body_map.insert("version".to_string(), op_value);
-            }
-        }
-        let body = self.rest.serialize_body(&body_map)?;
-        let params: Vec<(&str, &str)> = params.unwrap_or(&[]).to_vec();
-        let resp = self.rest.do_request("PATCH", &path, &[], &params, Some(body)).await?;
-        self.rest.deserialize_response(&resp)
+        self.send_message_patch(msg, MessageAction::Update, op, params).await
     }
 
     pub async fn delete_message(
         &self,
         msg: &Message,
-        op: &MessageOperation,
+        op: Option<&MessageOperation>,
         params: Option<&[(&str, &str)]>,
     ) -> Result<UpdateDeleteResult> {
-        let serial = msg.serial.as_deref().unwrap_or("");
-        if serial.is_empty() {
-            return Err(ErrorInfo::new(ErrorCode::BadRequest.code(), "Message serial is required"));
-        }
-        let path = format!("/channels/{}/messages/{}", urlencoding::encode(&self.name), urlencoding::encode(serial));
-        let mut body_map = serde_json::Map::new();
-        body_map.insert("action".to_string(), serde_json::json!(MessageAction::Delete));
-        let op_value = serde_json::to_value(op).unwrap_or_default();
-        if let Some(obj) = op_value.as_object() {
-            if !obj.is_empty() && obj.values().any(|v| !v.is_null()) {
-                body_map.insert("version".to_string(), op_value);
-            }
-        }
-        let body = self.rest.serialize_body(&body_map)?;
-        let params: Vec<(&str, &str)> = params.unwrap_or(&[]).to_vec();
-        let resp = self.rest.do_request("PATCH", &path, &[], &params, Some(body)).await?;
-        self.rest.deserialize_response(&resp)
+        self.send_message_patch(msg, MessageAction::Delete, op, params).await
     }
 
     pub async fn append_message(
@@ -735,11 +747,39 @@ impl<'a> Channel<'a> {
         msg: &Message,
         params: Option<&[(&str, &str)]>,
     ) -> Result<UpdateDeleteResult> {
+        self.send_message_patch(msg, MessageAction::Append, None, params).await
+    }
+
+    /// RSL15: PATCH /channels/{name}/messages/{serial} with the message encoded
+    /// per RSL4, the given action, and `version` set to the MessageOperation
+    /// when provided (RSL15b7). The user-supplied message is not mutated (RSL15c).
+    async fn send_message_patch(
+        &self,
+        msg: &Message,
+        action: MessageAction,
+        op: Option<&MessageOperation>,
+        params: Option<&[(&str, &str)]>,
+    ) -> Result<UpdateDeleteResult> {
         let serial = msg.serial.as_deref().unwrap_or("");
-        let path = format!("/channels/{}/messages/{}", urlencoding::encode(&self.name), urlencoding::encode(serial));
-        let mut body_map = serde_json::Map::new();
-        body_map.insert("action".to_string(), serde_json::json!(MessageAction::MetaOccupancy));
-        let body = self.rest.serialize_body(&body_map)?;
+        if serial.is_empty() {
+            // RSL15a
+            return Err(ErrorInfo::new(
+                ErrorCode::InvalidParameterValue.code(),
+                "Message serial is required",
+            ));
+        }
+        let path = format!(
+            "/channels/{}/messages/{}",
+            urlencoding::encode(&self.name),
+            urlencoding::encode(serial)
+        );
+        let mut wire = msg.encode_for_wire(self.rest.inner.opts.format);
+        wire.action = Some(action);
+        wire.serial = None; // the serial travels in the URL path
+        if let Some(op) = op {
+            wire.version = Some(serde_json::to_value(op)?);
+        }
+        let body = self.rest.serialize_body(&wire)?;
         let params: Vec<(&str, &str)> = params.unwrap_or(&[]).to_vec();
         let resp = self.rest.do_request("PATCH", &path, &[], &params, Some(body)).await?;
         self.rest.deserialize_response(&resp)
@@ -935,39 +975,16 @@ impl<'a> PublishBuilder<'a> {
     pub async fn send(self) -> Result<()> {
         let path = format!("/channels/{}/messages", urlencoding::encode(&self.channel.name));
 
-        // Build message body
-        let mut msg = serde_json::Map::new();
-        if let Some(id) = &self.id {
-            msg.insert("id".to_string(), serde_json::Value::String(id.clone()));
-        }
-        if let Some(name) = &self.name {
-            msg.insert("name".to_string(), serde_json::Value::String(name.clone()));
-        }
-        match &self.data {
-            Data::String(s) => {
-                msg.insert("data".to_string(), serde_json::Value::String(s.clone()));
-            }
-            Data::JSON(v) => {
-                // RSL4b: JSON objects are serialized as a JSON string with encoding "json"
-                let json_str = serde_json::to_string(v).unwrap_or_default();
-                msg.insert("data".to_string(), serde_json::Value::String(json_str));
-                msg.insert("encoding".to_string(), serde_json::Value::String("json".to_string()));
-            }
-            Data::Binary(b) => {
-                let encoded = base64::encode(b.as_ref());
-                msg.insert("data".to_string(), serde_json::Value::String(encoded));
-                msg.insert("encoding".to_string(), serde_json::Value::String("base64".to_string()));
-            }
-            Data::None => {}
-        }
-        if let Some(extras) = &self.extras {
-            msg.insert("extras".to_string(), serde_json::Value::Object(extras.clone()));
-        }
-        if let Some(client_id) = &self.client_id {
-            msg.insert("clientId".to_string(), serde_json::Value::String(client_id.clone()));
-        }
-
-        let body = self.channel.rest.serialize_body(&msg)?;
+        let msg = Message {
+            id: self.id,
+            name: self.name,
+            data: self.data,
+            client_id: self.client_id,
+            extras: self.extras.map(serde_json::Value::Object),
+            ..Default::default()
+        };
+        let wire = msg.encode_for_wire(self.channel.rest.inner.opts.format);
+        let body = self.channel.rest.serialize_body(&wire)?;
 
         // RSL1i: Check message size against max
         let max_size = self.channel.rest.inner.opts.max_message_size;
@@ -1260,15 +1277,18 @@ impl From<&[u8]> for Data {
     }
 }
 
+/// Message action (TM5). Numeric values are the wire-protocol values, in order
+/// from zero: MESSAGE_CREATE, MESSAGE_UPDATE, MESSAGE_DELETE, META,
+/// MESSAGE_SUMMARY, MESSAGE_APPEND.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
 pub enum MessageAction {
-    Unset = 0,
-    Create = 1,
-    Update = 2,
-    Delete = 3,
-    Annotation = 4,
-    MetaOccupancy = 5,
+    Create = 0,
+    Update = 1,
+    Delete = 2,
+    Meta = 3,
+    Summary = 4,
+    Append = 5,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1281,17 +1301,15 @@ pub struct MessageOperation {
     pub metadata: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
-fn deserialize_null_string<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
-    let opt: Option<String> = Option::deserialize(d)?;
-    Ok(opt.unwrap_or_default())
-}
-
+/// Result of an update/delete/append message operation (RSL15e, UDR2).
+/// `version_serial` is None if the message was superseded by a subsequent
+/// update before it could be published (UDR2a).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct UpdateDeleteResult {
-    #[serde(default, deserialize_with = "deserialize_null_string")]
-    pub serial: String,
-    #[serde(rename = "versionSerial", default, deserialize_with = "deserialize_null_string")]
-    pub version_serial: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+    #[serde(rename = "versionSerial", default, skip_serializing_if = "Option::is_none")]
+    pub version_serial: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
@@ -1358,7 +1376,38 @@ pub struct Message {
     pub annotations: Option<serde_json::Value>,
 }
 
+/// Append one encoding step to an existing encoding chain (RSL4).
+pub(crate) fn append_encoding(existing: Option<String>, enc: &str) -> String {
+    match existing {
+        Some(e) if !e.is_empty() => format!("{}/{}", e, enc),
+        _ => enc.to_string(),
+    }
+}
+
 impl Message {
+    /// RSL4: produce the wire form of this message for the given format,
+    /// leaving `self` untouched. JSON-object data is stringified with "json"
+    /// appended to the encoding chain (RSL4d); binary data is base64-encoded
+    /// with "base64" appended only when the wire format is JSON — under
+    /// MessagePack binary stays native (RSL4c).
+    pub(crate) fn encode_for_wire(&self, format: Format) -> Message {
+        let mut msg = self.clone();
+        match &msg.data {
+            Data::JSON(v) => {
+                let s = serde_json::to_string(v).unwrap_or_default();
+                msg.data = Data::String(s);
+                msg.encoding = Some(append_encoding(msg.encoding.take(), "json"));
+            }
+            Data::Binary(b) if format == Format::JSON => {
+                let encoded = base64::encode(b.as_ref());
+                msg.data = Data::String(encoded);
+                msg.encoding = Some(append_encoding(msg.encoding.take(), "base64"));
+            }
+            _ => {}
+        }
+        msg
+    }
+
     pub fn from_encoded(
         data: serde_json::Value,
         _cipher: Option<&crate::crypto::CipherParams>,
@@ -1531,13 +1580,54 @@ pub struct ChannelOptions {
     pub cipher: Option<CipherParams>,
 }
 
+/// Response to a batch presence request (RSC24, BAR2): a BatchResult envelope
+/// with server-provided counts and per-channel results.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BatchPresenceResult {
+#[serde(rename_all = "camelCase")]
+pub struct BatchPresenceResponse {
+    pub success_count: u32,
+    pub failure_count: u32,
+    pub results: Vec<BatchPresenceResult>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+pub enum BatchPresenceResult {
+    Success(BatchPresenceSuccessResult),
+    Failure(BatchPresenceFailureResult),
+}
+
+// A per-channel result is a failure iff it carries an `error` member (BGF2);
+// serde's untagged matching can't make that distinction reliably, so
+// discriminate explicitly.
+impl<'de> serde::Deserialize<'de> for BatchPresenceResult {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        if v.get("error").is_some() {
+            serde_json::from_value(v)
+                .map(BatchPresenceResult::Failure)
+                .map_err(serde::de::Error::custom)
+        } else {
+            serde_json::from_value(v)
+                .map(BatchPresenceResult::Success)
+                .map_err(serde::de::Error::custom)
+        }
+    }
+}
+
+/// Successful per-channel batch presence result (BGR2).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BatchPresenceSuccessResult {
     pub channel: String,
     #[serde(default)]
     pub presence: Vec<PresenceMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<ErrorInfo>,
+}
+
+/// Failed per-channel batch presence result (BGF2).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BatchPresenceFailureResult {
+    pub channel: String,
+    pub error: ErrorInfo,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1546,11 +1636,28 @@ pub struct BatchPublishSpec {
     pub messages: Vec<Message>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(untagged)]
 pub enum BatchPublishResult {
     Success(BatchPublishSuccessResult),
     Failure(BatchPublishFailureResult),
+}
+
+// Failure iff the result carries an `error` member (BPF2) — see
+// BatchPresenceResult for why untagged deserialization is not used.
+impl<'de> serde::Deserialize<'de> for BatchPublishResult {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let v = serde_json::Value::deserialize(d)?;
+        if v.get("error").is_some() {
+            serde_json::from_value(v)
+                .map(BatchPublishResult::Failure)
+                .map_err(serde::de::Error::custom)
+        } else {
+            serde_json::from_value(v)
+                .map(BatchPublishResult::Success)
+                .map_err(serde::de::Error::custom)
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -1217,14 +1217,25 @@ use crate::crypto::CipherParams;
 
     // -- Type tests --
 
+    // TM5 — Message Action enum values in order from zero:
+    // MESSAGE_CREATE, MESSAGE_UPDATE, MESSAGE_DELETE, META, MESSAGE_SUMMARY, MESSAGE_APPEND
+    // UTS: rest/unit/TM5/message-action-enum-values-0
     #[test]
     fn tm5_message_action_values() {
         use crate::rest::MessageAction;
-        assert_eq!(MessageAction::Create as u8, 1);
-        assert_eq!(MessageAction::Update as u8, 2);
-        assert_eq!(MessageAction::Delete as u8, 3);
-        assert_eq!(MessageAction::Annotation as u8, 4);
-        assert_eq!(MessageAction::MetaOccupancy as u8, 5);
+        assert_eq!(MessageAction::Create as u8, 0);
+        assert_eq!(MessageAction::Update as u8, 1);
+        assert_eq!(MessageAction::Delete as u8, 2);
+        assert_eq!(MessageAction::Meta as u8, 3);
+        assert_eq!(MessageAction::Summary as u8, 4);
+        assert_eq!(MessageAction::Append as u8, 5);
+
+        // Round-trip through the wire representation
+        let from_zero: MessageAction = serde_json::from_value(serde_json::json!(0)).unwrap();
+        assert_eq!(from_zero, MessageAction::Create);
+        let from_five: MessageAction = serde_json::from_value(serde_json::json!(5)).unwrap();
+        assert_eq!(from_five, MessageAction::Append);
+        assert_eq!(serde_json::json!(MessageAction::Update), serde_json::json!(1));
     }
 
 
@@ -1912,7 +1923,8 @@ use crate::crypto::CipherParams;
         assert_eq!(msg.client_id.as_deref(), Some("client-1"));
         assert_eq!(msg.connection_id.as_deref(), Some("conn-1"));
         assert!(msg.extras.is_some());
-        assert_eq!(msg.action, Some(rest::MessageAction::Create));
+        // TM5: wire value 1 = MESSAGE_UPDATE
+        assert_eq!(msg.action, Some(rest::MessageAction::Update));
         assert_eq!(msg.serial.as_deref(), Some("serial-001"));
         assert_eq!(msg.version, Some(json!("v2")));
         assert_eq!(msg.annotations, Some(json!({"likes": 5})));
@@ -1979,18 +1991,7 @@ use crate::crypto::CipherParams;
     }
 
 
-    // ---------------------------------------------------------------
-    // TM5 — MessageAction numeric wire values
-    // ---------------------------------------------------------------
-    #[test]
-    fn tm5_message_action_numeric_values() {
-        assert_eq!(rest::MessageAction::Create as u8, 1);
-        assert_eq!(rest::MessageAction::Update as u8, 2);
-        assert_eq!(rest::MessageAction::Delete as u8, 3);
-        assert_eq!(rest::MessageAction::Annotation as u8, 4);
-        assert_eq!(rest::MessageAction::MetaOccupancy as u8, 5);
-    }
-
+    // (duplicate TM5 test removed — see tm5_message_action_values)
 
     // ---------------------------------------------------------------
     // TP3 — timestamp as number in PresenceMessage deserialization

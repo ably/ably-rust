@@ -187,14 +187,22 @@ impl<'a> Auth<'a> {
         let path = format!("/keys/{}/revokeTokens", key.name);
         let body = self.rest.serialize_body(request)?;
         let resp = self.rest.do_request("POST", &path, &[], &[], Some(body)).await?;
-        let results: Vec<crate::rest::RevokeTokenResult> = self.rest.deserialize_response(&resp)?;
-        let failure_count = results.iter().filter(|r| r.error.is_some()).count() as u32;
-        let success_count = results.len() as u32 - failure_count;
-        Ok(crate::rest::RevokeTokensResponse {
-            success_count,
-            failure_count,
-            results,
-        })
+        // With X-Ably-Version >= 3 the server returns a BatchResult envelope
+        // {successCount, failureCount, results}; a plain array is the legacy
+        // (no version header) format, still accepted for robustness.
+        let value: serde_json::Value = self.rest.deserialize_response(&resp)?;
+        if value.is_array() {
+            let results: Vec<crate::rest::RevokeTokenResult> = serde_json::from_value(value)?;
+            let failure_count = results.iter().filter(|r| r.error.is_some()).count() as u32;
+            let success_count = results.len() as u32 - failure_count;
+            Ok(crate::rest::RevokeTokensResponse {
+                success_count,
+                failure_count,
+                results,
+            })
+        } else {
+            Ok(serde_json::from_value(value)?)
+        }
     }
 }
 
@@ -350,12 +358,24 @@ impl From<String> for TokenDetails {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct AuthOptions {
     pub token: Option<String>,
     pub headers: Option<Vec<(String, String)>>,
     pub method: Option<String>,
     pub params: Option<Vec<(String, String)>>,
+}
+
+impl Default for AuthOptions {
+    fn default() -> Self {
+        Self {
+            token: None,
+            headers: None,
+            // AO2d/TO3j7: authMethod defaults to GET
+            method: Some("GET".to_string()),
+            params: None,
+        }
+    }
 }
 
 pub enum AuthToken {

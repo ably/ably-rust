@@ -2384,15 +2384,19 @@ use crate::crypto::CipherParams;
     // UTS: rest/unit/batch_presence.md
     // ===============================================================
 
+    // RSC24_1 — GET /presence with comma-separated channels param
+    // UTS: rest/unit/RSC24/get-presence-channels-param-0
     #[tokio::test]
     async fn rsc24_batch_presence_sends_get_with_channels() -> Result<()> {
-        let mock = MockHttpClient::with_handler(|req| {
-            assert_eq!(req.method, "GET");
-            assert!(req.url.path().ends_with("/presence"));
-            MockResponse::json(200, &serde_json::json!([
-                {"channel": "channel-a", "presence": [{"clientId": "alice", "action": 2}]},
-                {"channel": "channel-b", "presence": []}
-            ]))
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &serde_json::json!({
+                "successCount": 2,
+                "failureCount": 0,
+                "results": [
+                    {"channel": "channel-a", "presence": []},
+                    {"channel": "channel-b", "presence": []}
+                ]
+            }))
         });
 
         let client = ClientOptions::new("appId.keyId:keySecret")
@@ -2400,71 +2404,124 @@ use crate::crypto::CipherParams;
             .unwrap();
 
         let result = client.batch_presence(&["channel-a", "channel-b"]).await?;
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].channel, "channel-a");
-        assert!(result[0].presence.len() > 0);
-        assert_eq!(result[1].channel, "channel-b");
+        assert_eq!(result.results.len(), 2);
+
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+        let req = reqs.last().unwrap();
+        assert_eq!(req.method, "GET");
+        assert_eq!(req.url.path(), "/presence");
+        let channels_param = req
+            .url
+            .query_pairs()
+            .find(|(k, _)| k == "channels")
+            .map(|(_, v)| v.to_string());
+        assert_eq!(channels_param.as_deref(), Some("channel-a,channel-b"));
         Ok(())
     }
 
 
+    // RSC24_2 — single channel sends just the channel name
+    // UTS: rest/unit/RSC24/single-channel-param-0
     #[tokio::test]
-    async fn bar2_success_result_with_members() -> Result<()> {
+    async fn rsc24_batch_presence_single_channel_param() -> Result<()> {
         let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &serde_json::json!([
-                {"channel": "my-channel", "presence": [
-                    {"clientId": "alice", "action": 2, "data": "hello"},
-                    {"clientId": "bob", "action": 2}
-                ]},
-                {"channel": "empty-channel", "presence": []}
-            ]))
+            MockResponse::json(200, &serde_json::json!({
+                "successCount": 1,
+                "failureCount": 0,
+                "results": [{"channel": "my-channel", "presence": []}]
+            }))
         });
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .rest_with_mock(mock)
             .unwrap();
 
-        let result = client.batch_presence(&["my-channel", "empty-channel"]).await?;
-        assert_eq!(result.len(), 2);
-        let members = result[0].presence.as_slice();
-        assert_eq!(members.len(), 2);
-        assert_eq!(result[1].presence.len(), 0);
+        client.batch_presence(&["my-channel"]).await?;
+        let reqs = get_mock(&client).captured_requests();
+        let channels_param = reqs.last().unwrap().url.query_pairs()
+            .find(|(k, _)| k == "channels")
+            .map(|(_, v)| v.to_string());
+        assert_eq!(channels_param.as_deref(), Some("my-channel"));
         Ok(())
     }
 
 
+    // RSC24_3 — channel names with special characters are comma-joined as-is
+    // UTS: rest/unit/RSC24/special-chars-comma-joined-0
     #[tokio::test]
-    async fn bgf2_failure_result_with_error() -> Result<()> {
+    async fn rsc24_batch_presence_special_chars_comma_joined() -> Result<()> {
         let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &serde_json::json!([
-                {"channel": "allowed", "presence": []},
-                {"channel": "denied", "error": {"code": 40160, "statusCode": 401, "message": "Insufficient capability"}}
-            ]))
+            MockResponse::json(200, &serde_json::json!({
+                "successCount": 2,
+                "failureCount": 0,
+                "results": [
+                    {"channel": "foo:bar", "presence": []},
+                    {"channel": "baz/qux", "presence": []}
+                ]
+            }))
         });
 
         let client = ClientOptions::new("appId.keyId:keySecret")
             .rest_with_mock(mock)
             .unwrap();
 
-        let result = client.batch_presence(&["allowed", "denied"]).await?;
-        assert_eq!(result.len(), 2);
-        assert!(result[0].error.is_none());
-        assert!(result[1].error.is_some());
-        let err = result[1].error.as_ref().unwrap();
-        assert_eq!(err.code, Some(40160));
+        client.batch_presence(&["foo:bar", "baz/qux"]).await?;
+        let reqs = get_mock(&client).captured_requests();
+        let channels_param = reqs.last().unwrap().url.query_pairs()
+            .find(|(k, _)| k == "channels")
+            .map(|(_, v)| v.to_string());
+        assert_eq!(channels_param.as_deref(), Some("foo:bar,baz/qux"));
         Ok(())
     }
 
 
+    // BAR2_1 — successCount and failureCount from mixed response
+    // UTS: rest/unit/BAR2/mixed-success-failure-counts-0
+    #[tokio::test]
+    async fn bar2_mixed_success_failure_counts() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &serde_json::json!({
+                "successCount": 3,
+                "failureCount": 1,
+                "results": [
+                    {"channel": "ch-1", "presence": []},
+                    {"channel": "ch-2", "presence": []},
+                    {"channel": "ch-3", "presence": []},
+                    {"channel": "ch-4", "error": {"code": 40160, "statusCode": 401, "message": "Not permitted"}}
+                ]
+            }))
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .rest_with_mock(mock)
+            .unwrap();
+
+        let result = client.batch_presence(&["ch-1", "ch-2", "ch-3", "ch-4"]).await?;
+        assert_eq!(result.success_count, 3);
+        assert_eq!(result.failure_count, 1);
+        assert_eq!(result.results.len(), 4);
+        Ok(())
+    }
+
+
+    // BGR2_1 — success result with members, including data decode
+    // UTS: rest/unit/BGR2/success-with-members-0
     #[tokio::test]
     async fn bgr2_success_result_members() -> Result<()> {
         let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &serde_json::json!([
-                {"channel": "my-channel", "presence": [
-                    {"clientId": "user-1", "action": 2, "data": "present"},
-                    {"clientId": "user-2", "action": 2}
-                ]}
-            ]))
+            MockResponse::json(200, &serde_json::json!({
+                "successCount": 1,
+                "failureCount": 0,
+                "results": [
+                    {"channel": "my-channel", "presence": [
+                        {"clientId": "client-1", "action": 1, "connectionId": "conn-abc",
+                         "id": "conn-abc:0:0", "timestamp": 1700000000000_i64, "data": "hello"},
+                        {"clientId": "client-2", "action": 1, "connectionId": "conn-def",
+                         "id": "conn-def:0:0", "timestamp": 1700000000000_i64, "data": {"key": "value"}}
+                    ]}
+                ]
+            }))
         });
 
         let client = ClientOptions::new("appId.keyId:keySecret")
@@ -2472,9 +2529,100 @@ use crate::crypto::CipherParams;
             .unwrap();
 
         let result = client.batch_presence(&["my-channel"]).await?;
-        assert_eq!(result.len(), 1);
-        let members = result[0].presence.as_slice();
-        assert_eq!(members.len(), 2);
+        assert_eq!(result.results.len(), 1);
+        let success = match &result.results[0] {
+            crate::rest::BatchPresenceResult::Success(s) => s,
+            other => panic!("Expected success result, got {:?}", other),
+        };
+        assert_eq!(success.channel, "my-channel");
+        assert_eq!(success.presence.len(), 2);
+        assert_eq!(success.presence[0].client_id.as_deref(), Some("client-1"));
+        assert_eq!(success.presence[0].action, Some(PresenceAction::Present));
+        assert_eq!(success.presence[0].connection_id.as_deref(), Some("conn-abc"));
+        assert!(matches!(success.presence[0].data, Data::String(ref s) if s == "hello"));
+        assert_eq!(success.presence[1].client_id.as_deref(), Some("client-2"));
+        assert!(matches!(success.presence[1].data, Data::JSON(ref v) if v["key"] == "value"));
+        Ok(())
+    }
+
+
+    // BGF2_1 — failure result with error details
+    // UTS: rest/unit/BGF2/failure-error-details-0
+    #[tokio::test]
+    async fn bgf2_failure_result_with_error() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &serde_json::json!({
+                "successCount": 0,
+                "failureCount": 1,
+                "results": [
+                    {"channel": "restricted-channel",
+                     "error": {"code": 40160, "statusCode": 401, "message": "Channel operation not permitted"}}
+                ]
+            }))
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .rest_with_mock(mock)
+            .unwrap();
+
+        let result = client.batch_presence(&["restricted-channel"]).await?;
+        assert_eq!(result.results.len(), 1);
+        let failure = match &result.results[0] {
+            crate::rest::BatchPresenceResult::Failure(f) => f,
+            other => panic!("Expected failure result, got {:?}", other),
+        };
+        assert_eq!(failure.channel, "restricted-channel");
+        assert_eq!(failure.error.code, Some(40160));
+        assert_eq!(failure.error.status_code, Some(401));
+        assert!(failure.error.message.as_deref().unwrap_or("").contains("not permitted"));
+        Ok(())
+    }
+
+
+    // RSC24_Mixed_1 — mixed success and failure results
+    // UTS: rest/unit/RSC24/mixed-success-failure-results-0
+    #[tokio::test]
+    async fn rsc24_mixed_success_failure_results() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &serde_json::json!({
+                "successCount": 1,
+                "failureCount": 1,
+                "results": [
+                    {"channel": "allowed-channel", "presence": [
+                        {"clientId": "user-1", "action": 1, "connectionId": "conn-1",
+                         "id": "conn-1:0:0", "timestamp": 1700000000000_i64}
+                    ]},
+                    {"channel": "restricted-channel",
+                     "error": {"code": 40160, "statusCode": 401, "message": "Not permitted"}}
+                ]
+            }))
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .rest_with_mock(mock)
+            .unwrap();
+
+        let result = client
+            .batch_presence(&["allowed-channel", "restricted-channel"])
+            .await?;
+        assert_eq!(result.success_count, 1);
+        assert_eq!(result.failure_count, 1);
+        assert_eq!(result.results.len(), 2);
+        match &result.results[0] {
+            crate::rest::BatchPresenceResult::Success(s) => {
+                assert_eq!(s.channel, "allowed-channel");
+                assert_eq!(s.presence.len(), 1);
+                assert_eq!(s.presence[0].client_id.as_deref(), Some("user-1"));
+            }
+            other => panic!("Expected success result, got {:?}", other),
+        }
+        match &result.results[1] {
+            crate::rest::BatchPresenceResult::Failure(f) => {
+                assert_eq!(f.channel, "restricted-channel");
+                assert_eq!(f.error.code, Some(40160));
+            }
+            other => panic!("Expected failure result, got {:?}", other),
+        }
         Ok(())
     }
 
@@ -3673,20 +3821,58 @@ use crate::crypto::CipherParams;
     }
 
 
-    // RSC22 — Batch publish with empty specs list sends empty array
+    // RSC22 — batch publish with empty messages is rejected client-side
+    // UTS: rest/unit/RSC22/empty-messages-rejected-0
     #[tokio::test]
-    async fn rsc22_empty_messages_error() -> Result<()> {
+    async fn rsc22_empty_messages_error() {
         use crate::rest::BatchPublishSpec;
         let mock = MockHttpClient::with_handler(|_req| {
             MockResponse::json(200, &json!([]))
         });
         let client = mock_client(mock);
 
-        // Publish with empty specs — SDK sends it, server returns empty results
-        let result = client.batch_publish(vec![]).await;
-        assert!(result.is_ok(), "Empty batch should not error");
-        assert_eq!(result.unwrap().len(), 0, "Empty batch should return empty results");
-        Ok(())
+        // No specs at all
+        let err = client.batch_publish(vec![]).await.unwrap_err();
+        assert_eq!(err.code, Some(40003));
+
+        // Spec with channels but no messages
+        let err = client
+            .batch_publish(vec![BatchPublishSpec {
+                channels: vec!["ch1".to_string()],
+                messages: vec![],
+            }])
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, Some(40003));
+
+        // No HTTP request may have been made for either rejection
+        assert_eq!(get_mock(&client).request_count(), 0);
+    }
+
+
+    // RSC22 — batch publish with empty channels is rejected client-side
+    // UTS: rest/unit/RSC22/empty-channels-rejected-0
+    #[tokio::test]
+    async fn rsc22_empty_channels_error() {
+        use crate::rest::BatchPublishSpec;
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!([]))
+        });
+        let client = mock_client(mock);
+
+        let err = client
+            .batch_publish(vec![BatchPublishSpec {
+                channels: vec![],
+                messages: vec![crate::rest::Message {
+                    name: Some("e".into()),
+                    data: crate::rest::Data::String("d".into()),
+                    ..Default::default()
+                }],
+            }])
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, Some(40003));
+        assert_eq!(get_mock(&client).request_count(), 0);
     }
 
 
@@ -3809,68 +3995,32 @@ use crate::crypto::CipherParams;
     }
 
 
-    // RSC24 — Batch presence for a single channel
+    // BGR2_2 — success result with empty presence (no members)
+    // UTS: rest/unit/BGR2/success-empty-presence-0
     #[tokio::test]
-    async fn rsc24_batch_presence_single_channel() -> Result<()> {
-        let mock = MockHttpClient::with_handler(|req| {
-            assert_eq!(req.method, "GET");
-            assert!(req.url.path().ends_with("/presence"));
-            MockResponse::json(200, &json!([
-                {"channel": "channel-a", "presence": [{"clientId": "alice", "action": 2}]}
-            ]))
-        });
-        let client = mock_client(mock);
-        let result = client.batch_presence(&["channel-a"]).await?;
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].channel, "channel-a");
-        assert!(result[0].presence.len() > 0);
-        Ok(())
-    }
-
-
-    // RSC24 — Batch presence for multiple channels
-    #[tokio::test]
-    async fn rsc24_multiple_channels() -> Result<()> {
-        let mock = MockHttpClient::with_handler(|req| {
-            assert_eq!(req.method, "GET");
-            // Verify channels are passed as query param
-            let channels_param = req.url.query_pairs()
-                .find(|(k, _)| k == "channels")
-                .map(|(_, v)| v.to_string());
-            assert!(channels_param.is_some(), "Expected channels query param");
-            MockResponse::json(200, &json!([
-                {"channel": "ch-a", "presence": [{"clientId": "alice", "action": 2}]},
-                {"channel": "ch-b", "presence": [{"clientId": "bob", "action": 2}]},
-                {"channel": "ch-c", "presence": []}
-            ]))
-        });
-        let client = mock_client(mock);
-        let result = client.batch_presence(&["ch-a", "ch-b", "ch-c"]).await?;
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0].channel, "ch-a");
-        assert_eq!(result[1].channel, "ch-b");
-        assert_eq!(result[2].channel, "ch-c");
-        Ok(())
-    }
-
-
-    // RSC24 — Batch presence for empty channel returns empty
-    #[tokio::test]
-    async fn rsc24_empty_channel_returns_empty() -> Result<()> {
+    async fn bgr2_success_empty_presence() -> Result<()> {
         let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &json!([
-                {"channel": "empty-ch", "presence": []}
-            ]))
+            MockResponse::json(200, &json!({
+                "successCount": 1,
+                "failureCount": 0,
+                "results": [{"channel": "empty-channel", "presence": []}]
+            }))
         });
         let client = mock_client(mock);
-        let result = client.batch_presence(&["empty-ch"]).await?;
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].presence.len(), 0);
+        let result = client.batch_presence(&["empty-channel"]).await?;
+        match &result.results[0] {
+            crate::rest::BatchPresenceResult::Success(s) => {
+                assert_eq!(s.channel, "empty-channel");
+                assert!(s.presence.is_empty());
+            }
+            other => panic!("Expected success result, got {:?}", other),
+        }
         Ok(())
     }
 
 
-    // RSC24 — Server error propagated in batch presence
+    // RSC24_Error_1 — server-level error propagated as an error
+    // UTS: rest/unit/RSC24/server-error-propagated-0
     #[tokio::test]
     async fn rsc24_server_error_propagated() {
         let mock = MockHttpClient::with_handler(|_req| {
@@ -3878,43 +4028,47 @@ use crate::crypto::CipherParams;
                 "error": {
                     "code": 50000,
                     "statusCode": 500,
-                    "message": "Internal error",
-                    "href": ""
+                    "message": "Internal error"
                 }
             }))
         });
         let client = mock_client(mock);
-        let result = client.batch_presence(&["ch1"]).await;
-        assert!(result.is_err(), "500 error should be propagated");
+        let err = client.batch_presence(&["any-channel"]).await.unwrap_err();
+        assert_eq!(err.code, Some(50000));
+        assert_eq!(err.status_code, Some(500));
     }
 
 
-    // RSC24 — Auth error propagated in batch presence
+    // RSC24_Error_2 — authentication error propagated as an error
+    // UTS: rest/unit/RSC24/auth-error-propagated-0
     #[tokio::test]
     async fn rsc24_auth_error_propagated() {
         let mock = MockHttpClient::with_handler(|_req| {
             MockResponse::json(401, &json!({
                 "error": {
-                    "code": 40100,
+                    "code": 40101,
                     "statusCode": 401,
-                    "message": "Unauthorized",
-                    "href": ""
+                    "message": "Invalid credentials"
                 }
             }))
         });
         let client = mock_client(mock);
-        let result = client.batch_presence(&["ch1"]).await;
-        assert!(result.is_err(), "401 error should be propagated");
+        let err = client.batch_presence(&["any-channel"]).await.unwrap_err();
+        assert_eq!(err.code, Some(40101));
+        assert_eq!(err.status_code, Some(401));
     }
 
 
-    // RSC24 — Basic auth header included in batch presence request
+    // RSC24_Auth_1 — batch presence uses the configured (Basic) authentication
+    // UTS: rest/unit/RSC24/uses-configured-auth-0
     #[tokio::test]
     async fn rsc24_basic_auth_header_included() -> Result<()> {
         let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &json!([
-                {"channel": "ch1", "presence": []}
-            ]))
+            MockResponse::json(200, &json!({
+                "successCount": 1,
+                "failureCount": 0,
+                "results": [{"channel": "ch", "presence": []}]
+            }))
         });
         let client = mock_client(mock);
         client.batch_presence(&["ch1"]).await?;
@@ -3936,15 +4090,19 @@ use crate::crypto::CipherParams;
     // Batch 12: Untagged / Misc tests
     // ===============================================================
 
-    // -- BAR2: all failure --
-
+    // BAR2_3 — all failure
+    // UTS: rest/unit/BAR2/all-failure-counts-0
     #[tokio::test]
     async fn bar2_all_failure() -> Result<()> {
         let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &json!([
-                {"channel": "denied-1", "error": {"code": 40160, "statusCode": 401, "message": "Insufficient capability"}},
-                {"channel": "denied-2", "error": {"code": 40160, "statusCode": 401, "message": "Insufficient capability"}}
-            ]))
+            MockResponse::json(200, &json!({
+                "successCount": 0,
+                "failureCount": 2,
+                "results": [
+                    {"channel": "denied-1", "error": {"code": 40160, "statusCode": 401, "message": "Not permitted"}},
+                    {"channel": "denied-2", "error": {"code": 40160, "statusCode": 401, "message": "Not permitted"}}
+                ]
+            }))
         });
 
         let client = ClientOptions::new("appId.keyId:keySecret")
@@ -3952,11 +4110,17 @@ use crate::crypto::CipherParams;
             .unwrap();
 
         let result = client.batch_presence(&["denied-1", "denied-2"]).await?;
-        assert_eq!(result.len(), 2);
-        assert!(result[0].error.is_some());
-        assert!(result[1].error.is_some());
-        assert_eq!(result[0].error.as_ref().unwrap().code, Some(40160));
-        assert_eq!(result[1].error.as_ref().unwrap().code, Some(40160));
+        assert_eq!(result.success_count, 0);
+        assert_eq!(result.failure_count, 2);
+        assert_eq!(result.results.len(), 2);
+        for r in &result.results {
+            match r {
+                crate::rest::BatchPresenceResult::Failure(f) => {
+                    assert_eq!(f.error.code, Some(40160));
+                }
+                other => panic!("Expected failure result, got {:?}", other),
+            }
+        }
         Ok(())
     }
 
@@ -4045,7 +4209,6 @@ use crate::crypto::CipherParams;
 
 
     #[tokio::test]
-    #[ignore = "BatchPublishResult untagged serde deserializes Failure as Success — enum variant ordering issue"]
     async fn bpr1b_batch_publish_result_failure() -> Result<()> {
         let mock = MockHttpClient::with_handler(|_req| {
             MockResponse::json(200, &json!([
@@ -4076,7 +4239,6 @@ use crate::crypto::CipherParams;
 
 
     #[tokio::test]
-    #[ignore = "BatchPublishResult untagged serde deserializes Failure as Success — enum variant ordering issue"]
     async fn bpr1c_batch_publish_result_mixed() -> Result<()> {
         let mock = MockHttpClient::with_handler(|_req| {
             MockResponse::json(200, &json!([
@@ -4347,36 +4509,8 @@ use crate::crypto::CipherParams;
     }
 
 
-    // ===============================================================
-    // Batch presence depth
-    // ===============================================================
-
-    #[tokio::test]
-    async fn rsc24_batch_presence_empty_channels_depth() -> Result<()> {
-        let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &json!([]))
-        });
-        let client = mock_client(mock);
-        let result = client.batch_presence(&[]).await?;
-        assert!(result.is_empty());
-        Ok(())
-    }
-
-
-    #[tokio::test]
-    async fn rsc24_batch_presence_single_channel_depth() -> Result<()> {
-        let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &json!([
-                {"channel": "only-channel", "presence": [{"clientId": "alice", "action": 1}]}
-            ]))
-        });
-        let client = mock_client(mock);
-        let result = client.batch_presence(&["only-channel"]).await?;
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].channel, "only-channel");
-        Ok(())
-    }
-
+    // (duplicate batch-presence "depth" tests removed — UTS-derived coverage
+    // lives in the RSC24/BAR2/BGR2/BGF2 block above)
 
     // ===============================================================
     // Stats depth

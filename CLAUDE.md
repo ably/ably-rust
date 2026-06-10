@@ -10,7 +10,11 @@ These are the same value. The versioning scheme changed from decimal (e.g. "1.2"
 
 ## Test baseline
 
-670 pass / 440 fail / 58 ignored. The 440 failures are unimplemented stubs (`todo!()`). As phases complete, passes should increase and failures decrease. If the pass count drops after a change, something regressed.
+724 pass / 439 fail / 92 ignored (post Phase R1, 2026-06-10). The failures are
+unimplemented realtime stubs (`todo!()`) plus 12 realtime-dependent tests living in
+REST files (rsa4c2/c3, rsa4d x2, tm2a/c/f x7, tm2 x1). Integration tests: 47 pass
+against sandbox, 36 ignored stubs. As phases complete, passes should increase and
+failures decrease. If the pass count drops after a change, something regressed.
 
 Run tests: `cargo test 2>&1 | tail -5`
 

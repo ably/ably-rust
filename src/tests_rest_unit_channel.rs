@@ -1267,227 +1267,373 @@ use crate::crypto::CipherParams;
     }
 
 
+    // UDR2a — versionSerial is nullable and a null must be preserved
     #[test]
     fn udr2a_update_delete_result_fields() {
         let json_str = r#"{"serial":"s1","versionSerial":"vs1"}"#;
         let result: crate::rest::UpdateDeleteResult = serde_json::from_str(json_str).unwrap();
-        assert_eq!(result.serial.as_str(), "s1");
-        assert_eq!(result.version_serial.as_str(), "vs1");
+        assert_eq!(result.serial.as_deref(), Some("s1"));
+        assert_eq!(result.version_serial.as_deref(), Some("vs1"));
 
-        // null versionSerial
+        // null versionSerial preserved as None (message superseded before publish)
         let json_str2 = r#"{"serial":"s2","versionSerial":null}"#;
         let result2: crate::rest::UpdateDeleteResult = serde_json::from_str(json_str2).unwrap();
-        assert_eq!(result2.serial.as_str(), "s2");
-        assert!(result2.version_serial.is_empty());
+        assert_eq!(result2.serial.as_deref(), Some("s2"));
+        assert!(result2.version_serial.is_none());
     }
 
 
     // -- REST unit tests --
 
-    // RSL15b — update_message sends PATCH
-    // Also covers: RSL15 (parent spec for UpdateMessage/DeleteMessage)
-    // Also covers: RSL15c (update sets MESSAGE_UPDATE action)
+    // RSL15b/RSL15b1 — updateMessage sends PATCH with action MESSAGE_UPDATE (=1)
+    // UTS: rest/unit/RSL15b/update-sends-patch-update-0
     #[tokio::test]
     async fn rsl15b_update_message_sends_patch() -> Result<()> {
-        let mock = MockHttpClient::new();
-        mock.queue_response(MockResponse::json(
-            200,
-            &json!({"serial": "s1", "versionSerial": "vs1"}),
-        ));
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({"versionSerial": "vs1"}))
+        });
         let client = mock_client_json(mock);
         let ch = client.channels().get("test");
         let msg = crate::rest::Message {
-            serial: Some("serial-1".into()),
+            serial: Some("msg-serial-1".into()),
+            name: Some("updated".into()),
+            data: Data::String("new-data".into()),
             ..Default::default()
         };
-        let result = ch.update_message(&msg, &MessageOperation::default(), None).await?;
-        assert_eq!(result.serial.as_str(), "s1");
+        ch.update_message(&msg, None, None).await?;
         let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
         let req = reqs.last().unwrap();
         assert_eq!(req.method, "PATCH");
-        assert!(req.url.path().contains("/messages/"));
+        assert_eq!(req.url.path(), "/channels/test/messages/msg-serial-1");
         let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
-        assert_eq!(body["action"], 2); // MESSAGE_UPDATE
+        assert_eq!(body["action"], 1); // MESSAGE_UPDATE
+        assert_eq!(body["name"], "updated");
+        assert_eq!(body["data"], "new-data");
         Ok(())
     }
 
 
-    // RSL15b — delete_message sends PATCH
-    // Also covers: RSL15d (delete sets MESSAGE_DELETE action)
+    // RSL15b/RSL15b1 — deleteMessage sends PATCH with action MESSAGE_DELETE (=2)
+    // UTS: rest/unit/RSL15b/delete-sends-patch-delete-1
     #[tokio::test]
     async fn rsl15b_delete_message_sends_patch() -> Result<()> {
-        let mock = MockHttpClient::new();
-        mock.queue_response(MockResponse::json(200, &json!({"serial": "s1"})));
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({"versionSerial": "vs1"}))
+        });
         let client = mock_client_json(mock);
         let ch = client.channels().get("test");
         let msg = crate::rest::Message {
-            serial: Some("serial-1".into()),
+            serial: Some("msg-serial-1".into()),
             ..Default::default()
         };
-        let result = ch.delete_message(&msg, &MessageOperation::default(), None).await?;
-        assert_eq!(result.serial.as_str(), "s1");
+        ch.delete_message(&msg, None, None).await?;
         let reqs = get_mock(&client).captured_requests();
         let req = reqs.last().unwrap();
         assert_eq!(req.method, "PATCH");
+        assert_eq!(req.url.path(), "/channels/test/messages/msg-serial-1");
         let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
-        assert_eq!(body["action"], 3); // MESSAGE_DELETE
+        assert_eq!(body["action"], 2); // MESSAGE_DELETE
         Ok(())
     }
 
 
+    // RSL15b/RSL15b1 — appendMessage sends PATCH with action MESSAGE_APPEND (=5)
+    // UTS: rest/unit/RSL15b/append-sends-patch-append-2
     #[tokio::test]
     async fn rsl15b_append_message_sends_patch() -> Result<()> {
-        let mock = MockHttpClient::new();
-        mock.queue_response(MockResponse::json(200, &json!({"serial": "s1"})));
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({"versionSerial": "vs1"}))
+        });
         let client = mock_client_json(mock);
         let ch = client.channels().get("test");
         let msg = crate::rest::Message {
-            serial: Some("serial-1".into()),
+            serial: Some("msg-serial-1".into()),
+            data: Data::String("appended-data".into()),
             ..Default::default()
         };
-        let result = ch.append_message(&msg, None).await?;
-        assert_eq!(result.serial.as_str(), "s1");
+        ch.append_message(&msg, None).await?;
         let reqs = get_mock(&client).captured_requests();
         let req = reqs.last().unwrap();
         assert_eq!(req.method, "PATCH");
+        assert_eq!(req.url.path(), "/channels/test/messages/msg-serial-1");
         let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
         assert_eq!(body["action"], 5); // MESSAGE_APPEND
+        assert_eq!(body["data"], "appended-data");
         Ok(())
     }
 
 
-    // RSL15b7 — version set from operation
-    // Also covers: RSL15b1 (version set from operation)
+    // RSL15b7 — version set to the MessageOperation when provided
+    // UTS: rest/unit/RSL15b7/version-set-with-operation-0
     #[tokio::test]
     async fn rsl15b7_version_set_from_operation() -> Result<()> {
-        let mock = MockHttpClient::new();
-        mock.queue_response(MockResponse::json(200, &json!({"serial": "s1"})));
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({"versionSerial": "vs1"}))
+        });
         let client = mock_client_json(mock);
         let ch = client.channels().get("test");
         let msg = crate::rest::Message {
-            serial: Some("serial-1".into()),
+            serial: Some("s1".into()),
+            data: Data::String("updated".into()),
             ..Default::default()
         };
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("reason".into(), json!("typo"));
         let op = crate::rest::MessageOperation {
-            description: Some("edited".into()),
-            ..Default::default()
+            client_id: Some("user1".into()),
+            description: Some("fixed typo".into()),
+            metadata: Some(metadata),
         };
-        ch.update_message(&msg, &op, None).await?;
+        ch.update_message(&msg, Some(&op), None).await?;
         let reqs = get_mock(&client).captured_requests();
         let req = reqs.last().unwrap();
         let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
-        assert!(body.get("version").is_some());
-        assert_eq!(body["version"]["description"], "edited");
+        assert_eq!(body["version"]["clientId"], "user1");
+        assert_eq!(body["version"]["description"], "fixed typo");
+        assert_eq!(body["version"]["metadata"]["reason"], "typo");
         Ok(())
     }
 
 
+    // RSL15b7 — version absent when no MessageOperation provided
+    // UTS: rest/unit/RSL15b7/version-absent-no-operation-1
     #[tokio::test]
     async fn rsl15b7_version_absent_without_operation() -> Result<()> {
-        let mock = MockHttpClient::new();
-        mock.queue_response(MockResponse::json(200, &json!({"serial": "s1"})));
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({"versionSerial": "vs1"}))
+        });
         let client = mock_client_json(mock);
         let ch = client.channels().get("test");
         let msg = crate::rest::Message {
-            serial: Some("serial-1".into()),
+            serial: Some("s1".into()),
+            data: Data::String("updated".into()),
             ..Default::default()
         };
-        ch.update_message(&msg, &MessageOperation::default(), None).await?;
+        ch.update_message(&msg, None, None).await?;
         let reqs = get_mock(&client).captured_requests();
         let req = reqs.last().unwrap();
         let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
-        // version should not be present when no operation
         assert!(body.get("version").is_none());
         Ok(())
     }
 
 
+    // RSL15c — does not mutate the user-supplied Message
+    // UTS: rest/unit/RSL15c/no-mutate-user-message-0
+    #[tokio::test]
+    async fn rsl15c_does_not_mutate_user_message() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({"versionSerial": "vs1"}))
+        });
+        let client = mock_client_json(mock);
+        let ch = client.channels().get("test");
+        let original = crate::rest::Message {
+            serial: Some("s1".into()),
+            name: Some("orig".into()),
+            data: Data::String("original-data".into()),
+            ..Default::default()
+        };
+        ch.update_message(&original, None, None).await?;
+        // Original message must not have been mutated
+        assert!(original.action.is_none());
+        assert_eq!(original.name.as_deref(), Some("orig"));
+        assert!(matches!(original.data, Data::String(ref s) if s == "original-data"));
+        // But the request body carries the action
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs.last().unwrap().body.as_deref().unwrap()).unwrap();
+        assert_eq!(body["action"], 1); // MESSAGE_UPDATE
+        Ok(())
+    }
+
+
+    // RSL15e — returns UpdateDeleteResult with versionSerial
+    // UTS: rest/unit/RSL15e/returns-update-delete-result-0
     #[tokio::test]
     async fn rsl15e_returns_update_delete_result() -> Result<()> {
         let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &json!({"serial": "s1", "versionSerial": "vs1"}))
+            MockResponse::json(200, &json!({"versionSerial": "version-serial-abc"}))
         });
         let client = mock_client(mock);
         let ch = client.channels().get("test");
         let msg = crate::rest::Message {
-            serial: Some("serial-1".into()),
+            serial: Some("s1".into()),
+            data: Data::String("updated".into()),
             ..Default::default()
         };
-        let result = ch.update_message(&msg, &MessageOperation::default(), None).await?;
-        assert_eq!(result.serial.as_str(), "s1");
-        assert_eq!(result.version_serial.as_str(), "vs1");
+        let result = ch.update_message(&msg, None, None).await?;
+        assert_eq!(result.version_serial.as_deref(), Some("version-serial-abc"));
         Ok(())
     }
 
 
+    // RSL15e/UDR2a — null versionSerial in the response is preserved
+    // UTS: rest/unit/RSL15e/null-version-serial-1
     #[tokio::test]
     async fn rsl15e_null_version_serial() -> Result<()> {
         let mock = MockHttpClient::with_handler(|_req| {
-            MockResponse::json(200, &json!({"serial": "s1", "versionSerial": null}))
+            MockResponse::json(200, &json!({"versionSerial": null}))
         });
         let client = mock_client(mock);
         let ch = client.channels().get("test");
         let msg = crate::rest::Message {
-            serial: Some("serial-1".into()),
+            serial: Some("s1".into()),
+            data: Data::String("updated".into()),
             ..Default::default()
         };
-        let result = ch.update_message(&msg, &MessageOperation::default(), None).await?;
-        assert_eq!(result.serial.as_str(), "s1");
-        assert!(result.version_serial.is_empty());
+        let result = ch.update_message(&msg, None, None).await?;
+        assert!(result.version_serial.is_none());
         Ok(())
     }
 
 
+    // RSL15f — params sent as querystring
+    // UTS: rest/unit/RSL15f/params-sent-as-querystring-0
     #[tokio::test]
     async fn rsl15f_params_sent_as_querystring() -> Result<()> {
-        let mock = MockHttpClient::with_handler(|req| {
-            let url_str = req.url.to_string();
-            assert!(url_str.contains("foo=bar"));
-            MockResponse::json(200, &json!({"serial": "s1"}))
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({"versionSerial": "vs1"}))
         });
         let client = mock_client(mock);
         let ch = client.channels().get("test");
         let msg = crate::rest::Message {
-            serial: Some("serial-1".into()),
+            serial: Some("s1".into()),
+            data: Data::String("updated".into()),
             ..Default::default()
         };
-        ch.update_message(&msg, &MessageOperation::default(), Some(&[("foo", "bar")]))
+        ch.update_message(&msg, None, Some(&[("key", "value"), ("num", "42")]))
             .await?;
+        let reqs = get_mock(&client).captured_requests();
+        let req = reqs.last().unwrap();
+        let query: std::collections::HashMap<String, String> = req
+            .url
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        assert_eq!(query.get("key").map(String::as_str), Some("value"));
+        assert_eq!(query.get("num").map(String::as_str), Some("42"));
         Ok(())
     }
 
 
+    // RSL15a — serial required: all three methods fail with 40003, no request made
+    // UTS: rest/unit/RSL15a/serial-required-throws-error-0
     #[tokio::test]
     async fn rsl15a_serial_required() {
-        let mock =
-            MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!({"serial": "s1"})));
-        let client = mock_client(mock);
-        let ch = client.channels().get("test");
-        let msg = crate::rest::Message::default(); // no serial
-        let result = ch.update_message(&msg, &MessageOperation::default(), None).await;
-        assert!(result.is_err());
-    }
-
-
-    #[tokio::test]
-    async fn rsl15b_serial_url_encoded() -> Result<()> {
-        let mock = MockHttpClient::with_handler(|req| {
-            // Serial with special chars should be URL-encoded in path
-            let path = req.url.path().to_string();
-            assert!(
-                path.contains("%40") || path.contains("@"),
-                "serial should appear in path: {}",
-                path
-            );
-            MockResponse::json(200, &json!({"serial": "s1"}))
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({"versionSerial": "vs1"}))
         });
         let client = mock_client(mock);
         let ch = client.channels().get("test");
         let msg = crate::rest::Message {
-            serial: Some("01726232498871-001@abcdefghij:0".into()),
+            name: Some("x".into()),
+            data: Data::String("y".into()),
             ..Default::default()
         };
-        ch.update_message(&msg, &MessageOperation::default(), None).await?;
+
+        let err = ch.update_message(&msg, None, None).await.unwrap_err();
+        assert_eq!(err.code, Some(40003));
+        let err = ch.delete_message(&msg, None, None).await.unwrap_err();
+        assert_eq!(err.code, Some(40003));
+        let err = ch.append_message(&msg, None).await.unwrap_err();
+        assert_eq!(err.code, Some(40003));
+
+        // Client-side checks — no HTTP request may have been made
+        assert_eq!(get_mock(&client).request_count(), 0);
+    }
+
+
+    // RSL15b — serial URL-encoded in path
+    // UTS: rest/unit/RSL15b/serial-url-encoded-path-3
+    #[tokio::test]
+    async fn rsl15b_serial_url_encoded() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({"versionSerial": "vs1"}))
+        });
+        let client = mock_client(mock);
+        let ch = client.channels().get("test");
+        let msg = crate::rest::Message {
+            serial: Some("serial/special:chars".into()),
+            data: Data::String("updated".into()),
+            ..Default::default()
+        };
+        ch.update_message(&msg, None, None).await?;
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(
+            reqs.last().unwrap().url.path(),
+            "/channels/test/messages/serial%2Fspecial%3Achars"
+        );
+        Ok(())
+    }
+
+
+    // RSL4c — under MessagePack, binary data is sent as native msgpack binary,
+    // NOT base64-encoded, and no "base64" encoding step is added.
+    #[tokio::test]
+    async fn rsl4c_binary_native_under_msgpack() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+        // mock_client uses the default (MessagePack) format
+        let client = mock_client(mock);
+        let ch = client.channels().get("test");
+        let payload = vec![0x00u8, 0x01, 0x02, 0xFF, 0xFE];
+        ch.publish().name("bin-event").binary(payload.clone()).send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body = reqs.last().unwrap().body.as_deref().unwrap();
+        // The body must round-trip as a Message with binary data intact and no encoding
+        let msg: crate::rest::Message = rmp_serde::from_slice(body).unwrap();
+        assert!(
+            matches!(msg.data, Data::Binary(ref b) if b.as_ref() == payload.as_slice()),
+            "binary data must be native msgpack bin, got {:?}",
+            msg.data
+        );
+        assert!(msg.encoding.is_none(), "no encoding step for native binary");
+        Ok(())
+    }
+
+
+    // RSL4c — under JSON, binary data is base64-encoded with encoding "base64"
+    #[tokio::test]
+    async fn rsl4c_binary_base64_under_json() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
+        let client = mock_client_json(mock);
+        let ch = client.channels().get("test");
+        let payload = vec![0x00u8, 0x01, 0x02, 0xFF, 0xFE];
+        ch.publish().name("bin-event").binary(payload.clone()).send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs.last().unwrap().body.as_deref().unwrap()).unwrap();
+        assert_eq!(body["encoding"], "base64");
+        let decoded = base64::decode(body["data"].as_str().unwrap()).unwrap();
+        assert_eq!(decoded, payload);
+        Ok(())
+    }
+
+
+    // RSL15d — request body encoded per RSL4 (JSON data stringified + encoding "json")
+    // UTS: rest/unit/RSL15d/body-encoded-per-rsl4-0
+    #[tokio::test]
+    async fn rsl15d_body_encoded_per_rsl4() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({"versionSerial": "vs1"}))
+        });
+        let client = mock_client_json(mock);
+        let ch = client.channels().get("test");
+        let msg = crate::rest::Message {
+            serial: Some("s1".into()),
+            data: Data::JSON(json!({"key": "value"})),
+            ..Default::default()
+        };
+        ch.update_message(&msg, None, None).await?;
+        let reqs = get_mock(&client).captured_requests();
+        let body: serde_json::Value =
+            serde_json::from_slice(reqs.last().unwrap().body.as_deref().unwrap()).unwrap();
+        assert!(body["data"].is_string());
+        assert_eq!(body["encoding"], "json");
+        let inner: serde_json::Value = serde_json::from_str(body["data"].as_str().unwrap()).unwrap();
+        assert_eq!(inner, json!({"key": "value"}));
         Ok(())
     }
 
@@ -2246,14 +2392,14 @@ use crate::crypto::CipherParams;
         // UDR1: UpdateDeleteResult has serial and versionSerial fields
         let json_str = r#"{"serial":"s1","versionSerial":"vs1"}"#;
         let result: crate::rest::UpdateDeleteResult = serde_json::from_str(json_str).unwrap();
-        assert_eq!(result.serial.as_str(), "s1");
-        assert_eq!(result.version_serial.as_str(), "vs1");
+        assert_eq!(result.serial.as_deref(), Some("s1"));
+        assert_eq!(result.version_serial.as_deref(), Some("vs1"));
 
-        // Absent fields
+        // Absent fields deserialize as None
         let json_str2 = r#"{}"#;
         let result2: crate::rest::UpdateDeleteResult = serde_json::from_str(json_str2).unwrap();
-        assert!(result2.serial.is_empty());
-        assert!(result2.version_serial.is_empty());
+        assert!(result2.serial.is_none());
+        assert!(result2.version_serial.is_none());
     }
 
 

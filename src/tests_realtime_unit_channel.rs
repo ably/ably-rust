@@ -6289,7 +6289,7 @@ use crate::crypto::CipherParams;
         });
 
         let result = t.await.unwrap().unwrap();
-        assert_eq!(&result.serial, "result-serial");
+        assert_eq!(result.serial.as_deref(), Some("result-serial"));
     }
 
 
@@ -6332,7 +6332,7 @@ use crate::crypto::CipherParams;
         });
 
         let result = t.await.unwrap().unwrap();
-        assert_eq!(&result.serial, "del-serial");
+        assert_eq!(result.serial.as_deref(), Some("del-serial"));
     }
 
 

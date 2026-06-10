@@ -703,7 +703,8 @@ use crate::crypto::CipherParams;
     async fn rsh1b3_device_save_sends_put() -> Result<()> {
         let mock = MockHttpClient::with_handler(|req| {
             assert_eq!(req.method, "PUT");
-            assert_eq!(req.url.path(), "/push/deviceRegistrations");
+            // RSH1b3: PUT to /push/deviceRegistrations/:deviceId
+            assert_eq!(req.url.path(), "/push/deviceRegistrations/dev-new");
             MockResponse::json(200, &json!({"id": "dev-new", "platform": "ios"}))
         });
 

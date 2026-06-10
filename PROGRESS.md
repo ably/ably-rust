@@ -105,3 +105,33 @@
 - `auth::Credential` stays but is `pub(crate)`
 - `channel::Message` → `rest::Message` (unified)
 - `ErrorInfo` (old, limited) → `ErrorInfo` (new, full TI1 spec with cause/detail/request_id)
+
+## Phase R: REST Remediation (plan rev 2)
+
+### R1 Wire-Protocol Correctness — DONE (2026-06-10)
+- TM5: MessageAction wire values fixed to spec (CREATE=0, UPDATE=1, DELETE=2, META=3,
+  SUMMARY=4, APPEND=5). Previously update_message sent DELETE on the wire.
+- RSL15: update/delete/append_message rewritten — op is Option<&MessageOperation>,
+  serial-missing errors with 40003, body carries full message fields encoded per RSL4,
+  version only when op provided, UpdateDeleteResult fields now Option<String> (UDR2a
+  null preserved). New shared send_message_patch.
+- RSL4c: new Message::encode_for_wire(format) — JSON data stringified + "json" encoding;
+  binary base64 under JSON, native bin under MessagePack. Used by PublishBuilder,
+  message PATCH, and batch publish.
+- RSC24: batch_presence sends comma-joined channels param; returns BatchPresenceResponse
+  envelope (success_count/failure_count/results) with Success/Failure variants.
+- Batch result parsing: BatchPublishResult/BatchPresenceResult deserialization
+  discriminates on presence of "error" key (fixes untagged-serde bug; bpr1b/c un-ignored).
+- RSC22: batch_publish rejects empty specs/channels/messages with 40003 client-side;
+  accepts object-or-array responses.
+- RSA17: revoke_tokens parses BatchResult envelope (v3+), legacy array fallback.
+- AuthOptions::default() method now Some("GET") (AO2d).
+- Stale tests fixed: rsa17d (40162), rsh1b3 (path with deviceId), tm3 (action=1 is UPDATE).
+- Tests rewritten UTS-faithful: RSL15 block (13 tests incl. new rsl15c no-mutate, rsl15d),
+  batch presence block (RSC24_1/2/3, BAR2_1/3, BGR2_1/2, BGF2_1, mixed, error x2),
+  rsa17c envelope test, rsl4c x2; legacy-format duplicates deleted.
+- Test status: unit 724 pass / 439 fail (realtime stubs) / 92 ignored;
+  integration 47/47 pass against sandbox.
+- Files: rest.rs, auth.rs, tests_rest_unit_{channel,client,auth,push,types}.rs,
+  tests_realtime_unit_channel.rs, CLAUDE.md
+- Next: R2 auth layer rewrite.

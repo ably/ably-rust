@@ -1829,6 +1829,42 @@ use crate::crypto::CipherParams;
     }
 
 
+    // RSA17c — with X-Ably-Version >= 3 the server returns a BatchResult
+    // envelope {successCount, failureCount, results}; counts come from the
+    // server, not client-side computation.
+    #[tokio::test]
+    async fn rsa17c_batch_result_envelope() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(201, &serde_json::json!({
+                "successCount": 1,
+                "failureCount": 1,
+                "results": [
+                    {"target": "clientId:alice", "issuedBefore": 1700000000000_i64, "appliesAt": 1700000000000_i64},
+                    {"target": "invalidType:abc", "error": {"code": 40000, "statusCode": 400, "message": "invalid target"}}
+                ]
+            }))
+        });
+
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .rest_with_mock(mock)
+            .unwrap();
+
+        let request = crate::rest::RevokeTokensRequest {
+            targets: vec!["clientId:alice".to_string(), "invalidType:abc".to_string()],
+            issued_before: None,
+            allow_reauth_margin: None,
+        };
+
+        let result = client.auth().revoke_tokens(&request).await?;
+        assert_eq!(result.success_count, 1);
+        assert_eq!(result.failure_count, 1);
+        assert_eq!(result.len(), 2);
+        assert!(result.results[0].error.is_none());
+        assert_eq!(result.results[1].error.as_ref().unwrap().code, Some(40000));
+        Ok(())
+    }
+
+
     #[tokio::test]
     async fn rsa17d_token_auth_fails_with_error() -> Result<()> {
         let mock = MockHttpClient::new();
@@ -1848,9 +1884,10 @@ use crate::crypto::CipherParams;
             .revoke_tokens(&request)
             .await
             .expect_err("Should fail for token auth");
+        // RSA17d: 40162 TokenAuthCannotRevokeTokens with 401, client-side check
         assert_eq!(
             err.code,
-            Some(crate::error::ErrorCode::UnableToObtainCredentialsFromGivenParameters.code())
+            Some(crate::error::ErrorCode::TokenAuthCannotRevokeTokens.code())
         );
         assert_eq!(err.status_code, Some(401));
         Ok(())
