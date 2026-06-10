@@ -202,7 +202,7 @@ async fn rsa8_native_token_auth() {
 
     let token_details = key_client
         .auth()
-        .request_token(&TokenParams::default(), &crate::auth::AuthOptions::default())
+        .request_token(None, None)
         .await
         .unwrap();
 
@@ -325,8 +325,8 @@ async fn rsl1m4_client_id_mismatch_rejected() {
     let token_details = key_client
         .auth()
         .request_token(
-            &TokenParams::new().client_id("authenticated-client-id"),
-            &crate::auth::AuthOptions::default(),
+            Some(&TokenParams::new().client_id("authenticated-client-id")),
+            None,
         )
         .await
         .unwrap();
@@ -1568,7 +1568,7 @@ async fn rsa17d_token_auth_client_cannot_revoke() {
 
     let token_details = key_client
         .auth()
-        .request_token(&TokenParams::default(), &crate::auth::AuthOptions::default())
+        .request_token(None, None)
         .await
         .unwrap();
 

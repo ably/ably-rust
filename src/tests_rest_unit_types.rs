@@ -2172,8 +2172,8 @@ use crate::crypto::CipherParams;
     // ---------------------------------------------------------------
     // TE1 — keyName derived from API key
     // ---------------------------------------------------------------
-    #[test]
-    fn te1_key_name_in_token_request() -> Result<()> {
+    #[tokio::test]
+    async fn te1_key_name_in_token_request() -> Result<()> {
         let client = test_client_for_auth();
         let params = TokenParams {
             capability: Some(r#"{"*":["*"]}"#.to_string()),
@@ -2183,7 +2183,7 @@ use crate::crypto::CipherParams;
             ttl: Some(3600000),
         };
         let options = AuthOptions::default();
-        let req = client.auth().create_token_request(&params, &options)?;
+        let req = client.auth().create_token_request(Some(&params), Some(&options)).await?;
         // The key used is "aaaaaa.bbbbbb:cccccc", so key_name should be "aaaaaa.bbbbbb"
         assert_eq!(req.key_name, "aaaaaa.bbbbbb");
         Ok(())
@@ -2193,8 +2193,8 @@ use crate::crypto::CipherParams;
     // ---------------------------------------------------------------
     // TE5 — timestamp auto-generation when not specified
     // ---------------------------------------------------------------
-    #[test]
-    fn te5_timestamp_auto_generation() -> Result<()> {
+    #[tokio::test]
+    async fn te5_timestamp_auto_generation() -> Result<()> {
         let client = test_client_for_auth();
         let params = TokenParams {
             capability: Some(r#"{"*":["*"]}"#.to_string()),
@@ -2204,7 +2204,7 @@ use crate::crypto::CipherParams;
             ttl: Some(3600000),
         };
         let options = AuthOptions::default();
-        let req = client.auth().create_token_request(&params, &options)?;
+        let req = client.auth().create_token_request(Some(&params), Some(&options)).await?;
         // Timestamp should be auto-generated
         assert!(req.timestamp.is_some());
         Ok(())
@@ -2214,8 +2214,8 @@ use crate::crypto::CipherParams;
     // ---------------------------------------------------------------
     // TE6 — nonce auto-generation when not specified
     // ---------------------------------------------------------------
-    #[test]
-    fn te6_nonce_auto_generation() -> Result<()> {
+    #[tokio::test]
+    async fn te6_nonce_auto_generation() -> Result<()> {
         let client = test_client_for_auth();
         let params = TokenParams {
             capability: Some(r#"{"*":["*"]}"#.to_string()),
@@ -2225,11 +2225,11 @@ use crate::crypto::CipherParams;
             ttl: Some(3600000),
         };
         let options = AuthOptions::default();
-        let req = client.auth().create_token_request(&params, &options)?;
+        let req = client.auth().create_token_request(Some(&params), Some(&options)).await?;
         // Nonce should be auto-generated and non-empty
         assert!(!req.nonce.is_empty());
         // Generate another request and verify nonces differ (randomness)
-        let req2 = client.auth().create_token_request(&params, &options)?;
+        let req2 = client.auth().create_token_request(Some(&params), Some(&options)).await?;
         assert_ne!(req.nonce, req2.nonce);
         Ok(())
     }
@@ -2566,6 +2566,7 @@ use crate::crypto::CipherParams;
             headers: Some(Vec::<(String, String)>::new()),
             method: Some("GET".to_string()),
             params: None,
+            ..Default::default()
         };
         assert!(opts.token.is_none());
         assert!(opts.headers.is_some());

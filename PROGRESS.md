@@ -135,3 +135,37 @@
 - Files: rest.rs, auth.rs, tests_rest_unit_{channel,client,auth,push,types}.rs,
   tests_realtime_unit_channel.rs, CLAUDE.md
 - Next: R2 auth layer rewrite.
+
+### R2 Auth Layer Rewrite — DONE (2026-06-10)
+- AuthOptions now full AO2 shape (key, token, tokenDetails, authCallback, authUrl,
+  authMethod, authHeaders, authParams, queryTime); default authMethod GET.
+  API signatures: create_token_request/request_token/authorize take
+  (Option<&TokenParams>, Option<&AuthOptions>); create_token_request is async (queryTime).
+- New AuthConfig resolution: client credential overlaid with authorize()-saved options
+  (RSA10h replace-with-source semantics, RSA10i key preserved) and per-call options.
+- authUrl (RSA8c) implemented: GET/POST, authHeaders/authParams, TokenParams merge
+  (RSA8c1a/b), JSON TokenDetails/TokenRequest (exchanged) or plain-text JWT responses,
+  via raw http_client (no Ably pipeline). Credential::TokenRequest exchangeable.
+- AuthToken::Token variant for JWT-string callbacks (RSA8d).
+- Auth-mode selection (RSA4): basic only for key-only clients; clientId is NOT a
+  token-auth trigger; key+clientId uses basic + X-Ably-ClientId (RSA7e2, header now
+  basic-only); authorize() forces token auth thereafter (RSA10a).
+- Token acquisition: effective params merge defaultTokenParams + options.clientId
+  (RSA5c/6c, RSA7d, RSA12a); ttl/capability omitted + signed as empty when unspecified
+  (RSA5/RSA6 — restricted keys now work); pre-emptive expiry renewal (RSA4b1);
+  40171 client-side when unrenewable (RSA4a2); RSA15 clientId compatibility at
+  construction and on every obtained token (40102).
+- authorize(): params/options replace stored (timestamp never stored, RSA10g);
+  updates tokenDetails (RSA10g); request_token no longer mutates library state (RSA8f).
+- queryTime (RSA9d/RSA10k): /time queried with offset cached; time() is now
+  UNAUTHENTICATED per RSC16 (UTS: must not send Authorization).
+- RSA17d_2: key+useTokenAuth revoke rejected 40162. Key Debug/Display redact secret.
+- Tests: vacuous auth tests replaced with 18 UTS-derived tests (authUrl x7, RSA15 x3,
+  RSA4a2, RSA4b1, RSA12a/b, RSA7d, RSA1, RSA8d, RSA17d_2), all passing first run;
+  rsa9h/rsa9-depth tests fixed to RSA5/RSA6 null semantics; ~20 tests switched from
+  time() to authenticated requests; rsa16 tests fixed per RSA8f.
+- Test status: unit 731 pass / 439 fail (realtime stubs) / 92 ignored;
+  integration 47/47 vs sandbox.
+- Files: auth.rs (rewritten), rest.rs (auth machinery), options.rs, http.rs,
+  tests_rest_unit_{auth,client,misc,types}.rs, tests_rest_integration.rs
+- Next: R3 publish features (idempotency, encryption, RSL1n serials).

@@ -191,7 +191,7 @@ use crate::crypto::CipherParams;
         });
 
         let client = mock_client(mock);
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
 
         let reqs = get_mock(&client).captured_requests();
         let auth_header = reqs[0]
@@ -227,7 +227,7 @@ use crate::crypto::CipherParams;
             .rest_with_mock(mock)
             .unwrap();
 
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
 
         let reqs = get_mock(&client).captured_requests();
         let auth_header = reqs[0]
@@ -275,7 +275,7 @@ use crate::crypto::CipherParams;
             .rest_with_mock(mock)
             .unwrap();
 
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
 
         let reqs = get_mock(&client).captured_requests();
 
@@ -309,8 +309,8 @@ use crate::crypto::CipherParams;
     // UTS: rest/unit/auth/token_request_params.md, authorize.md
     // ---------------------------------------------------------------
 
-    #[test]
-    fn rsa9h_create_token_request_fields() {
+    #[tokio::test]
+    async fn rsa9h_create_token_request_fields() {
         let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
 
         let params = crate::auth::TokenParams::default();
@@ -318,7 +318,7 @@ use crate::crypto::CipherParams;
 
         let req = client
             .auth()
-            .create_token_request(&params, &options)
+            .create_token_request(Some(&params), Some(&options)).await
             .unwrap();
 
         // RSA9h: keyName should match the key ID
@@ -343,16 +343,18 @@ use crate::crypto::CipherParams;
             diff_ms
         );
 
-        // RSA9d: Default capability should be {"*":["*"]}
-        assert_eq!(req.capability.as_deref(), Some(r#"{"*":["*"]}"#));
+        // RSA6: capability must be null when unspecified — Ably applies the
+        // key's capabilities server-side
+        assert!(req.capability.is_none());
 
-        // RSA9c: Default TTL should be 60 minutes (3600000ms)
-        assert_eq!(req.ttl.unwrap(), 3600000);
+        // RSA5: ttl must be null when unspecified — Ably applies the 60 min
+        // default server-side
+        assert!(req.ttl.is_none());
     }
 
 
-    #[test]
-    fn rsa9c_custom_ttl() {
+    #[tokio::test]
+    async fn rsa9c_custom_ttl() {
         let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
 
         let params = crate::auth::TokenParams {
@@ -363,14 +365,14 @@ use crate::crypto::CipherParams;
 
         let req = client
             .auth()
-            .create_token_request(&params, &options)
+            .create_token_request(Some(&params), Some(&options)).await
             .unwrap();
         assert_eq!(req.ttl.unwrap(), 7200000);
     }
 
 
-    #[test]
-    fn rsa9d_custom_capability() {
+    #[tokio::test]
+    async fn rsa9d_custom_capability() {
         let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
 
         let params = crate::auth::TokenParams {
@@ -381,14 +383,14 @@ use crate::crypto::CipherParams;
 
         let req = client
             .auth()
-            .create_token_request(&params, &options)
+            .create_token_request(Some(&params), Some(&options)).await
             .unwrap();
         assert_eq!(req.capability.as_deref(), Some(r#"{"channel1":["publish"]}"#));
     }
 
 
-    #[test]
-    fn rsa9f_unique_nonces() {
+    #[tokio::test]
+    async fn rsa9f_unique_nonces() {
         let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
 
         let params = crate::auth::TokenParams::default();
@@ -396,11 +398,11 @@ use crate::crypto::CipherParams;
 
         let req1 = client
             .auth()
-            .create_token_request(&params, &options)
+            .create_token_request(Some(&params), Some(&options)).await
             .unwrap();
         let req2 = client
             .auth()
-            .create_token_request(&params, &options)
+            .create_token_request(Some(&params), Some(&options)).await
             .unwrap();
 
         assert_ne!(req1.nonce, req2.nonce, "Nonces should be unique");
@@ -436,7 +438,7 @@ use crate::crypto::CipherParams;
 
         let details = client
             .auth()
-            .request_token(&Default::default(), &options)
+            .request_token(Some(&Default::default()), Some(&options))
             .await?;
 
         assert_eq!(details.token, "test-token-123");
@@ -474,8 +476,8 @@ use crate::crypto::CipherParams;
     // UTS: rest/unit/auth/client_id.md
     // ---------------------------------------------------------------
 
-    #[test]
-    fn rsa9a_client_id_included_in_token_request() {
+    #[tokio::test]
+    async fn rsa9a_client_id_included_in_token_request() {
         let client = ClientOptions::new("appId.keyId:keySecret")
             .client_id("user1")
             .unwrap()
@@ -490,14 +492,14 @@ use crate::crypto::CipherParams;
 
         let req = client
             .auth()
-            .create_token_request(&params, &options)
+            .create_token_request(Some(&params), Some(&options)).await
             .unwrap();
         assert_eq!(req.client_id, Some("user1".to_string()));
     }
 
 
-    #[test]
-    fn rsa9a_client_id_override_in_token_params() {
+    #[tokio::test]
+    async fn rsa9a_client_id_override_in_token_params() {
         let client = ClientOptions::new("appId.keyId:keySecret")
             .client_id("user1")
             .unwrap()
@@ -512,7 +514,7 @@ use crate::crypto::CipherParams;
 
         let req = client
             .auth()
-            .create_token_request(&params, &options)
+            .create_token_request(Some(&params), Some(&options)).await
             .unwrap();
         assert_eq!(req.client_id, Some("user2".to_string()));
     }
@@ -609,27 +611,15 @@ use crate::crypto::CipherParams;
 
 
     // ---------------------------------------------------------------
-    // RSA4b — Token auth when clientId is provided with key
-    // UTS: rest/unit/auth/auth_scheme.md
+    // RSA7e2 — key + clientId keeps basic auth, asserting the identity via
+    // the X-Ably-ClientId header (base64). A clientId is NOT a token-auth
+    // trigger (RSA4).
     // ---------------------------------------------------------------
 
     #[tokio::test]
-    async fn rsa4b_token_auth_when_client_id_with_key() -> Result<()> {
-        let mock = MockHttpClient::with_handler(|req| {
-            if req.url.path().contains("/requestToken") {
-                MockResponse::json(
-                    200,
-                    &json!({
-                        "token": "obtained-token",
-                        "expires": 9999999999999_i64,
-                        "issued": 1000000000000_i64,
-                        "clientId": "my-client-id",
-                        "capability": "{\"*\":[\"*\"]}"
-                    }),
-                )
-            } else {
-                MockResponse::json(200, &json!({"channelId": "test"}))
-            }
+    async fn rsa7e2_basic_auth_with_client_id_sends_header() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| {
+            MockResponse::json(200, &json!({"channelId": "test"}))
         });
 
         let client = ClientOptions::new("appId.keyId:keySecret")
@@ -644,26 +634,23 @@ use crate::crypto::CipherParams;
             .await?;
 
         let reqs = get_mock(&client).captured_requests();
+        // Exactly one request — no token acquisition
+        assert_eq!(reqs.len(), 1);
 
-        // Should have made two requests: requestToken + API call
-        assert_eq!(reqs.len(), 2);
-
-        // First request should be to requestToken
+        let auth_header = reqs[0]
+            .headers.iter().find(|(k,_)| k == "authorization").map(|(_,v)| v.as_str())
+            .expect("Expected Authorization header");
         assert!(
-            reqs[0].url.path().contains("/requestToken"),
-            "First request should be to requestToken, got {}",
-            reqs[0].url.path()
-        );
-
-        // Second request should use Bearer auth, not Basic
-        let auth_header = reqs[1]
-            .headers.iter().find(|(k,_)| k == "authorization").map(|(_,v)| v.as_str()).expect("Expected Authorization header");
-        assert!(
-            auth_header.starts_with("Bearer "),
-            "Expected Bearer auth when clientId is set, got '{}'",
+            auth_header.starts_with("Basic "),
+            "Expected Basic auth for key + clientId, got '{}'",
             auth_header
         );
-        assert_eq!(auth_header, "Bearer obtained-token");
+
+        // RSA7e2: clientId asserted via X-Ably-ClientId header, base64 encoded
+        let client_id_header = reqs[0]
+            .headers.iter().find(|(k,_)| k == "x-ably-clientid").map(|(_,v)| v.as_str())
+            .expect("Expected X-Ably-ClientId header");
+        assert_eq!(client_id_header, base64::encode("my-client-id"));
 
         Ok(())
     }
@@ -750,8 +737,8 @@ use crate::crypto::CipherParams;
             .rest_with_mock(mock)
             .unwrap();
 
-        let time = client.time().await?;
-        assert_eq!(time.timestamp_millis(), 1234567890000);
+        let resp = client.request("GET", "/channels/test").send().await?;
+        assert_eq!(resp.status_code(), 200);
 
         // Verify requests were made (requestToken + fail + requestToken + retry)
         let reqs = get_mock(&client).captured_requests();
@@ -854,8 +841,8 @@ use crate::crypto::CipherParams;
     // For now we test the current behavior.
     // ---------------------------------------------------------------
 
-    #[test]
-    fn rsa5b_explicit_ttl_preserved() {
+    #[tokio::test]
+    async fn rsa5b_explicit_ttl_preserved() {
         let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
         let params = crate::auth::TokenParams {
             ttl: Some(7200000),
@@ -864,14 +851,14 @@ use crate::crypto::CipherParams;
         let options = crate::auth::AuthOptions::default();
         let req = client
             .auth()
-            .create_token_request(&params, &options)
+            .create_token_request(Some(&params), Some(&options)).await
             .unwrap();
         assert_eq!(req.ttl.unwrap(), 7200000);
     }
 
 
-    #[test]
-    fn rsa6b_explicit_capability_preserved() {
+    #[tokio::test]
+    async fn rsa6b_explicit_capability_preserved() {
         let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
         let params = crate::auth::TokenParams {
             capability: Some(r#"{"channel-a":["publish","subscribe"]}"#.to_string()),
@@ -880,7 +867,7 @@ use crate::crypto::CipherParams;
         let options = crate::auth::AuthOptions::default();
         let req = client
             .auth()
-            .create_token_request(&params, &options)
+            .create_token_request(Some(&params), Some(&options)).await
             .unwrap();
         assert_eq!(req.capability.as_deref(), Some(r#"{"channel-a":["publish","subscribe"]}"#));
     }
@@ -917,7 +904,7 @@ use crate::crypto::CipherParams;
         // authorize() requests a token using the key
         let token_details = client
             .auth()
-            .request_token(&Default::default(), &client.auth_options())
+            .request_token(Some(&Default::default()), Some(&client.auth_options()))
             .await?;
 
         assert_eq!(token_details.token, "obtained-token");
@@ -953,7 +940,7 @@ use crate::crypto::CipherParams;
 
         let err = client
             .auth()
-            .request_token(&Default::default(), &client.auth_options())
+            .request_token(Some(&Default::default()), Some(&client.auth_options()))
             .await
             .expect_err("Expected auth error");
 
@@ -1428,26 +1415,8 @@ use crate::crypto::CipherParams;
     }
 
 
-    // ===============================================================
-    // RSA4f: Invalid token format tests
-    // ===============================================================
-
-    // RSA4f — authCallback returns oversized token (>128KiB) treated as invalid format
-    #[tokio::test]
-    async fn rsa4f_callback_oversized_token_format() {
-        // RSA4f: A token string > 128KiB should be treated as invalid format.
-        // Per RSA4c2, this should cause DISCONNECTED with code 80019.
-        //
-        // This test verifies that an oversized token is detectable. The SDK
-        // should ideally validate token size before sending it to the server.
-        let oversized_token = "x".repeat(131073);
-        assert!(oversized_token.len() > 128 * 1024,
-            "Token exceeds 128KiB — RSA4f says this is invalid format");
-
-        // RSA4f also defines: the type system prevents returning invalid types
-        // (e.g. integer) from the Rust auth callback — this is enforced at
-        // compile time by the AuthCallback trait's return type (AuthToken).
-    }
+    // (RSA4f oversized-token handling is a realtime concern (80019 on
+    // connect) — the previous test here was a tautology and was removed.)
 
 
     // ===============================================================
@@ -1543,17 +1512,18 @@ use crate::crypto::CipherParams;
             .unwrap();
         assert!(client.auth().token_details().is_none());
 
+        // RSA8f: an explicit request_token does NOT alter library auth state
         let td = client
             .auth()
-            .request_token(
-                &crate::auth::TokenParams::default(),
-                &client.auth_options(),
-            )
+            .request_token(None, None)
             .await
             .unwrap();
         assert_eq!(td.token, "new-token-v1");
+        assert!(client.auth().token_details().is_none());
 
-        // RSA16c: tokenDetails updated after request_token
+        // RSA16c: authorize() DOES update tokenDetails
+        let td = client.auth().authorize(None, None).await.unwrap();
+        assert_eq!(td.token, "new-token-v1");
         let stored = client.auth().token_details().unwrap();
         assert_eq!(stored.token, "new-token-v1");
     }
@@ -1564,100 +1534,180 @@ use crate::crypto::CipherParams;
     // UTS: rest/unit/auth/client_id.md
     // ===============================================================
 
-    #[test]
-    fn rsa12a_client_id_passed_in_token_params() {
-        let client = ClientOptions::new("appId.keyId:keySecret")
+    // RSA12a — the library clientId is passed to the authCallback in TokenParams
+    // UTS: rest/unit/RSA12a/clientid-passed-to-callback-0
+    #[tokio::test]
+    async fn rsa12a_client_id_passed_to_callback() -> Result<()> {
+        use crate::auth::{AuthCallback, AuthToken, TokenDetails, TokenParams};
+        use std::sync::Mutex as StdMutex;
+
+        struct RecordingCb {
+            received: Arc<StdMutex<Vec<Option<String>>>>,
+        }
+        impl AuthCallback for RecordingCb {
+            fn token<'a>(
+                &'a self,
+                params: &'a TokenParams,
+            ) -> std::pin::Pin<Box<dyn Send + futures::Future<Output = Result<AuthToken>> + 'a>> {
+                self.received.lock().unwrap().push(params.client_id.clone());
+                Box::pin(async {
+                    Ok(AuthToken::Details(TokenDetails::token("cb-token".into())))
+                })
+            }
+        }
+
+        let received = Arc::new(StdMutex::new(Vec::new()));
+        let cb = Arc::new(RecordingCb { received: received.clone() });
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!({})));
+        let client = ClientOptions::with_auth_callback(cb)
             .client_id("library-client-id")
             .unwrap()
-            .rest()
-            .unwrap();
-        assert_eq!(client.options().client_id.as_deref(), Some("library-client-id"));
+            .rest_with_mock(mock)?;
+
+        client.request("GET", "/channels/test").send().await?;
+        let received = received.lock().unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].as_deref(), Some("library-client-id"));
+        Ok(())
     }
 
 
+    // RSA12 — wildcard token clientId is reported as the effective clientId
+    // UTS: rest/unit/RSA12/wildcard-clientid-0
     #[test]
     fn rsa12_wildcard_client_id() {
-        use chrono::Utc;
         let td = crate::auth::TokenDetails {
             token: "wildcard-token".to_string(),
-            metadata: Some(crate::auth::TokenMetadata {
-                expires: Utc::now() + chrono::Duration::hours(1),
-                issued: Utc::now(),
-                capability: "{}".to_string(),
-                client_id: Some("*".to_string()),
-                ..Default::default()
-            }),
+            client_id: Some("*".to_string()),
             ..Default::default()
         };
-        let client = ClientOptions::new("wildcard-token")
+        let client = ClientOptions::with_token("placeholder".to_string())
             .token_details(td)
             .rest()
             .unwrap();
-        let details = client.auth().token_details().unwrap();
-        assert_eq!(
-            details.metadata.as_ref().unwrap().client_id.as_deref(),
-            Some("*")
-        );
+        assert_eq!(client.auth().client_id().as_deref(), Some("*"));
     }
 
 
-    #[test]
-    fn rsa12b_client_id_accessible_via_options() {
-        let opts = ClientOptions::new("appId.keyId:keySecret")
+    // RSA12b — the library clientId is sent to the authUrl as a query param
+    // UTS: rest/unit/RSA12b/clientid-sent-to-authurl-0
+    #[tokio::test]
+    async fn rsa12b_client_id_sent_to_authurl() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            if req.url.host_str() == Some("auth.example.com") {
+                let cid = req.url.query_pairs()
+                    .find(|(k, _)| k == "clientId")
+                    .map(|(_, v)| v.to_string());
+                assert_eq!(cid.as_deref(), Some("url-client-id"));
+                MockResponse::json(200, &json!({
+                    "token": "authurl-token",
+                    "expires": 9999999999999_i64
+                }))
+            } else {
+                MockResponse::json(200, &json!({}))
+            }
+        });
+        let client = ClientOptions::with_auth_url("https://auth.example.com/token")
             .client_id("url-client-id")
-            .unwrap();
-        assert_eq!(opts.client_id.as_deref(), Some("url-client-id"));
+            .unwrap()
+            .rest_with_mock(mock)?;
+
+        client.request("GET", "/channels/test").send().await?;
+        Ok(())
     }
 
 
+    // RSA15a — a TokenDetails clientId incompatible with the configured
+    // clientId is rejected at construction with 40102
+    // UTS: rest/unit/RSA15a/token-clientid-must-match-0
     #[test]
     fn rsa15a_token_client_id_must_match_options() {
         let td = crate::auth::TokenDetails {
             token: "some-token".to_string(),
-            metadata: Some(crate::auth::TokenMetadata {
-                expires: chrono::Utc::now() + chrono::Duration::hours(1),
-                issued: chrono::Utc::now(),
-                capability: r#"{"*":["*"]}"#.to_string(),
-                client_id: Some("client-a".to_string()),
-                ..Default::default()
-            }),
+            client_id: Some("token-client".to_string()),
             ..Default::default()
         };
-        assert_eq!(
-            td.metadata.as_ref().unwrap().client_id.as_deref(),
-            Some("client-a")
-        );
+
+        // Mismatch: rejected with 40102 IncompatibleCredentials
+        let err = match ClientOptions::with_token("placeholder".to_string())
+            .token_details(td.clone())
+            .client_id("different-client")
+            .unwrap()
+            .rest()
+        {
+            Err(e) => e,
+            Ok(_) => panic!("Mismatched token clientId must be rejected at construction"),
+        };
+        assert_eq!(err.code, Some(40102));
+
+        // Match: accepted, clientId resolves
+        let client = ClientOptions::with_token("placeholder".to_string())
+            .token_details(td)
+            .client_id("token-client")
+            .unwrap()
+            .rest()
+            .unwrap();
+        assert_eq!(client.auth().client_id().as_deref(), Some("token-client"));
     }
 
 
+    // RSA15b — a wildcard token clientId permits any configured clientId
+    // UTS: rest/unit/RSA15b/wildcard-token-any-clientid-0
     #[test]
     fn rsa15b_wildcard_token_permits_any_client_id() {
         let td = crate::auth::TokenDetails {
             token: "wildcard-token".to_string(),
-            metadata: Some(crate::auth::TokenMetadata {
-                expires: chrono::Utc::now() + chrono::Duration::hours(1),
-                issued: chrono::Utc::now(),
-                capability: r#"{"*":["*"]}"#.to_string(),
-                client_id: Some("*".to_string()),
-                ..Default::default()
-            }),
+            client_id: Some("*".to_string()),
             ..Default::default()
         };
-        assert_eq!(
-            td.metadata.as_ref().unwrap().client_id.as_deref(),
-            Some("*")
-        );
+        let client = ClientOptions::with_token("placeholder".to_string())
+            .token_details(td)
+            .client_id("any-client")
+            .unwrap()
+            .rest()
+            .unwrap();
+        // Configured clientId wins over the wildcard
+        assert_eq!(client.auth().client_id().as_deref(), Some("any-client"));
     }
 
 
-    #[test]
-    fn rsa15c_incompatible_client_id_detected() {
-        let opts_client_id = Some("client-a".to_string());
-        let token_client_id = Some("client-b".to_string());
-        let wildcard = Some("*".to_string());
+    // RSA15c — a token obtained at runtime with an incompatible clientId
+    // produces a 40102 error
+    #[tokio::test]
+    async fn rsa15c_incompatible_client_id_detected() -> Result<()> {
+        use crate::auth::{AuthCallback, AuthToken, TokenDetails, TokenParams};
 
-        assert_ne!(opts_client_id, token_client_id);
-        assert_eq!(wildcard.as_deref(), Some("*"));
+        struct MismatchCb;
+        impl AuthCallback for MismatchCb {
+            fn token<'a>(
+                &'a self,
+                _params: &'a TokenParams,
+            ) -> std::pin::Pin<Box<dyn Send + futures::Future<Output = Result<AuthToken>> + 'a>> {
+                Box::pin(async {
+                    Ok(AuthToken::Details(TokenDetails {
+                        token: "mismatched-token".into(),
+                        client_id: Some("client-b".into()),
+                        ..Default::default()
+                    }))
+                })
+            }
+        }
+
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!({})));
+        let client = ClientOptions::with_auth_callback(Arc::new(MismatchCb))
+            .client_id("client-a")
+            .unwrap()
+            .rest_with_mock(mock)?;
+
+        let err = client
+            .request("GET", "/channels/test")
+            .send()
+            .await
+            .expect_err("Mismatched token clientId must be rejected");
+        assert_eq!(err.code, Some(40102));
+        // The rejection happens client-side: no API request was made
+        assert_eq!(get_mock(&client).request_count(), 0);
+        Ok(())
     }
 
 
@@ -1666,60 +1716,410 @@ use crate::crypto::CipherParams;
     // UTS: rest/unit/auth/auth_callback.md
     // ===============================================================
 
+    // RSA8d — authCallback is invoked and its token used
+    // UTS: rest/unit/RSA8d/callback-invoked-for-auth-0
     #[tokio::test]
     async fn rsa8d_auth_callback_invoked() -> Result<()> {
-        let mock = MockHttpClient::with_handler(|req| {
-            if req.url.path().contains("/requestToken") {
-                MockResponse::json(
-                    200,
-                    &serde_json::json!({
-                        "token": "callback-token",
-                        "expires": 9999999999999_i64,
-                        "issued": 1000000000000_i64,
-                        "capability": "{\"*\":[\"*\"]}"
-                    }),
-                )
-            } else {
-                MockResponse::json(200, &serde_json::json!([1234567890000_i64]))
+        use crate::auth::{AuthCallback, AuthToken, TokenDetails, TokenParams};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct FlagCb {
+            invoked: Arc<AtomicBool>,
+        }
+        impl AuthCallback for FlagCb {
+            fn token<'a>(
+                &'a self,
+                _params: &'a TokenParams,
+            ) -> std::pin::Pin<Box<dyn Send + futures::Future<Output = Result<AuthToken>> + 'a>> {
+                self.invoked.store(true, Ordering::SeqCst);
+                Box::pin(async {
+                    Ok(AuthToken::Details(TokenDetails::token("callback-token".into())))
+                })
             }
-        });
+        }
 
-        let client = ClientOptions::new("appId.keyId:keySecret")
-            .use_token_auth(true)
-            .rest_with_mock(mock)
-            .unwrap();
+        let invoked = Arc::new(AtomicBool::new(false));
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!({})));
+        let client = ClientOptions::with_auth_callback(Arc::new(FlagCb { invoked: invoked.clone() }))
+            .rest_with_mock(mock)?;
 
-        let _ = client.time().await;
+        client.request("GET", "/channels/test").send().await?;
+
+        assert!(invoked.load(std::sync::atomic::Ordering::SeqCst));
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+        let auth = reqs[0].headers.iter()
+            .find(|(k, _)| k == "authorization").map(|(_, v)| v.as_str()).unwrap();
+        assert_eq!(auth, "Bearer callback-token");
         Ok(())
     }
 
 
+    // RSA8c — authUrl is fetched (GET) and its token used
+    // UTS: rest/unit/RSA8c/authurl-invoked-for-auth-0
     #[tokio::test]
     async fn rsa8c_auth_url_invoked() -> Result<()> {
         let mock = MockHttpClient::with_handler(|req| {
-            if req.url.path().contains("/requestToken") {
-                MockResponse::json(
-                    200,
-                    &serde_json::json!({
-                        "token": "url-token",
-                        "expires": 9999999999999_i64,
-                        "issued": 1000000000000_i64,
-                        "capability": "{\"*\":[\"*\"]}"
-                    }),
-                )
+            if req.url.host_str() == Some("auth.example.com") {
+                MockResponse::json(200, &json!({
+                    "token": "authurl-token",
+                    "expires": 9999999999999_i64
+                }))
             } else {
-                MockResponse::json(200, &serde_json::json!([1234567890000_i64]))
+                MockResponse::json(200, &json!({}))
             }
         });
+        let client = ClientOptions::with_auth_url("https://auth.example.com/token")
+            .rest_with_mock(mock)?;
 
-        let client = ClientOptions::new("appId.keyId:keySecret")
-            .use_token_auth(true)
-            .rest_with_mock(mock)
-            .unwrap();
+        client.request("GET", "/channels/test").send().await?;
 
-        let _ = client.time().await;
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].url.host_str(), Some("auth.example.com"));
+        assert_eq!(reqs[0].url.path(), "/token");
+        assert_eq!(reqs[0].method, "GET");
+        let auth = reqs[1].headers.iter()
+            .find(|(k, _)| k == "authorization").map(|(_, v)| v.as_str()).unwrap();
+        assert_eq!(auth, "Bearer authurl-token");
         Ok(())
     }
+
+
+    // RSA8c — authMethod POST is used for the authUrl request
+    // UTS: rest/unit/RSA8c/authurl-post-method-1
+    #[tokio::test]
+    async fn rsa8c_auth_url_post_method() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            if req.url.host_str() == Some("auth.example.com") {
+                MockResponse::json(200, &json!({
+                    "token": "authurl-token",
+                    "expires": 9999999999999_i64
+                }))
+            } else {
+                MockResponse::json(200, &json!({}))
+            }
+        });
+        let client = ClientOptions::with_auth_url("https://auth.example.com/token")
+            .auth_method("POST")
+            .rest_with_mock(mock)?;
+
+        client.request("GET", "/channels/test").send().await?;
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs[0].method, "POST");
+        Ok(())
+    }
+
+
+    // RSA8c — authHeaders are sent with the authUrl request
+    // UTS: rest/unit/RSA8c/authurl-custom-headers-2
+    #[tokio::test]
+    async fn rsa8c_auth_url_custom_headers() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            if req.url.host_str() == Some("auth.example.com") {
+                MockResponse::json(200, &json!({
+                    "token": "authurl-token",
+                    "expires": 9999999999999_i64
+                }))
+            } else {
+                MockResponse::json(200, &json!({}))
+            }
+        });
+        let client = ClientOptions::with_auth_url("https://auth.example.com/token")
+            .auth_headers(vec![
+                ("X-Custom-Header".to_string(), "custom-value".to_string()),
+                ("X-API-Key".to_string(), "my-api-key".to_string()),
+            ])
+            .rest_with_mock(mock)?;
+
+        client.request("GET", "/channels/test").send().await?;
+        let reqs = get_mock(&client).captured_requests();
+        let headers = &reqs[0].headers;
+        let get = |name: &str| headers.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str());
+        assert_eq!(get("X-Custom-Header"), Some("custom-value"));
+        assert_eq!(get("X-API-Key"), Some("my-api-key"));
+        Ok(())
+    }
+
+
+    // RSA8c — authParams are sent as query parameters with GET
+    // UTS: rest/unit/RSA8c/authurl-query-params-3
+    #[tokio::test]
+    async fn rsa8c_auth_url_query_params() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            if req.url.host_str() == Some("auth.example.com") {
+                MockResponse::json(200, &json!({
+                    "token": "authurl-token",
+                    "expires": 9999999999999_i64
+                }))
+            } else {
+                MockResponse::json(200, &json!({}))
+            }
+        });
+        let client = ClientOptions::with_auth_url("https://auth.example.com/token")
+            .auth_params(vec![
+                ("client_id".to_string(), "my-client".to_string()),
+                ("scope".to_string(), "publish:*".to_string()),
+            ])
+            .rest_with_mock(mock)?;
+
+        client.request("GET", "/channels/test").send().await?;
+        let reqs = get_mock(&client).captured_requests();
+        let query: std::collections::HashMap<String, String> = reqs[0].url.query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        assert_eq!(query.get("client_id").map(String::as_str), Some("my-client"));
+        assert_eq!(query.get("scope").map(String::as_str), Some("publish:*"));
+        Ok(())
+    }
+
+
+    // RSA8c — authUrl returning a plain-text JWT string
+    // UTS: rest/unit/RSA8c/authurl-returns-jwt-4
+    #[tokio::test]
+    async fn rsa8c_auth_url_returns_jwt() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            if req.url.host_str() == Some("auth.example.com") {
+                MockResponse {
+                    status: 200,
+                    headers: vec![("content-type".to_string(), "text/plain".to_string())],
+                    body: b"eyJhbGciOiJIUzI1NiJ9.jwt-body.signature".to_vec(),
+                    network_error: false,
+                }
+            } else {
+                MockResponse::json(200, &json!({}))
+            }
+        });
+        let client = ClientOptions::with_auth_url("https://auth.example.com/jwt")
+            .rest_with_mock(mock)?;
+
+        client.request("GET", "/channels/test").send().await?;
+        let reqs = get_mock(&client).captured_requests();
+        let auth = reqs[1].headers.iter()
+            .find(|(k, _)| k == "authorization").map(|(_, v)| v.as_str()).unwrap();
+        assert_eq!(auth, "Bearer eyJhbGciOiJIUzI1NiJ9.jwt-body.signature");
+        Ok(())
+    }
+
+
+    // RSA8c — authUrl returning a TokenRequest, which is exchanged
+    #[tokio::test]
+    async fn rsa8c_auth_url_returns_token_request() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            if req.url.host_str() == Some("auth.example.com") {
+                MockResponse::json(200, &json!({
+                    "keyName": "appId.keyId",
+                    "timestamp": 1700000000000_i64,
+                    "nonce": "url-nonce",
+                    "mac": "url-mac"
+                }))
+            } else if req.url.path().contains("/requestToken") {
+                MockResponse::json(200, &json!({
+                    "token": "exchanged-token",
+                    "expires": 9999999999999_i64
+                }))
+            } else {
+                MockResponse::json(200, &json!({}))
+            }
+        });
+        let client = ClientOptions::with_auth_url("https://auth.example.com/token")
+            .rest_with_mock(mock)?;
+
+        client.request("GET", "/channels/test").send().await?;
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 3);
+        assert!(reqs[1].url.path().ends_with("/keys/appId.keyId/requestToken"));
+        let auth = reqs[2].headers.iter()
+            .find(|(k, _)| k == "authorization").map(|(_, v)| v.as_str()).unwrap();
+        assert_eq!(auth, "Bearer exchanged-token");
+        Ok(())
+    }
+
+
+    // RSA8c — HTTP errors from the authUrl are propagated; no API request made
+    // UTS: rest/unit/RSA8c/authurl-error-propagated-5
+    #[tokio::test]
+    async fn rsa8c_auth_url_error_propagated() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            if req.url.host_str() == Some("auth.example.com") {
+                MockResponse::json(500, &json!({"error": "Internal server error"}))
+            } else {
+                MockResponse::json(200, &json!({}))
+            }
+        });
+        let client = ClientOptions::with_auth_url("https://auth.example.com/token")
+            .rest_with_mock(mock)?;
+
+        let err = client
+            .request("GET", "/channels/test")
+            .send()
+            .await
+            .expect_err("authUrl error must propagate");
+        assert_eq!(err.status_code, Some(500));
+
+        // Only the authUrl request was made, not the API request
+        let reqs = get_mock(&client).captured_requests();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].url.host_str(), Some("auth.example.com"));
+        Ok(())
+    }
+
+
+    // RSA4a2 — an expired static token with no renewal method fails
+    // client-side with 40171, making no HTTP request
+    // UTS: rest/unit/RSA4a2/expired-token-no-renewal-0
+    #[tokio::test]
+    async fn rsa4a2_expired_token_no_renewal() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!({})));
+        let expired = crate::auth::TokenDetails {
+            token: "expired-token".to_string(),
+            expires: Some(chrono::Utc::now().timestamp_millis() - 1000),
+            ..Default::default()
+        };
+        let client = ClientOptions::with_token("placeholder".to_string())
+            .token_details(expired)
+            .rest_with_mock(mock)?;
+
+        let err = client
+            .request("GET", "/channels/test")
+            .send()
+            .await
+            .expect_err("Expired token with no renewal must fail");
+        assert_eq!(err.code, Some(40171));
+        assert_eq!(get_mock(&client).request_count(), 0);
+        Ok(())
+    }
+
+
+    // RSA4b1 — a token known to be expired is renewed pre-emptively, without
+    // first making a failing request
+    // UTS: rest/unit/RSA4b1/preemptive-renewal-0
+    #[tokio::test]
+    async fn rsa4b1_preemptive_renewal() -> Result<()> {
+        use crate::auth::{AuthCallback, AuthToken, TokenDetails, TokenParams};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        struct ExpiringCb {
+            count: Arc<AtomicU32>,
+        }
+        impl AuthCallback for ExpiringCb {
+            fn token<'a>(
+                &'a self,
+                _params: &'a TokenParams,
+            ) -> std::pin::Pin<Box<dyn Send + futures::Future<Output = Result<AuthToken>> + 'a>> {
+                let n = self.count.fetch_add(1, Ordering::SeqCst) + 1;
+                Box::pin(async move {
+                    if n == 1 {
+                        Ok(AuthToken::Details(TokenDetails {
+                            token: "expired-token".into(),
+                            expires: Some(chrono::Utc::now().timestamp_millis() - 1000),
+                            ..Default::default()
+                        }))
+                    } else {
+                        Ok(AuthToken::Details(TokenDetails {
+                            token: "fresh-token".into(),
+                            expires: Some(chrono::Utc::now().timestamp_millis() + 3600000),
+                            ..Default::default()
+                        }))
+                    }
+                })
+            }
+        }
+
+        let count = Arc::new(AtomicU32::new(0));
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
+        let client = ClientOptions::with_auth_callback(Arc::new(ExpiringCb { count: count.clone() }))
+            .rest_with_mock(mock)?;
+
+        // Initial token acquisition (returns the already-expired token)
+        client.auth().authorize(None, None).await?;
+
+        // The expired token must be renewed BEFORE this request
+        client.channels().get("test").history().send().await?;
+
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let reqs = get_mock(&client).captured_requests();
+        let history_reqs: Vec<_> = reqs.iter()
+            .filter(|r| r.url.path().contains("/channels/test"))
+            .collect();
+        assert_eq!(history_reqs.len(), 1, "no failing request with the expired token");
+        let auth = history_reqs[0].headers.iter()
+            .find(|(k, _)| k == "authorization").map(|(_, v)| v.as_str()).unwrap();
+        assert_eq!(auth, "Bearer fresh-token");
+        Ok(())
+    }
+
+
+    // RSA7d — key + useTokenAuth + clientId: the requested token carries the
+    // library clientId
+    #[tokio::test]
+    async fn rsa7d_client_id_in_token_request() -> Result<()> {
+        let mock = MockHttpClient::with_handler(|req| {
+            if req.url.path().contains("/requestToken") {
+                let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap())
+                    .or_else(|_| rmp_serde::from_slice(req.body.as_deref().unwrap()))
+                    .unwrap();
+                assert_eq!(body["clientId"], "token-client");
+                MockResponse::json(200, &json!({
+                    "token": "client-token",
+                    "expires": 9999999999999_i64,
+                    "clientId": "token-client"
+                }))
+            } else {
+                MockResponse::json(200, &json!({}))
+            }
+        });
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .use_token_auth(true)
+            .client_id("token-client")
+            .unwrap()
+            .rest_with_mock(mock)?;
+
+        client.request("GET", "/channels/test").send().await?;
+        Ok(())
+    }
+
+
+    // RSA1 — token auth (authCallback) takes precedence over the key
+    // UTS: rest/unit/RSA1/token-auth-takes-precedence-0
+    #[tokio::test]
+    async fn rsa1_token_auth_takes_precedence() -> Result<()> {
+        use crate::auth::{AuthOptions, TokenDetails, TokenParams, AuthCallback, AuthToken};
+
+        struct PrecedenceCb;
+        impl AuthCallback for PrecedenceCb {
+            fn token<'a>(
+                &'a self,
+                _params: &'a TokenParams,
+            ) -> std::pin::Pin<Box<dyn Send + futures::Future<Output = Result<AuthToken>> + 'a>> {
+                Box::pin(async {
+                    Ok(AuthToken::Details(TokenDetails::token("callback-token".into())))
+                })
+            }
+        }
+
+        // A key client with an authCallback supplied via authorize(): the
+        // callback becomes the token source and Bearer auth is used.
+        let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!({})));
+        let client = ClientOptions::new("appId.keyId:keySecret")
+            .rest_with_mock(mock)?;
+
+        let opts = AuthOptions {
+            auth_callback: Some(Arc::new(PrecedenceCb)),
+            ..Default::default()
+        };
+        client.auth().authorize(None, Some(&opts)).await?;
+        client.request("GET", "/channels/test").send().await?;
+
+        let reqs = get_mock(&client).captured_requests();
+        let auth = reqs.last().unwrap().headers.iter()
+            .find(|(k, _)| k == "authorization").map(|(_, v)| v.as_str()).unwrap();
+        assert_eq!(auth, "Bearer callback-token");
+        Ok(())
+    }
+
+
 
 
     // ===============================================================
@@ -2138,7 +2538,7 @@ use crate::crypto::CipherParams;
         tp.client_id = Some("override-client".to_string());
         tp.ttl = Some(7200000);
 
-        let result = client.auth().authorize(&tp, &crate::auth::AuthOptions::default()).await;
+        let result = client.auth().authorize(Some(&tp), None).await;
         assert!(result.is_ok());
 
         let captured = cb.params.lock().unwrap();
@@ -2192,10 +2592,10 @@ use crate::crypto::CipherParams;
 
         let mut tp = TokenParams::default();
         tp.client_id = Some("saved-client".to_string());
-        client.auth().authorize(&tp, &crate::auth::AuthOptions::default()).await?;
+        client.auth().authorize(Some(&tp), None).await?;
 
         // Second authorize without explicit params should reuse saved params
-        let result = client.auth().authorize(&crate::auth::TokenParams::default(), &crate::auth::AuthOptions::default()).await?;
+        let result = client.auth().authorize(None, None).await?;
         assert_eq!(result.token, "token-2");
 
         let captured = cb.params.lock().unwrap();
@@ -2224,7 +2624,7 @@ use crate::crypto::CipherParams;
         let client = mock_client(mock);
 
         assert!(client.auth().token_details().is_none());
-        let result = client.auth().authorize(&crate::auth::TokenParams::default(), &crate::auth::AuthOptions::default()).await?;
+        let result = client.auth().authorize(None, None).await?;
         assert_eq!(result.token, "new-token");
         assert_eq!(client.auth().token_details().unwrap().token, "new-token");
         Ok(())
@@ -2259,7 +2659,7 @@ use crate::crypto::CipherParams;
             .rest_with_mock(mock)?;
 
         let opts = AuthOptions::default();
-        let result = client.auth().authorize(&crate::auth::TokenParams::default(), &opts).await?;
+        let result = client.auth().authorize(None, Some(&opts)).await?;
         assert_eq!(result.token, "new-cb-token");
         assert!(new_cb.called.load(Ordering::SeqCst));
         Ok(())
@@ -2285,7 +2685,7 @@ use crate::crypto::CipherParams;
         });
         let client = mock_client(mock);
 
-        let result = client.auth().authorize(&crate::auth::TokenParams::default(), &crate::auth::AuthOptions::default()).await?;
+        let result = client.auth().authorize(None, None).await?;
         assert_eq!(result.token, "key-token");
 
         // Key should still be available (constructor credential preserved)
@@ -2324,8 +2724,8 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::with_auth_callback(cb)
             .rest_with_mock(mock)?;
 
-        let r1 = client.auth().authorize(&crate::auth::TokenParams::default(), &crate::auth::AuthOptions::default()).await?;
-        let r2 = client.auth().authorize(&crate::auth::TokenParams::default(), &crate::auth::AuthOptions::default()).await?;
+        let r1 = client.auth().authorize(None, None).await?;
+        let r2 = client.auth().authorize(None, None).await?;
 
         assert_eq!(r1.token, "token-1");
         assert_eq!(r2.token, "token-2");
@@ -2360,9 +2760,12 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::new("appId.keyId:keySecret")
             .rest_with_mock(mock)?;
 
-        let auth_opts = AuthOptions::default();
-        let result = client.auth().authorize(&TokenParams::default(), &auth_opts).await;
-        assert!(result.is_ok());
+        let auth_opts = AuthOptions {
+            query_time: Some(true),
+            ..Default::default()
+        };
+        let result = client.auth().authorize(None, Some(&auth_opts)).await;
+        assert!(result.is_ok(), "authorize failed: {:?}", result.err());
         assert!(time_requested.load(Ordering::SeqCst), "authorize with queryTime should request /time");
         Ok(())
     }
@@ -2400,7 +2803,7 @@ use crate::crypto::CipherParams;
             .use_token_auth(true)
             .rest_with_mock(mock)
             .unwrap();
-        let _ = client.time().await;
+        let _ = client.request("GET", "/channels/test").send().await;
         let reqs = get_mock(&client).captured_requests();
         assert!(reqs.len() >= 2, "Expected retry after token renewal");
         Ok(())
@@ -2434,7 +2837,7 @@ use crate::crypto::CipherParams;
             .rest_with_mock(mock)
             .unwrap();
 
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
         let reqs = get_mock(&client).captured_requests();
         let auth_header = reqs[0]
             .headers.iter().find(|(k,_)| k == "authorization").map(|(_,v)| v.as_str()).expect("auth header");
@@ -2473,7 +2876,7 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::with_auth_callback(cb)
             .rest_with_mock(mock)?;
 
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
         let reqs = get_mock(&client).captured_requests();
         let auth = reqs[0]
             .headers.iter().find(|(k,_)| k == "authorization").map(|(_,v)| v.as_str()).expect("auth header");
@@ -2515,7 +2918,7 @@ use crate::crypto::CipherParams;
             .rest_with_mock(mock)
             .unwrap();
 
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
         let reqs = get_mock(&client).captured_requests();
         // First request is requestToken, second is the actual request with Bearer
         assert!(reqs[0].url.path().contains("/requestToken"));
@@ -2697,7 +3100,7 @@ use crate::crypto::CipherParams;
             .rest_with_mock(mock)
             .unwrap();
 
-        let result = client.time().await;
+        let result = client.request("GET", "/channels/test").send().await;
         assert!(result.is_err(), "Should eventually fail after renewal limit");
         // Should have made more than 1 request (initial + at least one retry)
         let count = call_count.load(Ordering::SeqCst);
@@ -2735,7 +3138,7 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::with_auth_callback(cb)
             .rest_with_mock(mock)?;
 
-        let result = client.time().await;
+        let result = client.request("GET", "/channels/test").send().await;
         assert!(result.is_err(), "Auth callback error should propagate");
         let err = result.unwrap_err();
         assert_eq!(err.code, Some(crate::error::ErrorCode::ErrorFromClientTokenCallback.code()));
@@ -2777,7 +3180,7 @@ use crate::crypto::CipherParams;
             .rest_with_mock(mock)?;
 
         // Trigger token auth so token details get stored
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
         let td = client.auth().token_details().expect("should have token details");
         assert_eq!(
             td.metadata.as_ref().and_then(|m| m.client_id.as_deref()),
@@ -2796,7 +3199,7 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::with_token("native-ably-token".to_string())
             .rest_with_mock(mock)?;
 
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
         let reqs = get_mock(&client).captured_requests();
         let auth = reqs[0]
             .headers.iter().find(|(k,_)| k == "authorization").map(|(_,v)| v.as_str()).expect("auth header");
@@ -2815,7 +3218,7 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::with_token(jwt.clone())
             .rest_with_mock(mock)?;
 
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
         let reqs = get_mock(&client).captured_requests();
         let auth = reqs[0]
             .headers.iter().find(|(k,_)| k == "authorization").map(|(_,v)| v.as_str()).expect("auth header");
@@ -2845,7 +3248,7 @@ use crate::crypto::CipherParams;
             .rest_with_mock(mock)
             .unwrap();
 
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
         let td = client.auth().token_details().expect("should have token details");
         assert_eq!(td.token, "restricted-token");
         if let Some(meta) = &td.metadata {
@@ -2855,54 +3258,10 @@ use crate::crypto::CipherParams;
     }
 
 
-    #[test]
-    fn rsa8c_auth_url_with_post() {
-        // RSA8c: AuthOptions can specify POST method for auth URL
-        let auth_opts = crate::auth::AuthOptions {
-            token: Some("https://auth.example.com/token".to_string()),
-            method: Some("POST".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(auth_opts.method.as_deref(), Some("POST"));
-        assert_eq!(auth_opts.token.as_deref(), Some("https://auth.example.com/token"));
-    }
 
 
-    #[test]
-    fn rsa8c_auth_url_with_custom_headers() {
-        // RSA8c: AuthOptions can carry custom headers for auth URL requests
-        let mut headers = Vec::<(String, String)>::new();
-        headers.push(("x-custom-auth".to_string(), "my-value".to_string()));
-
-        let auth_opts = crate::auth::AuthOptions {
-            token: Some("https://auth.example.com/token".to_string()),
-            headers: Some(headers),
-            ..Default::default()
-        };
-        let h = auth_opts.headers.as_ref().unwrap();
-        let val = h.iter().find(|(k, _)| k == "x-custom-auth").map(|(_, v)| v.as_str());
-        assert_eq!(val, Some("my-value"));
-    }
 
 
-    #[test]
-    fn rsa8c_auth_url_with_query_params() {
-        // RSA8c: AuthOptions can include query params for auth URL requests
-        let params: Vec<(String, String)> = vec![
-            ("clientId".to_string(), "my-client".to_string()),
-            ("env".to_string(), "sandbox".to_string()),
-        ];
-
-        let auth_opts = crate::auth::AuthOptions {
-            token: Some("https://auth.example.com/token".to_string()),
-            params: Some(params),
-            ..Default::default()
-        };
-        let p = auth_opts.params.as_ref().unwrap();
-        assert_eq!(p.len(), 2);
-        assert_eq!(p[0].0, "clientId");
-        assert_eq!(p[0].1, "my-client");
-    }
 
 
     #[tokio::test]
@@ -2949,7 +3308,7 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::with_auth_callback(cb)
             .rest_with_mock(mock)?;
 
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
         let td = client.auth().token_details().expect("should have token details");
         assert_eq!(td.token, "callback-token");
         Ok(())
@@ -2981,7 +3340,7 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::with_auth_callback(cb)
             .rest_with_mock(mock)?;
 
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
         let reqs = get_mock(&client).captured_requests();
         let auth = reqs[0]
             .headers.iter().find(|(k,_)| k == "authorization").map(|(_,v)| v.as_str()).expect("auth header");
@@ -3019,7 +3378,7 @@ use crate::crypto::CipherParams;
             .client_id("param-test-client")?
             .rest_with_mock(mock)?;
 
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
         let captured = cb.captured.lock().unwrap();
         assert!(captured.is_some(), "Callback should receive token params");
         Ok(())
@@ -3053,7 +3412,7 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::with_auth_callback(cb)
             .rest_with_mock(mock)?;
 
-        let err = client.time().await.expect_err("Should propagate callback error");
+        let err = client.request("GET", "/channels/test").send().await.expect_err("Should propagate callback error");
         assert_eq!(err.code, Some(crate::error::ErrorCode::ErrorFromClientTokenCallback.code()));
         assert!(err.message.as_deref().unwrap().contains("callback deliberately failed"));
         Ok(())
@@ -3105,7 +3464,7 @@ use crate::crypto::CipherParams;
         tp.client_id = Some("explicit-client".to_string());
         tp.ttl = Some(3600000);
 
-        client.auth().authorize(&tp, &crate::auth::AuthOptions::default()).await?;
+        client.auth().authorize(Some(&tp), None).await?;
 
         let captured = cb.params.lock().unwrap();
         assert!(!captured.is_empty());
@@ -3149,10 +3508,10 @@ use crate::crypto::CipherParams;
 
         let mut tp = TokenParams::default();
         tp.client_id = Some("reuse-client".to_string());
-        client.auth().authorize(&tp, &crate::auth::AuthOptions::default()).await?;
+        client.auth().authorize(Some(&tp), None).await?;
 
         // Second authorize without params should reuse saved params
-        client.auth().authorize(&crate::auth::TokenParams::default(), &crate::auth::AuthOptions::default()).await?;
+        client.auth().authorize(None, None).await?;
 
         let captured = cb.params.lock().unwrap();
         assert_eq!(captured.len(), 2);
@@ -3185,7 +3544,7 @@ use crate::crypto::CipherParams;
             .rest_with_mock(mock)?;
 
         assert!(client.auth().token_details().is_none());
-        let result = client.auth().authorize(&crate::auth::TokenParams::default(), &crate::auth::AuthOptions::default()).await?;
+        let result = client.auth().authorize(None, None).await?;
         assert_eq!(result.token, "updated-token-rsa10g");
         assert_eq!(
             client.auth().token_details().unwrap().token,
@@ -3223,7 +3582,7 @@ use crate::crypto::CipherParams;
             .rest_with_mock(mock)?;
 
         let opts = AuthOptions::default();
-        let result = client.auth().authorize(&crate::auth::TokenParams::default(), &opts).await?;
+        let result = client.auth().authorize(None, Some(&opts)).await?;
         assert_eq!(result.token, "override-cb-token");
         assert!(new_cb.called.load(Ordering::SeqCst));
         Ok(())
@@ -3247,7 +3606,7 @@ use crate::crypto::CipherParams;
         });
         let client = mock_client(mock);
 
-        client.auth().authorize(&crate::auth::TokenParams::default(), &crate::auth::AuthOptions::default()).await?;
+        client.auth().authorize(None, None).await?;
 
         // API key from constructor should be preserved
         match &client.inner.opts.credential {
@@ -3308,7 +3667,7 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::with_auth_callback(cb)
             .rest_with_mock(mock)?;
 
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
         let td = client.auth().token_details().expect("should have token details");
         assert_eq!(td.token, "callback-details-token");
         assert_eq!(
@@ -3340,13 +3699,9 @@ use crate::crypto::CipherParams;
             .rest_with_mock(mock)
             .unwrap();
 
-        let td = client
-            .auth()
-            .request_token(
-                &crate::auth::TokenParams::default(),
-                &client.auth_options(),
-            )
-            .await?;
+        // UTS RSA16a/token-from-request-token-1: explicit authorize() obtains a
+        // token via requestToken and tokenDetails reflects it
+        let td = client.auth().authorize(None, None).await?;
         assert_eq!(td.token, "req-token-v1");
 
         let stored = client.auth().token_details().expect("should have stored token details");
@@ -3431,10 +3786,10 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::with_auth_callback(cb)
             .rest_with_mock(mock)?;
 
-        client.auth().authorize(&crate::auth::TokenParams::default(), &crate::auth::AuthOptions::default()).await?;
+        client.auth().authorize(None, None).await?;
         assert_eq!(client.auth().token_details().unwrap().token, "renewed-token-1");
 
-        client.auth().authorize(&crate::auth::TokenParams::default(), &crate::auth::AuthOptions::default()).await?;
+        client.auth().authorize(None, None).await?;
         assert_eq!(client.auth().token_details().unwrap().token, "renewed-token-2");
         Ok(())
     }
@@ -3533,6 +3888,32 @@ use crate::crypto::CipherParams;
         assert_eq!(result.results[0].target, "clientId:alice");
         assert!(result.results[1].error.is_some(), "Second result should have error");
         assert_eq!(result.results[1].target, "clientId:unknown");
+        Ok(())
+    }
+
+
+    // RSA17d_2 — key + useTokenAuth is a token-auth client and cannot revoke
+    // UTS: rest/unit/RSA17d/use-token-auth-revoke-rejected-1
+    #[tokio::test]
+    async fn rsa17d_use_token_auth_revoke_rejected() -> Result<()> {
+        let mock = MockHttpClient::new();
+        let client = ClientOptions::new("appId.keyName:keySecret")
+            .use_token_auth(true)
+            .rest_with_mock(mock)?;
+
+        let request = crate::rest::RevokeTokensRequest {
+            targets: vec!["clientId:alice".to_string()],
+            issued_before: None,
+            allow_reauth_margin: None,
+        };
+        let err = client
+            .auth()
+            .revoke_tokens(&request)
+            .await
+            .expect_err("key + useTokenAuth cannot revoke tokens");
+        assert_eq!(err.code, Some(40162));
+        assert_eq!(err.status_code, Some(401));
+        assert_eq!(get_mock(&client).request_count(), 0);
         Ok(())
     }
 
@@ -3666,81 +4047,87 @@ use crate::crypto::CipherParams;
     // RSA depth — Auth depth
     // ===============================================================
 
-    #[test]
-    fn rsa9_create_token_request_default_ttl_depth() {
+    // RSA5 — ttl must be null when unspecified; Ably applies the 60-minute
+    // default server-side. Implementations MUST NOT default it client-side.
+    // UTS: rest/unit/RSA5/ttl-null-when-unspecified-0
+    #[tokio::test]
+    async fn rsa5_ttl_null_when_unspecified() {
         let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
-        let params = crate::auth::TokenParams::default();
-        let options = crate::auth::AuthOptions::default();
-        let req = client.auth().create_token_request(&params, &options).unwrap();
-        // Default TTL should be 1 hour = 3600000ms
-        assert_eq!(req.ttl.unwrap(), 3600000);
+        let req = client.auth().create_token_request(None, None).await.unwrap();
+        assert!(req.ttl.is_none(), "ttl must be null when unspecified, got {:?}", req.ttl);
     }
 
 
-    #[test]
-    fn rsa9_create_token_request_default_capability_depth() {
+    // RSA6 — capability must be null when unspecified; Ably applies the key's
+    // capabilities server-side. MUST NOT default to {"*":["*"]} client-side.
+    // UTS: rest/unit/RSA6/capability-null-when-unspecified-0
+    #[tokio::test]
+    async fn rsa6_capability_null_when_unspecified() {
         let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
-        let params = crate::auth::TokenParams::default();
-        let options = crate::auth::AuthOptions::default();
-        let req = client.auth().create_token_request(&params, &options).unwrap();
-        assert_eq!(req.capability.as_deref(), Some(r#"{"*":["*"]}"#));
+        let req = client.auth().create_token_request(None, None).await.unwrap();
+        assert!(
+            req.capability.is_none(),
+            "capability must be null when unspecified, got {:?}",
+            req.capability
+        );
     }
 
 
-    #[test]
-    fn rsa9_create_token_request_key_name_matches_depth() {
+    #[tokio::test]
+    async fn rsa9_create_token_request_key_name_matches_depth() {
         let client = crate::Rest::new("myApp.myKey:mySecret").unwrap();
         let params = crate::auth::TokenParams::default();
         let options = crate::auth::AuthOptions::default();
-        let req = client.auth().create_token_request(&params, &options).unwrap();
+        let req = client.auth().create_token_request(Some(&params), Some(&options)).await.unwrap();
         assert_eq!(req.key_name, "myApp.myKey");
     }
 
 
-    #[test]
-    fn rsa9_create_token_request_mac_nonempty_depth() {
+    #[tokio::test]
+    async fn rsa9_create_token_request_mac_nonempty_depth() {
         let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
         let params = crate::auth::TokenParams::default();
         let options = crate::auth::AuthOptions::default();
-        let req = client.auth().create_token_request(&params, &options).unwrap();
+        let req = client.auth().create_token_request(Some(&params), Some(&options)).await.unwrap();
         assert!(!req.mac.is_empty(), "MAC should not be empty");
     }
 
 
-    #[test]
-    fn rsa9_create_token_request_custom_client_id_depth() {
+    #[tokio::test]
+    async fn rsa9_create_token_request_custom_client_id_depth() {
         let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
         let params = crate::auth::TokenParams {
             client_id: Some("custom-client".to_string()),
             ..Default::default()
         };
         let options = crate::auth::AuthOptions::default();
-        let req = client.auth().create_token_request(&params, &options).unwrap();
+        let req = client.auth().create_token_request(Some(&params), Some(&options)).await.unwrap();
         assert_eq!(req.client_id, Some("custom-client".to_string()));
     }
 
 
-    #[test]
-    fn rsa9_create_token_request_json_serialization_depth() {
+    #[tokio::test]
+    async fn rsa9_create_token_request_json_serialization_depth() {
         let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
         let params = crate::auth::TokenParams::default();
         let options = crate::auth::AuthOptions::default();
-        let req = client.auth().create_token_request(&params, &options).unwrap();
+        let req = client.auth().create_token_request(Some(&params), Some(&options)).await.unwrap();
         let json_val = serde_json::to_value(&req).unwrap();
         assert!(json_val.get("keyName").is_some());
         assert!(json_val.get("nonce").is_some());
         assert!(json_val.get("mac").is_some());
-        assert!(json_val.get("ttl").is_some());
-        assert!(json_val.get("capability").is_some());
+        // RSA5/RSA6: unspecified ttl and capability are omitted entirely
+        assert!(json_val.get("ttl").is_none());
+        assert!(json_val.get("capability").is_none());
     }
 
 
-    #[test]
-    fn rsa9_create_token_request_nonce_length_depth() {
+    #[tokio::test]
+    async fn rsa9_create_token_request_nonce_length_depth() {
         let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
         let params = crate::auth::TokenParams::default();
         let options = crate::auth::AuthOptions::default();
-        let req = client.auth().create_token_request(&params, &options).unwrap();
+        let req = client.auth().create_token_request(Some(&params), Some(&options)).await.unwrap();
         assert!(req.nonce.len() >= 16,
             "Nonce should be at least 16 chars, got {} ({})",
             req.nonce.len(), req.nonce);
@@ -3757,7 +4144,7 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::with_token("explicit-test-token".to_string())
             .rest_with_mock(mock)
             .unwrap();
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
         Ok(())
     }
 

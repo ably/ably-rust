@@ -25,6 +25,9 @@ pub struct ClientOptions {
     pub(crate) fallback_hosts: Vec<String>,
     pub(crate) format: rest::Format,
     pub(crate) query_time: bool,
+    pub(crate) auth_method: Option<String>,
+    pub(crate) auth_headers: Vec<(String, String)>,
+    pub(crate) auth_params: Vec<(String, String)>,
     pub(crate) default_token_params: Option<auth::TokenParams>,
     pub(crate) auto_connect: bool,
     pub(crate) rest_host: String,
@@ -89,6 +92,30 @@ impl ClientOptions {
 
     pub fn use_token_auth(mut self, v: bool) -> Self {
         self.use_token_auth = v;
+        self
+    }
+
+    /// AO2d/TO3j7: HTTP method for authUrl requests. Defaults to GET.
+    pub fn auth_method(mut self, method: impl Into<String>) -> Self {
+        self.auth_method = Some(method.into());
+        self
+    }
+
+    /// AO2e/TO3j8: headers sent with authUrl requests.
+    pub fn auth_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.auth_headers = headers;
+        self
+    }
+
+    /// AO2f/TO3j9: params merged into authUrl requests.
+    pub fn auth_params(mut self, params: Vec<(String, String)>) -> Self {
+        self.auth_params = params;
+        self
+    }
+
+    /// AO2g/TO3j10: query the server clock when creating token requests (RSA9d).
+    pub fn query_time(mut self, v: bool) -> Self {
+        self.query_time = v;
         self
     }
 
@@ -271,13 +298,33 @@ impl ClientOptions {
             _ => {}
         }
 
-        // RSC18: Basic auth over non-TLS is rejected
+        // RSC18: Basic auth over non-TLS is rejected. A key with a clientId
+        // still uses basic auth (RSA7e2), so it is rejected too.
         if !self.tls {
             if let auth::Credential::Key(_) = &self.credential {
-                if !self.use_token_auth && self.client_id.is_none() {
+                if !self.use_token_auth {
                     return Err(ErrorInfo::new(
                         ErrorCode::InvalidUseOfBasicAuthOverNonTLSTransport.code(),
                         "Basic auth is not permitted over non-TLS transport",
+                    ));
+                }
+            }
+        }
+
+        // RSA15a: a TokenDetails clientId must be compatible with the
+        // configured clientId ("*" is compatible with anything).
+        if let (auth::Credential::TokenDetails(td), Some(opt_cid)) =
+            (&self.credential, &self.client_id)
+        {
+            if let Some(tok_cid) = &td.client_id {
+                if tok_cid != "*" && tok_cid != opt_cid {
+                    return Err(ErrorInfo::with_status(
+                        ErrorCode::IncompatibleCredentials.code(),
+                        401,
+                        format!(
+                            "Token clientId '{}' is incompatible with configured clientId '{}'",
+                            tok_cid, opt_cid
+                        ),
                     ));
                 }
             }
@@ -298,6 +345,9 @@ impl ClientOptions {
             auth_state: std::sync::Mutex::new(rest::AuthState {
                 cached_token,
                 saved_token_params: None,
+                saved_auth_options: None,
+                forced_token_auth: false,
+                time_offset_ms: None,
             }),
             fallback_state: std::sync::Mutex::new(None),
             #[cfg(test)]
@@ -325,6 +375,9 @@ impl ClientOptions {
             ],
             format: rest::Format::MessagePack,
             query_time: false,
+            auth_method: None,
+            auth_headers: Vec::new(),
+            auth_params: Vec::new(),
             default_token_params: None,
             auto_connect: true,
             rest_host: REST_HOST.to_string(),

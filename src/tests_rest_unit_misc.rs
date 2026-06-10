@@ -911,7 +911,7 @@ use crate::crypto::CipherParams;
             MockResponse::json(200, &json!([1234567890000_i64]))
         });
         let client = mock_client(mock);
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
         let reqs = get_mock(&client).captured_requests();
         let auth = reqs[0].headers.iter().find(|(k,_)| k == "authorization").map(|(_,v)| v.as_str()).unwrap();
         assert!(auth.starts_with("Basic "), "Expected Basic auth, got: {}", auth);
@@ -930,7 +930,7 @@ use crate::crypto::CipherParams;
         let client = ClientOptions::with_token("my-test-token".to_string())
             .rest_with_mock(mock)
             .unwrap();
-        client.time().await?;
+        client.request("GET", "/channels/test").send().await?;
         let reqs = get_mock(&client).captured_requests();
         let auth = reqs[0].headers.iter().find(|(k,_)| k == "authorization").map(|(_,v)| v.as_str()).unwrap();
         assert!(auth.starts_with("Bearer "), "Expected Bearer auth, got: {}", auth);

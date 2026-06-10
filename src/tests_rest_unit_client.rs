@@ -3649,10 +3649,10 @@ use crate::crypto::CipherParams;
             .rest_with_mock(mock)
             .unwrap();
 
-        let time = client.time().await?;
-        assert_eq!(time.timestamp_millis(), 1234567890000);
+        let resp = client.request("GET", "/channels/test").send().await?;
+        assert_eq!(resp.status_code(), 200);
 
-        // Should have made: requestToken + /time (401) + requestToken + /time (200)
+        // Should have made: requestToken + request (401) + requestToken + request (200)
         let reqs = get_mock(&client).captured_requests();
         let token_reqs: Vec<_> = reqs.iter().filter(|r| r.url.path().contains("/requestToken")).collect();
         assert!(token_reqs.len() >= 2, "Expected at least 2 token requests (initial + renewal)");

@@ -132,6 +132,7 @@ impl<'a, T: DeserializeOwned + Decodable + 'a> PaginatedRequestBuilder<'a, T> {
     }
 }
 
+#[derive(Debug)]
 pub struct Response {
     pub(crate) status: u16,
     pub(crate) content_type: Option<String>,
