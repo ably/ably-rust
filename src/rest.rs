@@ -883,9 +883,13 @@ impl Rest {
             }
             retry_hosts.push(primary_host.clone());
         }
+        // When the first attempt used a cached fallback host, don't try that
+        // same host again in the rotation. A fallback host that merely equals
+        // the primary (e.g. proxy test configs) is still tried.
+        let used_cached_fallback = first_host != primary_host;
         let mut remaining: Vec<&String> = fallback_hosts
             .iter()
-            .filter(|h| h.as_str() != first_host)
+            .filter(|h| !used_cached_fallback || h.as_str() != first_host)
             .collect();
         remaining.shuffle(&mut rand::thread_rng());
         retry_hosts.extend(remaining.into_iter().cloned());
@@ -1387,6 +1391,8 @@ impl<'a> RestAnnotations<'a> {
         );
         let mut ann = annotation.clone();
         ann.action = Some(AnnotationAction::Create);
+        // RSAN1c2: messageSerial set from the identifier argument
+        ann.message_serial = Some(msg_serial.to_string());
         // RSAN1c4: idempotent publishing applies to annotations too
         if self.channel.rest.inner.opts.idempotent_rest_publishing && ann.id.is_none() {
             ann.id = Some(format!("{}:0", idempotent_id_base()));
@@ -1404,6 +1410,7 @@ impl<'a> RestAnnotations<'a> {
         );
         let mut ann = annotation.clone();
         ann.action = Some(AnnotationAction::Delete);
+        ann.message_serial = Some(msg_serial.to_string());
         let body = self.channel.rest.serialize_body(&vec![ann])?;
         self.channel.rest.do_request("POST", &path, &[], &[], Some(body)).await?;
         Ok(())
@@ -1937,8 +1944,9 @@ pub struct Annotation {
     pub annotation_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<AnnotationAction>,
-    #[serde(rename = "msgSerial", skip_serializing_if = "Option::is_none")]
-    pub msg_serial: Option<String>,
+    /// TAN2j: the serial of the message being annotated.
+    #[serde(rename = "messageSerial", skip_serializing_if = "Option::is_none")]
+    pub message_serial: Option<String>,
     #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

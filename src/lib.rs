@@ -54,6 +54,10 @@ mod tests_rest_unit_misc;
 #[cfg(test)]
 mod tests_rest_integration;
 
+// Proxy integration tests (uts-proxy fault injection)
+#[cfg(test)]
+mod tests_proxy;
+
 // Realtime unit tests
 #[cfg(test)]
 mod tests_realtime_unit_annotations;

@@ -8,8 +8,8 @@ use crate::rest::{Data, Message, PresenceAction, Rest, RevokeTokensRequest};
 const SANDBOX_URL: &str = "https://sandbox.realtime.ably-nonprod.net";
 const TEST_APP_SETUP: &str = include_str!("../submodules/ably-common/test-resources/test-app-setup.json");
 
-struct SandboxApp {
-    app_id: String,
+pub(crate) struct SandboxApp {
+    pub(crate) app_id: String,
     keys: Vec<SandboxKey>,
 }
 
@@ -51,8 +51,13 @@ impl SandboxApp {
         SandboxApp { app_id, keys }
     }
 
-    fn full_access_key(&self) -> &str {
+    pub(crate) fn full_access_key(&self) -> &str {
         &self.keys[0].key_str
+    }
+
+    /// keys[4] has revocableTokens: true (required for /revokeTokens)
+    fn revocable_key(&self) -> &str {
+        &self.keys[4].key_str
     }
 
     fn restricted_key(&self) -> &str {
@@ -87,13 +92,13 @@ fn sandbox_client_json(key: &str) -> Rest {
 
 static SANDBOX: OnceCell<SandboxApp> = OnceCell::const_new();
 
-async fn get_sandbox() -> &'static SandboxApp {
+pub(crate) async fn get_sandbox() -> &'static SandboxApp {
     SANDBOX
         .get_or_init(|| async { SandboxApp::provision().await })
         .await
 }
 
-fn random_id() -> String {
+pub(crate) fn random_id() -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
     format!("{:08x}", rng.gen::<u32>())
@@ -2006,21 +2011,45 @@ async fn rsc24_empty_channel_presence() {
 
 // UTS: rest/integration/RSA17g/revoke-token-prevents-use-0
 #[tokio::test]
-#[ignore = "Needs realtime client + revocableTokens key in test-app-setup.json"]
+#[ignore = "Needs realtime client to observe the 40141 disconnect (Phase 5)"]
 async fn rsa17g_revoke_tokens_prevents_use() {
     todo!()
 }
 
 // UTS: rest/integration/RSA17e/issued-before-reauth-margin-0
 #[tokio::test]
-#[ignore = "Needs revocableTokens key in test-app-setup.json"]
 async fn rsa17e_issued_before_reauth_margin() {
-    todo!()
+    let app = get_sandbox().await;
+    let client = sandbox_client(app.revocable_key());
+    let client_id = format!("revoke-margin-client-{}", random_id());
+
+    let server_time = client.time().await.unwrap().timestamp_millis();
+    // An issuedBefore in the past, so no active tokens are affected
+    let issued_before = server_time - 20 * 60 * 1000;
+
+    let request = RevokeTokensRequest {
+        targets: vec![format!("clientId:{}", client_id)],
+        issued_before: Some(issued_before),
+        allow_reauth_margin: Some(true),
+    };
+    let result = client.auth().revoke_tokens(&request).await.unwrap();
+    assert_eq!(result.success_count, 1);
+    assert_eq!(result.results.len(), 1);
+    // RSA17e: issuedBefore reflects what we sent
+    assert_eq!(result.results[0].issued_before, Some(issued_before));
+    // RSA17f: allowReauthMargin delays appliesAt by ~30 seconds
+    let applies_at = result.results[0].applies_at.expect("appliesAt present");
+    assert!(
+        applies_at > server_time + 30 * 1000,
+        "appliesAt {} must be > server_time + 30s {}",
+        applies_at,
+        server_time + 30 * 1000
+    );
 }
 
 // UTS: rest/integration/RSA17c/mixed-success-failure-0
 #[tokio::test]
-#[ignore = "Needs realtime client + revocableTokens key in test-app-setup.json"]
+#[ignore = "Needs realtime client to observe the 40141 disconnect (Phase 5)"]
 async fn rsa17c_mixed_success_failure() {
     todo!()
 }
@@ -2029,53 +2058,226 @@ async fn rsa17c_mixed_success_failure() {
 
 // UTS: rest/integration/RSL11/get-message-by-serial-0
 #[tokio::test]
-#[ignore = "mutable namespace (mutableMessages: true) not in ably-common test-app-setup.json"]
 async fn rsl11_get_message() {
-    todo!()
+    let app = get_sandbox().await;
+    let client = sandbox_client(app.full_access_key());
+    let channel_name = format!("mutable:test-RSL11-getMessage-{}", random_id());
+    let channel = client.channels().get(&channel_name);
+
+    let result = channel.publish().name("test-event").string("hello world").send().await.unwrap();
+    let serial = result.serials[0].as_deref().expect("serial").to_string();
+
+    let msg = channel.get_message(&serial).await.unwrap();
+    assert_eq!(msg.name.as_deref(), Some("test-event"));
+    assert!(matches!(msg.data, Data::String(ref s) if s == "hello world"));
+    assert_eq!(msg.serial.as_deref(), Some(serial.as_str()));
+    assert_eq!(msg.action, Some(crate::rest::MessageAction::Create));
+    assert!(msg.timestamp.is_some());
 }
 
 // UTS: rest/integration/RSL15/update-message-0
 #[tokio::test]
-#[ignore = "mutable namespace (mutableMessages: true) not in ably-common test-app-setup.json"]
 async fn rsl15_update_message() {
-    todo!()
+    let app = get_sandbox().await;
+    let client = sandbox_client(app.full_access_key());
+    let channel_name = format!("mutable:test-RSL15-update-{}", random_id());
+    let channel = client.channels().get(&channel_name);
+
+    let result = channel.publish().name("original").string("original-data").send().await.unwrap();
+    let serial = result.serials[0].as_deref().expect("serial").to_string();
+
+    let update = Message {
+        serial: Some(serial.clone()),
+        name: Some("updated".into()),
+        data: Data::String("updated-data".into()),
+        ..Default::default()
+    };
+    let op = crate::rest::MessageOperation {
+        description: Some("edited content".into()),
+        ..Default::default()
+    };
+    let update_result = channel.update_message(&update, Some(&op), None).await.unwrap();
+    let version_serial = update_result.version_serial.expect("versionSerial");
+    assert!(!version_serial.is_empty());
+
+    // Poll until the update is visible via getMessage
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let updated = loop {
+        let msg = channel.get_message(&serial).await.unwrap();
+        if msg.action == Some(crate::rest::MessageAction::Update) {
+            break msg;
+        }
+        assert!(std::time::Instant::now() < deadline, "update not visible within 10s");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+    assert_eq!(updated.name.as_deref(), Some("updated"));
+    assert!(matches!(updated.data, Data::String(ref s) if s == "updated-data"));
+    let version = updated.version.expect("version object");
+    assert_eq!(version["description"], "edited content");
 }
 
 // UTS: rest/integration/RSL15/delete-message-1
 #[tokio::test]
-#[ignore = "mutable namespace (mutableMessages: true) not in ably-common test-app-setup.json"]
 async fn rsl15_delete_message() {
-    todo!()
+    let app = get_sandbox().await;
+    let client = sandbox_client(app.full_access_key());
+    let channel_name = format!("mutable:test-RSL15-delete-{}", random_id());
+    let channel = client.channels().get(&channel_name);
+
+    let result = channel.publish().name("to-delete").string("delete-me").send().await.unwrap();
+    let serial = result.serials[0].as_deref().expect("serial").to_string();
+
+    let msg = Message { serial: Some(serial.clone()), ..Default::default() };
+    let delete_result = channel.delete_message(&msg, None, None).await.unwrap();
+    let version_serial = delete_result.version_serial.expect("versionSerial");
+    assert!(!version_serial.is_empty());
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let msg = channel.get_message(&serial).await.unwrap();
+        if msg.action == Some(crate::rest::MessageAction::Delete) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "delete not visible within 10s");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
 }
 
 // UTS: rest/integration/RSL15/append-message-2
 #[tokio::test]
-#[ignore = "mutable namespace (mutableMessages: true) not in ably-common test-app-setup.json"]
 async fn rsl15_append_message() {
-    todo!()
+    let app = get_sandbox().await;
+    let client = sandbox_client(app.full_access_key());
+    let channel_name = format!("mutable:test-RSL15-append-{}", random_id());
+    let channel = client.channels().get(&channel_name);
+
+    let result = channel.publish().name("appendable").string("original").send().await.unwrap();
+    let serial = result.serials[0].as_deref().expect("serial").to_string();
+
+    let msg = Message {
+        serial: Some(serial),
+        data: Data::String("appended-data".into()),
+        ..Default::default()
+    };
+    let append_result = channel.append_message(&msg, None).await.unwrap();
+    let version_serial = append_result.version_serial.expect("versionSerial");
+    assert!(!version_serial.is_empty());
 }
 
 // UTS: rest/integration/RSL14/get-message-versions-0
 #[tokio::test]
-#[ignore = "mutable namespace (mutableMessages: true) not in ably-common test-app-setup.json"]
 async fn rsl14_get_message_versions() {
-    todo!()
+    let app = get_sandbox().await;
+    let client = sandbox_client(app.full_access_key());
+    let channel_name = format!("mutable:test-RSL14-versions-{}", random_id());
+    let channel = client.channels().get(&channel_name);
+
+    let result = channel.publish().name("versioned").string("v1").send().await.unwrap();
+    let serial = result.serials[0].as_deref().expect("serial").to_string();
+
+    for (data, desc) in [("v2", "first edit"), ("v3", "second edit")] {
+        let update = Message {
+            serial: Some(serial.clone()),
+            data: Data::String(data.into()),
+            ..Default::default()
+        };
+        let op = crate::rest::MessageOperation {
+            description: Some(desc.into()),
+            ..Default::default()
+        };
+        channel.update_message(&update, Some(&op), None).await.unwrap();
+    }
+
+    // Poll until all three versions appear
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let versions = loop {
+        let result = channel.message_versions(&serial).send().await.unwrap();
+        if result.items().len() >= 3 {
+            break result;
+        }
+        assert!(std::time::Instant::now() < deadline, "versions did not converge within 10s");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+    for item in versions.items() {
+        assert_eq!(item.serial.as_deref(), Some(serial.as_str()));
+    }
 }
 
 // --- Annotations ---
 
 // UTS: rest/integration/RSAN1/annotation-lifecycle-0
 #[tokio::test]
-#[ignore = "mutable namespace (mutableMessages: true) not in ably-common test-app-setup.json"]
 async fn rsan1_rsan2_annotations_lifecycle() {
-    todo!()
+    let app = get_sandbox().await;
+    let client = sandbox_client(app.full_access_key());
+    let channel_name = format!("mutable:test-RSAN-lifecycle-{}", random_id());
+    let channel = client.channels().get(&channel_name);
+
+    let result = channel.publish().name("annotatable").string("content").send().await.unwrap();
+    let serial = result.serials[0].as_deref().expect("serial").to_string();
+
+    let annotation = crate::rest::Annotation {
+        annotation_type: Some("com.ably.reactions".into()),
+        name: Some("like".into()),
+        ..Default::default()
+    };
+    channel.annotations().publish(&serial, &annotation).await.unwrap();
+
+    // Poll until the annotation appears
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let annotations = loop {
+        let result = channel.annotations().get(&serial).send().await.unwrap();
+        if !result.items().is_empty() {
+            break result;
+        }
+        assert!(std::time::Instant::now() < deadline, "annotation not visible within 10s");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+    let found = annotations.items().iter().find(|a| {
+        a.annotation_type.as_deref() == Some("com.ably.reactions")
+            && a.name.as_deref() == Some("like")
+    });
+    let ann = found.expect("published annotation present");
+    assert_eq!(ann.message_serial.as_deref(), Some(serial.as_str()));
+
+    // RSAN2: delete the annotation
+    channel.annotations().delete(&serial, &annotation).await.unwrap();
 }
 
 // UTS: rest/integration/RSAN3/get-annotations-paginated-0
 #[tokio::test]
-#[ignore = "mutable namespace (mutableMessages: true) not in ably-common test-app-setup.json"]
 async fn rsan3_get_annotations() {
-    todo!()
+    let app = get_sandbox().await;
+    let client = sandbox_client(app.full_access_key());
+    let channel_name = format!("mutable:test-RSAN3-paginated-{}", random_id());
+    let channel = client.channels().get(&channel_name);
+
+    let result = channel.publish().name("multi-annotated").string("content").send().await.unwrap();
+    let serial = result.serials[0].as_deref().expect("serial").to_string();
+
+    for name in ["like", "heart"] {
+        let ann = crate::rest::Annotation {
+            annotation_type: Some("com.ably.reactions".into()),
+            name: Some(name.into()),
+            ..Default::default()
+        };
+        channel.annotations().publish(&serial, &ann).await.unwrap();
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let result = loop {
+        let r = channel.annotations().get(&serial).send().await.unwrap();
+        if r.items().len() >= 2 {
+            break r;
+        }
+        assert!(std::time::Instant::now() < deadline, "annotations did not converge within 10s");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+    for ann in result.items() {
+        assert_eq!(ann.message_serial.as_deref(), Some(serial.as_str()));
+        assert_eq!(ann.annotation_type.as_deref(), Some("com.ably.reactions"));
+        assert!(ann.timestamp.is_some());
+    }
 }
 
 // --- PushChannel (LocalDevice not implemented) ---
@@ -2094,60 +2296,4 @@ async fn rsh7b_subscribe_unsubscribe_client() {
     todo!()
 }
 
-// --- REST proxy tests (needs proxy infrastructure) ---
-
-// UTS: rest/proxy/RSC15l2/timeout-triggers-fallback-0
-#[tokio::test]
-#[ignore = "Proxy infrastructure not yet implemented"]
-async fn proxy_rsc15l2_timeout_triggers_fallback() {
-    todo!()
-}
-
-// UTS: rest/proxy/RSC15l4/cloudfront-header-fallback-0
-#[tokio::test]
-#[ignore = "Proxy infrastructure not yet implemented"]
-async fn proxy_rsc15l4_cloudfront_header_fallback() {
-    todo!()
-}
-
-// UTS: rest/proxy/RSC15l/unreachable-endpoint-error-0
-#[tokio::test]
-#[ignore = "Proxy infrastructure not yet implemented"]
-async fn proxy_rsc15l_unreachable_endpoint_error() {
-    todo!()
-}
-
-// UTS: rest/proxy/RSC15l/connection-drop-fallback-1
-#[tokio::test]
-#[ignore = "Proxy infrastructure not yet implemented"]
-async fn proxy_rsc15l_connection_drop_fallback() {
-    todo!()
-}
-
-// UTS: rest/proxy/RSC15l/http-5xx-json-error-parsed-0
-#[tokio::test]
-#[ignore = "Proxy infrastructure not yet implemented"]
-async fn proxy_rsc15l_http_5xx_json_error_parsed() {
-    todo!()
-}
-
-// UTS: rest/proxy/RSC15l/http-5xx-no-json-synthesized-1
-#[tokio::test]
-#[ignore = "Proxy infrastructure not yet implemented"]
-async fn proxy_rsc15l_http_5xx_no_json_synthesized() {
-    todo!()
-}
-
-// UTS: rest/proxy/RSC15l/http-4xx-not-retried-0
-#[tokio::test]
-#[ignore = "Proxy infrastructure not yet implemented"]
-async fn proxy_rsc15l_http_4xx_not_retried() {
-    todo!()
-}
-
-// UTS: rest/proxy/RSL1k4/idempotent-retry-dedup-0
-#[tokio::test]
-#[ignore = "Proxy infrastructure not yet implemented"]
-async fn proxy_rsl1k4_idempotent_retry_dedup() {
-    todo!()
-}
+// (REST proxy tests live in src/tests_proxy.rs)

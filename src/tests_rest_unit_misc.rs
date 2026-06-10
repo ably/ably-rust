@@ -325,7 +325,7 @@ use crate::crypto::CipherParams;
             name: None,
             action: Some(AnnotationAction::Create),
             client_id: Some("user1".into()),
-            msg_serial: Some("serial1".into()),
+            message_serial: Some("serial1".into()),
             data: crate::rest::Data::JSON(json!({"emoji": "👍"})),
             serial: None,
             version: None,
@@ -380,7 +380,7 @@ use crate::crypto::CipherParams;
             name: Some("option-a".into()),
             action: Some(AnnotationAction::Create),
             client_id: Some("voter-1".into()),
-            msg_serial: Some("msg-serial-1".into()),
+            message_serial: Some("msg-serial-1".into()),
             data: crate::rest::Data::JSON(json!({"weight": 1})),
             serial: Some("ann-serial-1".into()),
             timestamp: Some(1700000000000),
@@ -393,7 +393,7 @@ use crate::crypto::CipherParams;
         assert_eq!(json["name"], "option-a");
         assert_eq!(json["action"], 0); // AnnotationCreate = 0
         assert_eq!(json["clientId"], "voter-1");
-        assert_eq!(json["msgSerial"], "msg-serial-1");
+        assert_eq!(json["messageSerial"], "msg-serial-1");
         assert_eq!(json["data"]["weight"], 1);
         assert_eq!(json["timestamp"], 1700000000000_i64);
 

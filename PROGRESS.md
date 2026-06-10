@@ -278,3 +278,28 @@ This pass added:
   use the legacy array response while the integration doc mandates the
   BatchResult envelope; (3) UTS request.md (HP, no error on HTTP status) vs
   token_renewal.md ("FAILS WITH error" via request()) are inconsistent.
+
+## Phase P: Proxy Infrastructure + Remaining REST Integration — DONE (2026-06-10)
+- All 8 UTS proxy tests implemented in new src/tests_proxy.rs against the
+  auto-downloaded uts-proxy (src/proxy.rs harness worked as-is on darwin_arm64):
+  timeout fallback (RSC15l2), CloudFront 403 fallback (RSC15l4), connection drop,
+  unreachable endpoint error, 5xx parsed/synthesized, 4xx-not-retried, and
+  RSL1k4 idempotent retry dedup (proves the LIVE server dedupes our generated ids).
+  8/8 passing. Old proxy stubs removed from tests_rest_integration.rs.
+- SDK fix: fallback retry list no longer filters fallback hosts equal to the
+  primary (only a failed cached-fallback is excluded) — required for proxy
+  configs where primary and fallback are both localhost.
+- ably-common submodule updated to origin/main: keys[4] revocableTokens + the
+  mutable namespace. Unblocked and implemented 8 more integration tests, all
+  passing live: rsl11 getMessage, rsl15 update/delete/append, rsl14 versions,
+  rsan1/2 annotation lifecycle, rsan3 paginated annotations, rsa17e
+  issuedBefore/allowReauthMargin (live proof of the BatchResult envelope fix).
+- LIVE-CAUGHT BUG: Annotation serial field is `messageSerial` (TAN2j), not
+  `msgSerial` — unit mocks had agreed with the wrong implementation. Fixed
+  (field renamed message_serial, RSAN1c2 now sets it on publish/delete bodies).
+- Remaining ignored (15): 3 JWT (needs jsonwebtoken dev-dep), 10 need a live
+  realtime client (presence events/members, revoke-disconnect observation),
+  2 LocalDevice. All reasons name their concrete blocker.
+- Test status: unit 768 pass / 440 fail (all realtime stubs) / 70 ignored;
+  integration 62 pass / 15 ignored; proxy 8/8. All serial runs fully green.
+- Next: Phase 4 — realtime state design (DESIGN.md section, HUMAN REVIEW GATE).
