@@ -67,9 +67,9 @@ impl TransportConnection for WsConnection {
                     Ok(pm) => return Some(TransportEvent::Message(pm)),
                     Err(_) => continue, // unparseable frame: skip (RTN19-shaped tolerance)
                 },
-                Ok(WsMessage::Binary(bytes)) => match rmp_serde::from_slice(&bytes) {
-                    Ok(pm) => return Some(TransportEvent::Message(pm)),
-                    Err(_) => continue,
+                Ok(WsMessage::Binary(bytes)) => match decode_msgpack_tolerant(&bytes) {
+                    Some(pm) => return Some(TransportEvent::Message(pm)),
+                    None => continue,
                 },
                 Ok(WsMessage::Close(_)) => return Some(TransportEvent::Disconnected),
                 Ok(_) => continue, // ping/pong/frame are transport-level
@@ -80,5 +80,44 @@ impl TransportConnection for WsConnection {
 
     async fn close(&mut self) {
         let _ = self.stream.close(None).await;
+    }
+}
+
+/// Decode a msgpack frame into a ProtocolMessage. The realtime service has
+/// been observed emitting DUPLICATE map keys in msgpack frames (e.g.
+/// `messages` twice in a MESSAGE); serde rejects those, so per RTF1
+/// (deserialization must be tolerant) we dedup keys — last occurrence wins —
+/// and retry. Re-encoding (rather than a JSON round-trip) preserves binary
+/// payloads.
+fn decode_msgpack_tolerant(bytes: &[u8]) -> Option<ProtocolMessage> {
+    match rmp_serde::from_slice(bytes) {
+        Ok(pm) => Some(pm),
+        Err(_) => {
+            let value = rmpv::decode::read_value(&mut &bytes[..]).ok()?;
+            let mut out = Vec::new();
+            rmpv::encode::write_value(&mut out, &dedup_map_keys(value)).ok()?;
+            rmp_serde::from_slice(&out).ok()
+        }
+    }
+}
+
+fn dedup_map_keys(value: rmpv::Value) -> rmpv::Value {
+    match value {
+        rmpv::Value::Map(entries) => {
+            let mut deduped: Vec<(rmpv::Value, rmpv::Value)> = Vec::new();
+            for (k, v) in entries {
+                let v = dedup_map_keys(v);
+                if let Some(slot) = deduped.iter_mut().find(|(ek, _)| ek == &k) {
+                    slot.1 = v;
+                } else {
+                    deduped.push((k, v));
+                }
+            }
+            rmpv::Value::Map(deduped)
+        }
+        rmpv::Value::Array(items) => {
+            rmpv::Value::Array(items.into_iter().map(dedup_map_keys).collect())
+        }
+        other => other,
     }
 }

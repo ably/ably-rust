@@ -500,3 +500,60 @@ This pass added:
 - Test status: 1079 pass / 202 fail (later-stage stubs) / 66 ignored; REST
   unit 689 all green; integration serial-only flake documented (rsl11 vs
   shared sandbox in parallel).
+
+### 5.5 Channel Messages — DONE (2026-06-11)
+- Publish (RTL6): builder + publish_message; loop-owned msgSerial (RTN7b),
+  pending-ACK queue, ACK/NACK resolution with PublishResult serials from
+  `res` (RTL6j/TR4s); state table RTL6c1 (send when CONNECTED regardless of
+  channel attach state), RTL6c2 (queue while INITIALIZED/CONNECTING/
+  DISCONNECTED; queueMessages=false fails fast), RTL6c4 (channel SUSPENDED/
+  FAILED + terminal connection states fail with the reason), RTL6c5 (no
+  implicit attach). RSL4/RSL5 wire encoding with the channel cipher.
+- RTN7d/e: pending publishes survive DISCONNECTED (queueMessages default),
+  fail with the state-change reason on SUSPENDED/CLOSED/FAILED.
+- RTN19a/a2: pendings resent verbatim on a new transport; serials kept on a
+  successful resume, renumbered from a reset counter on a failed resume
+  (RTN15c7). RTN19b: pending ATTACH and DETACH resent (DETACH resend was a
+  real gap the audit-style cross-check caught).
+- Subscribe (RTL7/8/17/22): loop-side subscriber registry (unbounded mpsc per
+  §8, pruned on close); all/name/MessageFilter (RTL22 — new public
+  MessageFilter type + subscribe_with_filter); RTL7g implicit attach per
+  attachOnSubscribe with listener-survives-failed-attach; RTL17
+  attached-only delivery; RTL8a/b/c unsubscribe semantics.
+- Inbound MESSAGE: TM2a/c/f field population (pm.id:index, connectionId,
+  timestamp — never overwriting), RSL6 decode/decrypt with the channel
+  cipher, RTL15b channelSerial updates from MESSAGE/PRESENCE/SYNC, RTF1/RSF1
+  unknown-field tolerance.
+- RTL32 message mutations are WIRE operations (not REST): MESSAGE pm with
+  one Message carrying action UPDATE/DELETE/APPEND (RTL32b1), version from
+  the MessageOperation (RTL32b2), pm-level params (RTL32e), serial required
+  (RTL32a, 40003), resolves via ACK as UpdateDeleteResult.versionSerial
+  (RTL32d), caller's message untouched (RTL32c). RTL10b untilAttach
+  (fromSerial, attached-required) + RTL28/RTL31 REST delegation.
+- LIVE-CAUGHT PRODUCTION BLOCKER: the realtime service emits DUPLICATE map
+  keys in msgpack frames (`messages` twice in MESSAGE) — serde rejects
+  duplicates, so EVERY inbound message over msgpack (the default protocol!)
+  was silently dropped. Fixed with a tolerant decode path (dedup keys, last
+  wins, re-encode to preserve binary). FLAGGED UPSTREAM: server-side
+  duplicate-key emission in msgpack MESSAGE frames on nonprod sandbox.
+- Also fixed: RSL4a now normalizes JSON scalar strings to string payloads
+  (Data::JSON(Value::String) → Data::String) and null to empty — only
+  numbers/booleans are rejected (40013).
+- Tests: 25 UTS-derived in tests_realtime_uts_messages.rs (all green), incl.
+  a live sandbox publish→subscribe echo round-trip over msgpack. Ported
+  sweep: ~60 message-scope tests ADOPTED (mechanical conversions: publish now
+  returns PublishResult, subscribe returns UnboundedReceiver; 3 rtl32 asserts
+  corrected to UTS semantics — 40003/versionSerial); 14 SUPERSEDED/deleted
+  (broken rtl6i2 port, client-side echo-filter tests — UTS sanctions our
+  server-side delegation, race-class rtn19/rtn7d/rtl6c4-closed shapes, rtl10
+  todo-shells, the rtl5l straggler).
+- Matrix: channel_publish/subscribe/history/get_message/versions/
+  update_delete/message_field_population exclusions all converted to
+  mappings (766 mapped / 197 excluded); both ratchets green.
+- §14.3 conformance: lock inventory UNCHANGED (subscriber registry, pending/
+  queued publishes are plain loop-owned data).
+- Test status: 1161 pass / 132 fail (5.6 channels-advanced, 5.7 presence,
+  5.8 annotations) / 66 ignored.
+- Next: 5.6 advanced channels (RTL12, RTL13, RTL16/RTS3c — needs the
+  fallible get_with_options API decision, RTN17j).
+

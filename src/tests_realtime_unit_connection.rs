@@ -2552,203 +2552,10 @@ use crate::crypto::CipherParams;
     // RTN19b: Pending ATTACH/DETACH resent on new transport after disconnect
     // SDK gap: no pending message queue or resend-on-reconnect logic.
 
-    // RTN19a: Messages queued during DISCONNECTED are sent on reconnect.
-    #[tokio::test]
-    async fn rtn19a_pending_messages_resent_after_disconnect() -> Result<()> {
-        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
-        use crate::realtime::await_state;
-        use crate::mock_ws::MockWebSocket;
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("connId", "connKey"));
-        });
-        let transport = Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = crate::realtime::Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .disconnected_retry_timeout(std::time::Duration::from_millis(50))
-                .realtime_request_timeout(std::time::Duration::from_millis(200))
-                .fallback_hosts(vec![]),
-            transport,
-        )?;
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        let channel = client.channels.get("test-rtn19a");
-        phase8d_attach(&channel, &mock, None).await;
-
-        // Disconnect
-        let conns = mock.active_connections();
-        conns.last().unwrap().simulate_disconnect();
-        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
-
-        // Publish while disconnected — should be queued (RTL6c2)
-        let ch = channel.clone();
-        let publish_handle: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move {
-            ch.publish().name("queued-msg").json(serde_json::json!("hello")).send().await
-        });
-
-        // Wait for reconnect
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Re-attach the channel
-        let conns = mock.active_connections();
-        conns.last().unwrap().send_to_client(ProtocolMessage {
-            action: action::ATTACHED,
-            channel: Some("test-rtn19a".to_string()),
-            ..ProtocolMessage::new(action::ATTACHED)
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // ACK the queued message
-        conns.last().unwrap().send_to_client(ProtocolMessage {
-            action: action::ACK,
-            msg_serial: Some(0),
-            count: Some(1),
-            ..ProtocolMessage::new(action::ACK)
-        });
-
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            publish_handle,
-        ).await;
-        assert!(result.is_ok(), "Queued publish should complete after reconnect");
-        let publish_result: crate::error::Result<()> = result.unwrap().unwrap();
-        assert!(publish_result.is_ok(), "Queued publish should succeed");
-
-        Ok(())
-    }
 
 
-    // RTN19a2: Message serial is assigned when the queued message is sent.
-    #[tokio::test]
-    async fn rtn19a2_resent_messages_serial_handling() -> Result<()> {
-        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
-        use crate::realtime::await_state;
-        use crate::mock_ws::MockWebSocket;
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("connId", "connKey"));
-        });
-        let transport = Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = crate::realtime::Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .disconnected_retry_timeout(std::time::Duration::from_millis(50))
-                .realtime_request_timeout(std::time::Duration::from_millis(200))
-                .fallback_hosts(vec![]),
-            transport,
-        )?;
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        let channel = client.channels.get("test-rtn19a2");
-        phase8d_attach(&channel, &mock, None).await;
-
-        // Disconnect
-        let conns = mock.active_connections();
-        conns.last().unwrap().simulate_disconnect();
-        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
-
-        // Publish two messages while disconnected
-        let ch1 = channel.clone();
-        let ch2 = channel.clone();
-        let h1 = tokio::spawn(async move {
-            ch1.publish().name("msg1").send().await
-        });
-        let h2 = tokio::spawn(async move {
-            ch2.publish().name("msg2").send().await
-        });
-
-        // Reconnect
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Re-attach
-        let conns = mock.active_connections();
-        conns.last().unwrap().send_to_client(ProtocolMessage {
-            action: action::ATTACHED,
-            channel: Some("test-rtn19a2".to_string()),
-            ..ProtocolMessage::new(action::ATTACHED)
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // ACK both messages (serials 0 and 1)
-        conns.last().unwrap().send_to_client(ProtocolMessage {
-            action: action::ACK,
-            msg_serial: Some(0),
-            count: Some(2),
-            ..ProtocolMessage::new(action::ACK)
-        });
-
-        let r1 = tokio::time::timeout(std::time::Duration::from_secs(2), h1).await;
-        let r2 = tokio::time::timeout(std::time::Duration::from_secs(2), h2).await;
-        assert!(r1.is_ok() && r2.is_ok(), "Both queued publishes should complete");
-
-        Ok(())
-    }
 
 
-    // RTN19b: Pending ATTACH is resent on new transport after reconnect.
-    #[tokio::test]
-    async fn rtn19b_pending_attach_detach_resent() -> Result<()> {
-        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
-        use crate::realtime::await_state;
-        use crate::mock_ws::MockWebSocket;
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("connId", "connKey"));
-        });
-        let transport = Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = crate::realtime::Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .disconnected_retry_timeout(std::time::Duration::from_millis(50))
-                .realtime_request_timeout(std::time::Duration::from_millis(500))
-                .fallback_hosts(vec![]),
-            transport,
-        )?;
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        // Start an attach but don't respond to it
-        let channel = client.channels.get("test-rtn19b");
-        let ch = channel.clone();
-        let attach_handle = tokio::spawn(async move { ch.attach().await });
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        assert_eq!(channel.state(), ChannelState::Attaching);
-
-        // Disconnect before ATTACHED response arrives
-        let conns = mock.active_connections();
-        conns.last().unwrap().simulate_disconnect();
-        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
-
-        // Reconnect — RTL3d: ATTACHING channel gets re-attached
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Channel should still be ATTACHING (RTL3d triggers re-attach on reconnect)
-        assert_eq!(channel.state(), ChannelState::Attaching);
-
-        // Now respond with ATTACHED on new connection
-        let conns = mock.active_connections();
-        conns.last().unwrap().send_to_client(ProtocolMessage {
-            action: action::ATTACHED,
-            channel: Some("test-rtn19b".to_string()),
-            ..ProtocolMessage::new(action::ATTACHED)
-        });
-
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            attach_handle,
-        ).await;
-        assert!(result.is_ok(), "Pending attach should complete after reconnect");
-
-        assert_eq!(channel.state(), ChannelState::Attached);
-
-        Ok(())
-    }
 
 
 
@@ -2756,75 +2563,6 @@ use crate::crypto::CipherParams;
     // Batch 8: Realtime Connection — RTN tests
     // ===============================================================
 
-    // --- RTN7d: Pending publishes survive DISCONNECTED when queueMessages=true ---
-    #[tokio::test]
-    async fn rtn7d_pending_survive_disconnected_with_queue_messages() -> Result<()> {
-        use crate::protocol::{action, ConnectionState, ProtocolMessage};
-        use crate::realtime::await_state;
-        use crate::mock_ws::MockWebSocket;
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("connId", "connKey"));
-        });
-        let transport = Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = crate::realtime::Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .queue_messages(true)
-                .disconnected_retry_timeout(std::time::Duration::from_millis(50))
-                .realtime_request_timeout(std::time::Duration::from_millis(200))
-                .fallback_hosts(vec![]),
-            transport,
-        )?;
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        let channel = client.channels.get("test-rtn7d");
-        phase8d_attach(&channel, &mock, None).await;
-
-        // Disconnect
-        let conns = mock.active_connections();
-        conns.last().unwrap().simulate_disconnect();
-        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
-
-        // Publish while disconnected — should be queued, not rejected
-        let ch = channel.clone();
-        let publish_handle: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move {
-            ch.publish().name("queued").json(serde_json::json!("data")).send().await
-        });
-
-        // Give time for the publish to be queued
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        // publish_handle should still be pending (not resolved with error)
-        assert!(!publish_handle.is_finished(), "Publish should be queued, not immediately rejected");
-
-        // Reconnect
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Re-attach
-        let conns = mock.active_connections();
-        conns.last().unwrap().send_to_client(ProtocolMessage {
-            action: action::ATTACHED,
-            channel: Some("test-rtn7d".to_string()),
-            ..ProtocolMessage::new(action::ATTACHED)
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // ACK the queued message
-        conns.last().unwrap().send_to_client(ProtocolMessage {
-            action: action::ACK,
-            msg_serial: Some(0),
-            count: Some(1),
-            ..ProtocolMessage::new(action::ACK)
-        });
-
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), publish_handle).await;
-        assert!(result.is_ok(), "Publish should complete after reconnect");
-        assert!(result.unwrap().unwrap().is_ok(), "Publish should succeed");
-
-        Ok(())
-    }
 
 
     // --- RTN7e: Pending publishes fail on CLOSE ---
@@ -2860,7 +2598,7 @@ use crate::crypto::CipherParams;
 
         // Publish while disconnected — queued
         let ch = channel.clone();
-        let publish_handle: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move {
+        let publish_handle = tokio::spawn(async move {
             ch.publish().name("queued").json(serde_json::json!("data")).send().await
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -2928,7 +2666,7 @@ use crate::crypto::CipherParams;
 
         // Publish while disconnected — queued
         let ch = channel.clone();
-        let publish_handle: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move {
+        let publish_handle = tokio::spawn(async move {
             ch.publish().name("queued").json(serde_json::json!("data")).send().await
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -2992,7 +2730,7 @@ use crate::crypto::CipherParams;
 
         // Publish while SUSPENDED — should fail (messages not queued in SUSPENDED)
         let ch = channel.clone();
-        let result: std::result::Result<crate::error::Result<()>, _> = tokio::time::timeout(
+        let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             ch.publish().name("msg").json(serde_json::json!("data")).send(),
         ).await;
@@ -3047,9 +2785,9 @@ use crate::crypto::CipherParams;
         client.close();
         assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
 
-        let r1: crate::error::Result<()> = tokio::time::timeout(std::time::Duration::from_secs(2), h1).await.unwrap().unwrap();
-        let r2: crate::error::Result<()> = tokio::time::timeout(std::time::Duration::from_secs(2), h2).await.unwrap().unwrap();
-        let r3: crate::error::Result<()> = tokio::time::timeout(std::time::Duration::from_secs(2), h3).await.unwrap().unwrap();
+        let r1 = tokio::time::timeout(std::time::Duration::from_secs(2), h1).await.unwrap().unwrap();
+        let r2 = tokio::time::timeout(std::time::Duration::from_secs(2), h2).await.unwrap().unwrap();
+        let r3 = tokio::time::timeout(std::time::Duration::from_secs(2), h3).await.unwrap().unwrap();
 
         assert!(r1.is_err(), "First queued publish should fail on CLOSE");
         assert!(r2.is_err(), "Second queued publish should fail on CLOSE");
@@ -3467,77 +3205,6 @@ use crate::crypto::CipherParams;
     }
 
 
-    // --- RTN19a: Pending message resent after reconnect ---
-    #[tokio::test]
-    async fn rtn19a_pending_message_resent() -> Result<()> {
-        use crate::protocol::{action, ConnectionState, ProtocolMessage};
-        use crate::realtime::await_state;
-        use crate::mock_ws::MockWebSocket;
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("connId", "connKey"));
-        });
-        let transport = Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = crate::realtime::Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .disconnected_retry_timeout(std::time::Duration::from_millis(50))
-                .realtime_request_timeout(std::time::Duration::from_millis(200))
-                .fallback_hosts(vec![]),
-            transport,
-        )?;
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        let channel = client.channels.get("test-rtn19a-resent");
-        phase8d_attach(&channel, &mock, None).await;
-
-        // Disconnect
-        let conns = mock.active_connections();
-        conns.last().unwrap().simulate_disconnect();
-        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
-
-        // Publish while disconnected
-        let ch = channel.clone();
-        let publish_handle: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move {
-            ch.publish().name("resent-msg").json(serde_json::json!("hello")).send().await
-        });
-
-        // Wait for reconnect
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Re-attach
-        let conns = mock.active_connections();
-        conns.last().unwrap().send_to_client(ProtocolMessage {
-            action: action::ATTACHED,
-            channel: Some("test-rtn19a-resent".to_string()),
-            ..ProtocolMessage::new(action::ATTACHED)
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // ACK
-        conns.last().unwrap().send_to_client(ProtocolMessage {
-            action: action::ACK,
-            msg_serial: Some(0),
-            count: Some(1),
-            ..ProtocolMessage::new(action::ACK)
-        });
-
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), publish_handle).await;
-        assert!(result.is_ok(), "Publish should complete after reconnect");
-        assert!(result.unwrap().unwrap().is_ok(), "Resent publish should succeed");
-
-        // Verify the message was sent on the new connection
-        let msgs = mock.client_messages();
-        let publishes: Vec<_> = msgs
-            .iter()
-            .filter(|m| m.message.action == action::MESSAGE && m.message.channel.as_deref() == Some("test-rtn19a-resent"))
-            .collect();
-        assert!(!publishes.is_empty(), "Message should have been resent");
-
-        Ok(())
-    }
 
 
     // --- RTN23b: Heartbeat ping frame ---

@@ -63,7 +63,7 @@ impl Realtime {
         };
         let realtime = Self {
             connection,
-            channels: Channels::new(input_tx),
+            channels: Channels::new(input_tx, rest.clone()),
             rest,
         };
         if auto_connect {

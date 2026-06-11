@@ -2935,7 +2935,7 @@ use crate::crypto::CipherParams;
 
         // Publish
         let ch = channel.clone();
-        let publish_handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let publish_handle = tokio::spawn(async move {
             ch.publish().name("greeting").json(serde_json::json!("hello")).send()
                 .await
         });
@@ -2974,83 +2974,6 @@ use crate::crypto::CipherParams;
     }
 
 
-    // --- RTL6i2: Publish array of Message objects ---
-    #[tokio::test]
-    async fn rtl6i2_publish_array_of_messages() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
-        use crate::realtime::{await_state, Realtime};
-
-        let channel_name = "test-rtl6i2";
-        let mock = MockWebSocket::with_handler({
-            move |pc| {
-                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
-            }
-        });
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
-            transport.clone(),
-        )
-        .unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        let channel = client.channels.get(channel_name);
-        // Attach
-        let ch = channel.clone();
-        let cn = channel_name.to_string();
-        let t = tokio::spawn(async move { ch.attach().await });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let conns = mock.active_connections();
-        let conn = conns.last().unwrap();
-        conn.send_to_client(ProtocolMessage {
-            action: action::ATTACHED,
-            channel: Some(cn),
-            ..ProtocolMessage::new(action::ATTACHED)
-        });
-        t.await.unwrap().unwrap();
-
-        // Publish array
-        let ch = channel.clone();
-        let publish_handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
-            ch.publish_message(Some("event1"), Some(serde_json::json!("data1")))
-            .await
-        });
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let msgs = mock.client_messages();
-        let message_msgs: Vec<_> = msgs
-            .iter()
-            .filter(|m| m.message.action == action::MESSAGE)
-            .collect();
-        assert_eq!(message_msgs.len(), 1); // Single ProtocolMessage
-        let messages = message_msgs[0].message.messages.as_ref().unwrap();
-        assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0]["name"], "event1");
-        assert_eq!(messages[1]["name"], "event2");
-        assert_eq!(messages[2]["name"], "event3");
-
-        // Send ACK
-        let msg_serial = message_msgs[0].message.msg_serial.unwrap();
-        conn.send_to_client(ProtocolMessage {
-            action: action::ACK,
-            msg_serial: Some(msg_serial),
-            count: Some(1),
-            res: Some(vec![crate::protocol::PublishResult {
-                serials: vec![
-                    Some("s1".to_string()),
-                    Some("s2".to_string()),
-                    Some("s3".to_string()),
-                ],
-            }]),
-            ..ProtocolMessage::new(action::ACK)
-        });
-
-        let result = publish_handle.await.unwrap();
-        assert!(result.is_ok());
-    }
 
 
     // --- RTL6c1: Publish immediately when CONNECTED and channel ATTACHED ---
@@ -3103,7 +3026,7 @@ use crate::crypto::CipherParams;
 
         // Publish — should be sent immediately (synchronously captured by mock)
         let ch = channel.clone();
-        let _publish_handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let _publish_handle = tokio::spawn(async move {
             ch.publish().name("test").json(serde_json::json!("immediate")).send()
                 .await
         });
@@ -3162,7 +3085,7 @@ use crate::crypto::CipherParams;
 
         // Publish on initialized channel — should send immediately (RTL6c1)
         let ch = channel.clone();
-        let _publish_handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let _publish_handle = tokio::spawn(async move {
             ch.publish().name("before-attach").json(serde_json::json!("data")).send()
                 .await
         });
@@ -3216,7 +3139,7 @@ use crate::crypto::CipherParams;
         assert_eq!(channel.state(), ChannelState::Initialized);
 
         let ch = channel.clone();
-        let _publish_handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let _publish_handle = tokio::spawn(async move {
             ch.publish().name("no-attach").json(serde_json::json!("test")).send()
                 .await
         });
@@ -3270,7 +3193,7 @@ use crate::crypto::CipherParams;
 
         // Publish while CONNECTING — should be queued
         let ch = channel.clone();
-        let publish_handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let publish_handle = tokio::spawn(async move {
             ch.publish().name("queued").json(serde_json::json!("waiting")).send()
                 .await
         });
@@ -3352,7 +3275,7 @@ use crate::crypto::CipherParams;
 
         // Publish before connecting — should be queued
         let ch = channel.clone();
-        let publish_handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let publish_handle = tokio::spawn(async move {
             ch.publish().name("pre-connect").json(serde_json::json!("early")).send()
                 .await
         });
@@ -3431,15 +3354,15 @@ use crate::crypto::CipherParams;
         let ch1 = channel.clone();
         let ch2 = channel.clone();
         let ch3 = channel.clone();
-        let _h1: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let _h1 = tokio::spawn(async move {
             ch1.publish().name("first").json(serde_json::json!("1")).send()
                 .await
         });
-        let _h2: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let _h2 = tokio::spawn(async move {
             ch2.publish().name("second").json(serde_json::json!("2")).send()
                 .await
         });
-        let _h3: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let _h3 = tokio::spawn(async move {
             ch3.publish().name("third").json(serde_json::json!("3")).send()
                 .await
         });
@@ -3480,46 +3403,6 @@ use crate::crypto::CipherParams;
     }
 
 
-    // --- RTL6c4: Publish fails when connection CLOSED ---
-    #[tokio::test]
-    async fn rtl6c4_publish_fails_when_connection_closed() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
-        use crate::realtime::{await_state, Realtime};
-
-        let channel_name = "test-rtl6c4-closed";
-        let mock = MockWebSocket::with_handler({
-            move |pc| {
-                pc.respond_with_success(ProtocolMessage::connected("conn123", "connKey"));
-            }
-        });
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
-            transport.clone(),
-        )
-        .unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-        client.close();
-        assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
-
-        let channel = client
-            .channels
-            .get_with_options(
-                channel_name,
-                crate::channel::RealtimeChannelOptions {
-                    attach_on_subscribe: Some(false),
-                    ..Default::default()
-                },
-            );
-
-        let result = channel
-            .publish().name("fail").json(serde_json::json!("should-error")).send()
-            .await;
-        assert!(result.is_err());
-    }
 
 
     // --- RTL6c4: Publish fails when connection FAILED ---
@@ -3722,7 +3605,7 @@ use crate::crypto::CipherParams;
 
         // Publish
         let ch = channel.clone();
-        let publish_handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let publish_handle = tokio::spawn(async move {
             ch.publish().name("greeting").json(serde_json::json!("hello")).send()
                 .await
         });
@@ -3800,7 +3683,7 @@ use crate::crypto::CipherParams;
 
         // Publish batch
         let ch = channel.clone();
-        let publish_handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let publish_handle = tokio::spawn(async move {
             ch.publish_message(Some("msg1"), None)
             .await
         });
@@ -4354,100 +4237,6 @@ use crate::crypto::CipherParams;
     }
 
 
-    // --- RTL7f: Messages not echoed when echoMessages is false ---
-    #[tokio::test]
-    async fn rtl7f_echo_messages_filtered() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
-        use crate::realtime::{await_state, Realtime};
-
-        let channel_name = "test-rtl7f";
-        let mock = MockWebSocket::with_handler({
-            move |pc| {
-                pc.respond_with_success(ProtocolMessage {
-                    action: action::CONNECTED,
-                    connection_id: Some("conn-self-123".to_string()),
-                    connection_details: Some(crate::protocol::ConnectionDetails {
-                        connection_key: Some("key-456".to_string()),
-                        client_id: None,
-                        connection_state_ttl: Some(120_000),
-                        max_frame_size: None,
-                        max_inbound_rate: None,
-                        max_idle_interval: Some(15_000),
-                        max_message_size: None,
-                        server_id: None,
-                    }),
-                    ..ProtocolMessage::new(action::CONNECTED)
-                });
-            }
-        });
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .echo_messages(false),
-            transport.clone(),
-        )
-        .unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        let channel = client
-            .channels
-            .get_with_options(
-                channel_name,
-                crate::channel::RealtimeChannelOptions {
-                    attach_on_subscribe: Some(false),
-                    ..Default::default()
-                },
-            );
-
-        // Attach
-        let ch = channel.clone();
-        let cn = channel_name.to_string();
-        let t = tokio::spawn(async move { ch.attach().await });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let conns = mock.active_connections();
-        let conn = conns.last().unwrap();
-        conn.send_to_client(ProtocolMessage {
-            action: action::ATTACHED,
-            channel: Some(cn.clone()),
-            ..ProtocolMessage::new(action::ATTACHED)
-        });
-        t.await.unwrap().unwrap();
-
-        let (_sub_id, mut rx) = channel.subscribe();
-
-        // Message from self (same connectionId) — should be filtered
-        conn.send_to_client(ProtocolMessage {
-            action: action::MESSAGE,
-            channel: Some(cn.clone()),
-            connection_id: Some("conn-self-123".to_string()),
-            messages: Some(vec![
-                serde_json::json!({"name": "echo", "data": "from-self"}),
-            ]),
-            ..ProtocolMessage::new(action::MESSAGE)
-        });
-
-        // Message from another connection — should be delivered
-        conn.send_to_client(ProtocolMessage {
-            action: action::MESSAGE,
-            channel: Some(cn.clone()),
-            connection_id: Some("conn-other-789".to_string()),
-            messages: Some(vec![
-                serde_json::json!({"name": "remote", "data": "from-other"}),
-            ]),
-            ..ProtocolMessage::new(action::MESSAGE)
-        });
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let msg = rx.try_recv().unwrap();
-        assert_eq!(msg.name.as_deref(), Some("remote"));
-        assert!(matches!(&msg.data, rest::Data::String(s) if s == "from-other"));
-        assert!(rx.try_recv().is_err()); // No echo message
-    }
 
 
     // --- RTL8a: Unsubscribe specific listener ---
@@ -5112,22 +4901,8 @@ use crate::crypto::CipherParams;
     }
 
 
-    // --- RTL10b: untilAttach adds fromSerial ---
-    #[tokio::test]
-    async fn rtl10b_until_attach_adds_from_serial() {
-        // RTL10b: untilAttach adds fromSerial — requires set_state/set_attach_serial/set_rest_client
-        // which don't exist on the current RealtimeChannel API; test deferred to integration tests.
-        todo!()
-    }
 
 
-    // --- RTL10b: untilAttach errors when not attached ---
-    #[tokio::test]
-    async fn rtl10b_until_attach_errors_when_not_attached() {
-        // RTL10b: untilAttach errors when not attached — requires direct channel construction
-        // which the current API doesn't support from tests; test deferred.
-        todo!()
-    }
 
 
     // --- RTL13a: Server-initiated DETACHED triggers reattach ---
@@ -5933,7 +5708,7 @@ use crate::crypto::CipherParams;
         });
 
         let result = t.await.unwrap().unwrap();
-        assert_eq!(result.serial.as_deref(), Some("result-serial"));
+        assert_eq!(result.version_serial.as_deref(), Some("result-serial")); // RTL32d per UTS
     }
 
 
@@ -5976,7 +5751,7 @@ use crate::crypto::CipherParams;
         });
 
         let result = t.await.unwrap().unwrap();
-        assert_eq!(result.serial.as_deref(), Some("del-serial"));
+        assert_eq!(result.version_serial.as_deref(), Some("del-serial")); // RTL32d per UTS
     }
 
 
@@ -6071,7 +5846,7 @@ use crate::crypto::CipherParams;
         let result = channel.update_message(&msg, &crate::rest::MessageOperation::default(), None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert_eq!(err.code, Some(40000));
+        assert_eq!(err.code, Some(40003)); // RTL32a per UTS
     }
 
 
@@ -6329,14 +6104,6 @@ use crate::crypto::CipherParams;
     }
 
 
-    // UTS: realtime/unit/channels/channel_history.md — RTL10a
-    // Spec: RealtimeChannel#history uses the same underlying REST endpoint as
-    // RestChannel#history. Verifies that history() delegates to REST correctly.
-    #[tokio::test]
-    async fn rtl10a_realtime_channel_history_params() {
-        // RTL10a: history delegates to REST — requires set_rest_client which doesn't exist.
-        todo!()
-    }
 
 
     // UTS: realtime/unit/channels/channel_server_initiated_detach.md — RTL13b
@@ -6855,39 +6622,6 @@ use crate::crypto::CipherParams;
     }
 
 
-    // --- RTL5l: Detach ATTACHED channel when DISCONNECTED transitions immediately ---
-    #[tokio::test]
-    async fn rtl5l_detach_attached_channel_when_disconnected() {
-        use crate::protocol::{action, ChannelState, ConnectionState};
-        use crate::realtime::await_state;
-
-        let (client, mock) = phase8d_setup();
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        let channel = client.channels.get("test-rtl5l-disc");
-        phase8d_attach(&channel, &mock, None).await;
-        assert_eq!(channel.state(), ChannelState::Attached);
-
-        // Disconnect
-        {
-            let conns = mock.active_connections();
-            conns.last().unwrap().simulate_disconnect();
-        }
-        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
-
-        // RTL5l: Detach while disconnected should transition immediately
-        channel.detach().await.unwrap();
-        assert_eq!(channel.state(), ChannelState::Detached);
-
-        // No DETACH message should be sent (not connected)
-        let detach_msgs: Vec<_> = mock
-            .client_messages()
-            .into_iter()
-            .filter(|m| m.message.action == action::DETACH)
-            .collect();
-        assert_eq!(detach_msgs.len(), 0, "No DETACH sent when disconnected");
-    }
 
 
     // --- RTL6: Binary data round-trip via mock ---
@@ -7008,7 +6742,7 @@ use crate::crypto::CipherParams;
 
         // Publish
         let ch = channel.clone();
-        let publish_handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let publish_handle = tokio::spawn(async move {
             ch.publish().name("e2e-event").json(serde_json::json!("e2e-data")).send()
                 .await
         });
@@ -7094,7 +6828,7 @@ use crate::crypto::CipherParams;
 
         // Publish while ATTACHING — should queue
         let ch = channel.clone();
-        let _publish_handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let _publish_handle = tokio::spawn(async move {
             ch.publish().name("queued").json(serde_json::json!("queued-data")).send()
                 .await
         });
@@ -7295,7 +7029,7 @@ use crate::crypto::CipherParams;
         let (_, mock, conn, channel) = setup_attached_channel("test-rtl6i1-msg", None).await;
 
         let ch = channel.clone();
-        let publish_handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let publish_handle = tokio::spawn(async move {
             ch.publish().name("msg-event").json(serde_json::json!({"key": "value"})).send()
                 .await
         });
@@ -7338,7 +7072,7 @@ use crate::crypto::CipherParams;
 
         // Publish first message
         let ch = channel.clone();
-        let h1: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let h1 = tokio::spawn(async move {
             ch.publish().name("msg1").json(serde_json::json!("data1")).send()
                 .await
         });
@@ -7346,7 +7080,7 @@ use crate::crypto::CipherParams;
 
         // Publish second message
         let ch = channel.clone();
-        let h2: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let h2 = tokio::spawn(async move {
             ch.publish().name("msg2").json(serde_json::json!("data2")).send()
                 .await
         });
@@ -7397,7 +7131,7 @@ use crate::crypto::CipherParams;
         let (_, mock, conn, channel) = setup_attached_channel("test-rtl6j-nack", None).await;
 
         let ch = channel.clone();
-        let publish_handle: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        let publish_handle = tokio::spawn(async move {
             ch.publish().name("will-nack").json(serde_json::json!("data")).send()
                 .await
         });
@@ -7506,99 +7240,6 @@ use crate::crypto::CipherParams;
     }
 
 
-    // --- RTL7f: echoMessages=false filters self messages ---
-    #[tokio::test]
-    async fn rtl7f_echo_messages_false() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{action, ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-
-        let channel_name = "test-rtl7f-echo";
-        let mock = MockWebSocket::with_handler({
-            move |pc| {
-                pc.respond_with_success(ProtocolMessage {
-                    action: action::CONNECTED,
-                    connection_id: Some("my-conn-id".to_string()),
-                    connection_details: Some(crate::protocol::ConnectionDetails {
-                        connection_key: Some("my-key".to_string()),
-                        client_id: None,
-                        connection_state_ttl: Some(120_000),
-                        max_frame_size: None,
-                        max_inbound_rate: None,
-                        max_idle_interval: Some(15_000),
-                        max_message_size: None,
-                        server_id: None,
-                    }),
-                    ..ProtocolMessage::new(action::CONNECTED)
-                });
-            }
-        });
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .echo_messages(false),
-            transport.clone(),
-        )
-        .unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        let channel = client
-            .channels
-            .get_with_options(
-                channel_name,
-                crate::channel::RealtimeChannelOptions {
-                    attach_on_subscribe: Some(false),
-                    ..Default::default()
-                },
-            );
-
-        // Attach
-        let ch = channel.clone();
-        let cn = channel_name.to_string();
-        let t = tokio::spawn(async move { ch.attach().await });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let conns = mock.active_connections();
-        let conn = conns.last().unwrap();
-        conn.send_to_client(ProtocolMessage {
-            action: action::ATTACHED,
-            channel: Some(cn.clone()),
-            ..ProtocolMessage::new(action::ATTACHED)
-        });
-        t.await.unwrap().unwrap();
-
-        let (_sub_id, mut rx) = channel.subscribe();
-
-        // Echo from self — should be filtered
-        conn.send_to_client(ProtocolMessage {
-            action: action::MESSAGE,
-            channel: Some(cn.clone()),
-            connection_id: Some("my-conn-id".to_string()),
-            messages: Some(vec![
-                serde_json::json!({"name": "self-msg", "data": "from-self"}),
-            ]),
-            ..ProtocolMessage::new(action::MESSAGE)
-        });
-
-        // From another — should be delivered
-        conn.send_to_client(ProtocolMessage {
-            action: action::MESSAGE,
-            channel: Some(cn.clone()),
-            connection_id: Some("other-conn".to_string()),
-            messages: Some(vec![
-                serde_json::json!({"name": "other-msg", "data": "from-other"}),
-            ]),
-            ..ProtocolMessage::new(action::MESSAGE)
-        });
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let msg = rx.try_recv().unwrap();
-        assert_eq!(msg.name.as_deref(), Some("other-msg"));
-        assert!(rx.try_recv().is_err(), "Self-message should be filtered");
-    }
 
 
     // --- RTL7g: Subscribe does not trigger reattach on already-attached channel ---
@@ -7682,59 +7323,6 @@ use crate::crypto::CipherParams;
     }
 
 
-    // --- RTL7g: Subscribe when FAILED does not attach ---
-    #[tokio::test]
-    async fn rtl7g_subscribe_fails() {
-        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
-        use crate::realtime::await_state;
-
-        let (client, mock) = phase8d_setup();
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        let channel = client.channels.get("test-rtl7g-fails");
-
-        // Attach and fail
-        let ch = channel.clone();
-        let t = tokio::spawn(async move { ch.attach().await });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let conns = mock.active_connections();
-        let conn = conns.last().unwrap();
-        conn.send_to_client(ProtocolMessage {
-            action: action::ERROR,
-            channel: Some("test-rtl7g-fails".to_string()),
-            error: Some(ErrorInfo {
-                code: Some(40160),
-                status_code: None,
-                message: Some("Not permitted".to_string()),
-                href: None,
-                ..Default::default()
-            }),
-            ..ProtocolMessage::new(action::ERROR)
-        });
-        let _ = t.await.unwrap();
-        assert_eq!(channel.state(), ChannelState::Failed);
-
-        // Subscribe on FAILED channel — should not trigger attach
-        let attach_count_before = mock
-            .client_messages()
-            .iter()
-            .filter(|m| m.message.action == action::ATTACH)
-            .count();
-
-        let (_sub_id, _rx) = channel.subscribe();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let attach_count_after = mock
-            .client_messages()
-            .iter()
-            .filter(|m| m.message.action == action::ATTACH)
-            .count();
-        assert_eq!(
-            attach_count_before, attach_count_after,
-            "Subscribe should not send ATTACH on FAILED channel"
-        );
-    }
 
 
     // --- RTL8a: Unsubscribe with non-subscribed listener is a no-op ---
@@ -8367,7 +7955,7 @@ use crate::crypto::CipherParams;
 
         let ch = channel.clone();
         let cn = channel_name.to_string();
-        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        let t = tokio::spawn(async move { ch.attach().await });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let conns = mock.active_connections();
         let conn = conns.last().unwrap();
@@ -8378,7 +7966,7 @@ use crate::crypto::CipherParams;
         });
         t.await.unwrap().unwrap();
 
-        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+        let (_sub_id, mut rx) = channel.subscribe();
 
         conn.send_to_client(ProtocolMessage {
             action: action::MESSAGE,
@@ -8444,7 +8032,7 @@ use crate::crypto::CipherParams;
 
         let ch = channel.clone();
         let cn = channel_name.to_string();
-        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        let t = tokio::spawn(async move { ch.attach().await });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let conns = mock.active_connections();
         let conn = conns.last().unwrap();
@@ -8455,7 +8043,7 @@ use crate::crypto::CipherParams;
         });
         t.await.unwrap().unwrap();
 
-        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+        let (_sub_id, mut rx) = channel.subscribe();
 
         conn.send_to_client(ProtocolMessage {
             action: action::MESSAGE,
@@ -8509,7 +8097,7 @@ use crate::crypto::CipherParams;
         // Attach
         let ch = channel.clone();
         let cn = channel_name.to_string();
-        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        let t = tokio::spawn(async move { ch.attach().await });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let conns = mock.active_connections();
         let conn = conns.last().unwrap();
@@ -8520,7 +8108,7 @@ use crate::crypto::CipherParams;
         });
         t.await.unwrap().unwrap();
 
-        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+        let (_sub_id, mut rx) = channel.subscribe();
 
         // Send ProtocolMessage with id but messages without id
         conn.send_to_client(ProtocolMessage {
@@ -8583,7 +8171,7 @@ use crate::crypto::CipherParams;
 
         let ch = channel.clone();
         let cn = channel_name.to_string();
-        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        let t = tokio::spawn(async move { ch.attach().await });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let conns = mock.active_connections();
         let conn = conns.last().unwrap();
@@ -8594,7 +8182,7 @@ use crate::crypto::CipherParams;
         });
         t.await.unwrap().unwrap();
 
-        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+        let (_sub_id, mut rx) = channel.subscribe();
 
         // ProtocolMessage has no id field
         conn.send_to_client(ProtocolMessage {
@@ -8646,7 +8234,7 @@ use crate::crypto::CipherParams;
 
         let ch = channel.clone();
         let cn = channel_name.to_string();
-        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        let t = tokio::spawn(async move { ch.attach().await });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let conns = mock.active_connections();
         let conn = conns.last().unwrap();
@@ -8657,7 +8245,7 @@ use crate::crypto::CipherParams;
         });
         t.await.unwrap().unwrap();
 
-        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+        let (_sub_id, mut rx) = channel.subscribe();
 
         conn.send_to_client(ProtocolMessage {
             action: action::MESSAGE,
@@ -8709,7 +8297,7 @@ use crate::crypto::CipherParams;
 
         let ch = channel.clone();
         let cn = channel_name.to_string();
-        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        let t = tokio::spawn(async move { ch.attach().await });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let conns = mock.active_connections();
         let conn = conns.last().unwrap();
@@ -8720,7 +8308,7 @@ use crate::crypto::CipherParams;
         });
         t.await.unwrap().unwrap();
 
-        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+        let (_sub_id, mut rx) = channel.subscribe();
 
         conn.send_to_client(ProtocolMessage {
             action: action::MESSAGE,
@@ -8774,7 +8362,7 @@ use crate::crypto::CipherParams;
 
         let ch = channel.clone();
         let cn = channel_name.to_string();
-        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        let t = tokio::spawn(async move { ch.attach().await });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let conns = mock.active_connections();
         let conn = conns.last().unwrap();
@@ -8785,7 +8373,7 @@ use crate::crypto::CipherParams;
         });
         t.await.unwrap().unwrap();
 
-        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+        let (_sub_id, mut rx) = channel.subscribe();
 
         conn.send_to_client(ProtocolMessage {
             action: action::MESSAGE,
@@ -8839,7 +8427,7 @@ use crate::crypto::CipherParams;
 
         let ch = channel.clone();
         let cn = channel_name.to_string();
-        let t: tokio::task::JoinHandle<crate::error::Result<()>> = tokio::spawn(async move { ch.attach().await });
+        let t = tokio::spawn(async move { ch.attach().await });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let conns = mock.active_connections();
         let conn = conns.last().unwrap();
@@ -8850,7 +8438,7 @@ use crate::crypto::CipherParams;
         });
         t.await.unwrap().unwrap();
 
-        let (_sub_id, mut rx): (crate::channel::SubscriptionId, tokio::sync::mpsc::Receiver<crate::rest::Message>) = channel.subscribe();
+        let (_sub_id, mut rx) = channel.subscribe();
 
         conn.send_to_client(ProtocolMessage {
             action: action::MESSAGE,

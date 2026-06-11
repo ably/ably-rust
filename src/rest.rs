@@ -2050,16 +2050,24 @@ pub(crate) fn encode_data_for_wire(
     let mut data = data;
     let mut encoding = encoding;
 
+    // RSL4a: payloads must be binary, strings, or JSON objects/arrays. A
+    // JSON string is a string payload; null is an empty payload; numbers
+    // and booleans are not permitted.
     if let Data::JSON(v) = &data {
-        // RSL4a: payloads must be binary, strings, or JSON objects/arrays;
-        // bare scalars are not permitted
-        if !(v.is_object() || v.is_array()) {
-            return Err(ErrorInfo::with_status(
-                ErrorCode::InvalidMessageDataOrEncoding.code(),
-                400,
-                "Message data must be a string, binary, or a JSON object or array",
-            ));
+        match v {
+            serde_json::Value::String(st) => data = Data::String(st.clone()),
+            serde_json::Value::Null => data = Data::None,
+            serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+                return Err(ErrorInfo::with_status(
+                    ErrorCode::InvalidMessageDataOrEncoding.code(),
+                    400,
+                    "Message data must be a string, binary, or a JSON object or array",
+                ));
+            }
+            _ => {}
         }
+    }
+    if let Data::JSON(v) = &data {
         let s = serde_json::to_string(v).unwrap_or_default();
         data = Data::String(s);
         encoding = Some(append_encoding(encoding, "json"));

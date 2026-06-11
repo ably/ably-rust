@@ -94,6 +94,44 @@ pub(crate) enum Command {
         name: String,
         reply: oneshot::Sender<()>,
     },
+    /// RTL6: publish messages on a channel; resolves on ACK/NACK (RTL6j).
+    /// RTL32e: message mutations may carry pm-level params.
+    Publish {
+        name: String,
+        messages: Vec<crate::rest::Message>,
+        params: Option<serde_json::Value>,
+        reply: oneshot::Sender<Result<crate::rest::PublishResult>>,
+    },
+    /// RTL7: register a message subscriber.
+    Subscribe {
+        name: String,
+        id: u64,
+        filter: SubscriberFilter,
+        sender: mpsc::UnboundedSender<crate::rest::Message>,
+    },
+    /// RTL8: remove message subscriber(s).
+    Unsubscribe { name: String, spec: UnsubscribeSpec },
+}
+
+/// RTL7/RTL22: what a subscriber wants delivered.
+#[derive(Clone, Debug)]
+pub(crate) enum SubscriberFilter {
+    All,
+    /// RTL7b: only messages with this name.
+    Name(String),
+    /// RTL22: a MessageFilter.
+    Filter(crate::channel::MessageFilter),
+}
+
+/// RTL8 variants.
+#[derive(Clone, Debug)]
+pub(crate) enum UnsubscribeSpec {
+    /// RTL8a: this listener, wherever it is registered.
+    Id(u64),
+    /// RTL8b: this listener, only its name-specific registration.
+    NameAndId(String, u64),
+    /// RTL8c: every listener on the channel.
+    All,
 }
 
 /// The channel options the loop needs (RTL4k params, RTL4l modes).
@@ -101,6 +139,8 @@ pub(crate) enum Command {
 pub(crate) struct ChannelOptionsSpec {
     pub params: Vec<(String, String)>,
     pub modes: Vec<ChannelMode>,
+    /// RSL5/RSL6: message encryption/decryption.
+    pub cipher: Option<crate::crypto::CipherParams>,
 }
 
 /// The per-channel snapshot observable by handles (DESIGN.md §4).
@@ -140,6 +180,24 @@ fn retry_delay(base: Duration, retry_count: u32) -> Duration {
     base.mul_f64(backoff_coefficient(retry_count) * jitter_coefficient())
 }
 
+/// A sent MESSAGE ProtocolMessage awaiting its ACK/NACK (RTN7).
+struct PendingPublish {
+    msg_serial: i64,
+    channel: String,
+    /// Wire-encoded messages, kept verbatim for RTN19a resend.
+    wire_messages: Vec<serde_json::Value>,
+    params: Option<serde_json::Value>,
+    reply: oneshot::Sender<Result<crate::rest::PublishResult>>,
+}
+
+/// A publish awaiting a connection (RTL6c2).
+struct QueuedPublish {
+    channel: String,
+    messages: Vec<crate::rest::Message>,
+    params: Option<serde_json::Value>,
+    reply: oneshot::Sender<Result<crate::rest::PublishResult>>,
+}
+
 /// An in-flight RTN13 ping awaiting its HEARTBEAT response.
 struct PendingPing {
     id: String,
@@ -174,8 +232,17 @@ struct ChannelCtx {
     op_deadline: Option<Instant>,
     /// RTL5f: the state to return to if a detach times out.
     op_revert_state: ChannelState,
+    /// RTL7/RTL8: message subscribers (§8 — unbounded, pruned on close).
+    subscribers: Vec<Subscriber>,
     snapshot_tx: watch::Sender<ChannelSnapshot>,
     events_tx: broadcast::Sender<ChannelStateChange>,
+}
+
+/// One subscribe() registration.
+struct Subscriber {
+    id: u64,
+    filter: SubscriberFilter,
+    sender: mpsc::UnboundedSender<crate::rest::Message>,
 }
 
 impl ChannelCtx {
@@ -227,6 +294,21 @@ impl ChannelCtx {
             channel_serial: self.channel_serial.clone(),
             attach_serial: self.attach_serial.clone(),
             modes: self.attached_modes.clone(),
+        });
+    }
+
+    /// §8: deliver to matching subscribers; prune closed receivers.
+    fn deliver(&mut self, msg: &crate::rest::Message) {
+        self.subscribers.retain(|sub| {
+            let matches = match &sub.filter {
+                SubscriberFilter::All => true,
+                SubscriberFilter::Name(n) => msg.name.as_deref() == Some(n.as_str()),
+                SubscriberFilter::Filter(f) => f.matches(msg),
+            };
+            if !matches {
+                return true;
+            }
+            sub.sender.send(msg.clone()).is_ok()
         });
     }
 
@@ -306,6 +388,13 @@ struct ConnectionCtx {
     deferred_pings: Vec<oneshot::Sender<Result<Duration>>>,
     /// RTC8a3/RTC8b1: authorize() outcomes awaiting the server's verdict.
     pending_authorize: Vec<oneshot::Sender<Result<()>>>,
+    /// RTN7b: the next msgSerial; reset on a failed resume (RTN15c7).
+    msg_serial: i64,
+    /// RTN7: sent MESSAGE ProtocolMessages awaiting ACK/NACK, in serial
+    /// order. Resent on a new transport (RTN19a).
+    pending_publishes: Vec<PendingPublish>,
+    /// RTL6c2: messages awaiting a connection (queueMessages=true).
+    queued_publishes: Vec<QueuedPublish>,
 
     /// All channel state, inside the loop (DESIGN.md §7).
     channels: std::collections::HashMap<String, ChannelCtx>,
@@ -342,11 +431,281 @@ impl ConnectionCtx {
         // RTN13d/RTN13b: deferred pings execute on CONNECTED, fail on a
         // terminal state
         self.resolve_deferred_pings(to, &reason);
+        // RTN7d/RTN7e: publish outcomes follow the connection state
+        match to {
+            // RTN7d: with queueMessages (default) pending publishes survive
+            // DISCONNECTED and are resent on the next transport (RTN19a);
+            // without it they fail now
+            ConnectionState::Disconnected => {
+                if !self.rest.inner.opts.queue_messages {
+                    let err = reason.clone().unwrap_or_else(|| {
+                        ErrorInfo::new(
+                            ErrorCode::Disconnected.code(),
+                            "Connection disconnected and queueMessages is disabled",
+                        )
+                    });
+                    self.fail_all_publishes(&err);
+                }
+            }
+            // RTN7e: terminal states fail everything with the state-change
+            // reason
+            ConnectionState::Suspended | ConnectionState::Closed | ConnectionState::Failed
+            | ConnectionState::Closing => {
+                let err = reason.clone().unwrap_or_else(|| {
+                    ErrorInfo::new(
+                        ErrorCode::ConnectionFailed.code(),
+                        format!("Connection became {:?}", to),
+                    )
+                });
+                self.fail_all_publishes(&err);
+            }
+            _ => {}
+        }
         // RTC8a3/RTC8b1: authorize() outcomes follow the connection state
         self.resolve_authorize(to, &reason);
         if to == ConnectionState::Connected {
             // RTL3d/RTL4i: (re)attach channels
             self.reattach_channels_on_connected();
+        }
+    }
+
+    /// RTL6c: the publish state table. Channel SUSPENDED/FAILED and terminal
+    /// connection states fail immediately (RTL6c4); CONNECTED sends now
+    /// (RTL6c1, regardless of channel attach state, no implicit attach
+    /// RTL6c5); anything else queues per queueMessages (RTL6c2).
+    fn handle_publish(
+        &mut self,
+        name: String,
+        messages: Vec<crate::rest::Message>,
+        params: Option<serde_json::Value>,
+        reply: oneshot::Sender<Result<crate::rest::PublishResult>>,
+    ) {
+        // RTL6c4: channel state gate
+        if let Some(ch) = self.channels.get(&name) {
+            if matches!(ch.state, ChannelState::Suspended | ChannelState::Failed) {
+                let _ = reply.send(Err(ch.error_reason.clone().unwrap_or_else(|| {
+                    ErrorInfo::new(
+                        ErrorCode::ChannelOperationFailedInvalidChannelState.code(),
+                        format!("Cannot publish on a {:?} channel", ch.state),
+                    )
+                })));
+                return;
+            }
+        }
+        match self.state {
+            ConnectionState::Connected => self.send_publish(name, messages, params, reply),
+            // RTL6c2: queue while a connection is plausible
+            ConnectionState::Initialized
+            | ConnectionState::Connecting
+            | ConnectionState::Disconnected => {
+                if self.rest.inner.opts.queue_messages {
+                    self.queued_publishes.push(QueuedPublish { channel: name, messages, params, reply });
+                } else {
+                    let _ = reply.send(Err(ErrorInfo::new(
+                        ErrorCode::Disconnected.code(),
+                        "Cannot publish: not connected and queueMessages is disabled",
+                    )));
+                }
+            }
+            // RTL6c4: terminal connection states
+            _ => {
+                let _ = reply.send(Err(self.error_reason.clone().unwrap_or_else(|| {
+                    ErrorInfo::new(
+                        ErrorCode::ConnectionFailed.code(),
+                        format!("Cannot publish in connection state {:?}", self.state),
+                    )
+                })));
+            }
+        }
+    }
+
+    /// Encode for the wire (RSL4/RSL5 with the channel cipher), assign the
+    /// next msgSerial (RTN7b), send, and register the pending ACK (RTN7a).
+    fn send_publish(
+        &mut self,
+        name: String,
+        messages: Vec<crate::rest::Message>,
+        params: Option<serde_json::Value>,
+        reply: oneshot::Sender<Result<crate::rest::PublishResult>>,
+    ) {
+        let cipher = self
+            .channels
+            .get(&name)
+            .and_then(|ch| ch.options.cipher.clone());
+        let format = self.rest.inner.opts.format;
+        let mut wire_messages = Vec::with_capacity(messages.len());
+        for mut msg in messages {
+            let (data, encoding) = match crate::rest::encode_data_for_wire(
+                msg.data,
+                msg.encoding,
+                format,
+                cipher.as_ref(),
+            ) {
+                Ok(de) => de,
+                Err(e) => {
+                    let _ = reply.send(Err(e));
+                    return;
+                }
+            };
+            msg.data = data;
+            msg.encoding = encoding;
+            match serde_json::to_value(&msg) {
+                Ok(v) => wire_messages.push(v),
+                Err(e) => {
+                    let _ = reply.send(Err(e.into()));
+                    return;
+                }
+            }
+        }
+        let serial = self.msg_serial;
+        self.msg_serial += 1;
+        let mut pm = ProtocolMessage::new(action::MESSAGE);
+        pm.channel = Some(name.clone());
+        pm.msg_serial = Some(serial);
+        pm.messages = Some(wire_messages.clone());
+        pm.params = params.clone();
+        self.send_protocol(pm);
+        self.pending_publishes.push(PendingPublish {
+            msg_serial: serial,
+            channel: name,
+            wire_messages,
+            params,
+            reply,
+        });
+    }
+
+    /// Resend a pending publish verbatim (RTN19a) under its (possibly
+    /// renumbered) serial.
+    fn resend_pending_publishes(&mut self) {
+        let resends: Vec<(i64, String, Vec<serde_json::Value>, Option<serde_json::Value>)> = self
+            .pending_publishes
+            .iter()
+            .map(|p| (p.msg_serial, p.channel.clone(), p.wire_messages.clone(), p.params.clone()))
+            .collect();
+        for (serial, channel, wire_messages, params) in resends {
+            let mut pm = ProtocolMessage::new(action::MESSAGE);
+            pm.channel = Some(channel);
+            pm.msg_serial = Some(serial);
+            pm.messages = Some(wire_messages);
+            pm.params = params;
+            self.send_protocol(pm);
+        }
+    }
+
+    /// RTL6c2: queued publishes go out in order once CONNECTED.
+    fn flush_queued_publishes(&mut self) {
+        for q in std::mem::take(&mut self.queued_publishes) {
+            self.send_publish(q.channel, q.messages, q.params, q.reply);
+        }
+    }
+
+    /// RTN7e: fail every pending and queued publish with the given reason.
+    fn fail_all_publishes(&mut self, reason: &ErrorInfo) {
+        for p in self.pending_publishes.drain(..) {
+            let _ = p.reply.send(Err(reason.clone()));
+        }
+        for q in self.queued_publishes.drain(..) {
+            let _ = q.reply.send(Err(reason.clone()));
+        }
+    }
+
+    /// TR4s/RTL6j: an ACK resolves pending publishes with serials in
+    /// [msgSerial, msgSerial+count), pairing them with `res` entries.
+    fn handle_ack(&mut self, pm: ProtocolMessage) {
+        let first = pm.msg_serial.unwrap_or(0);
+        let count = pm.count.unwrap_or(1) as i64;
+        let res = pm.res.unwrap_or_default();
+        let acked: Vec<PendingPublish> = {
+            let mut acked = Vec::new();
+            let mut i = 0;
+            while i < self.pending_publishes.len() {
+                let serial = self.pending_publishes[i].msg_serial;
+                if serial >= first && serial < first + count {
+                    acked.push(self.pending_publishes.remove(i));
+                } else {
+                    i += 1;
+                }
+            }
+            acked
+        };
+        for p in acked {
+            let idx = (p.msg_serial - first) as usize;
+            let result = res
+                .get(idx)
+                .map(|r| crate::rest::PublishResult {
+                    serials: r.serials.clone(),
+                    message_id: None,
+                })
+                .unwrap_or_default();
+            let _ = p.reply.send(Ok(result));
+        }
+    }
+
+    /// A NACK fails the addressed pending publishes (RTL6j).
+    fn handle_nack(&mut self, pm: ProtocolMessage) {
+        let first = pm.msg_serial.unwrap_or(0);
+        let count = pm.count.unwrap_or(1) as i64;
+        let reason = pm.error.unwrap_or_else(|| {
+            ErrorInfo::with_status(ErrorCode::InternalError.code(), 500, "Publish rejected")
+        });
+        let mut i = 0;
+        while i < self.pending_publishes.len() {
+            let serial = self.pending_publishes[i].msg_serial;
+            if serial >= first && serial < first + count {
+                let p = self.pending_publishes.remove(i);
+                let _ = p.reply.send(Err(reason.clone()));
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// RTL15b: MESSAGE/PRESENCE/SYNC carrying a channelSerial update the
+    /// channel's serial.
+    fn update_channel_serial(&mut self, pm: &ProtocolMessage) {
+        let Some(name) = &pm.channel else { return };
+        let Some(serial) = &pm.channel_serial else { return };
+        if let Some(ch) = self.channels.get_mut(name) {
+            ch.channel_serial = Some(serial.clone());
+            ch.publish_snapshot();
+        }
+    }
+
+    /// A MESSAGE from the server: TM2 field population, RSL6 decode with the
+    /// channel cipher, RTL17 attached-only delivery, subscriber dispatch (§8).
+    fn handle_message_action(&mut self, pm: ProtocolMessage) {
+        self.update_channel_serial(&pm);
+        let Some(name) = pm.channel.clone() else { return };
+        let Some(ch) = self.channels.get_mut(&name) else { return };
+        // RTL17: messages are only delivered while ATTACHED
+        if ch.state != ChannelState::Attached {
+            return;
+        }
+        let wire = pm.messages.clone().unwrap_or_default();
+        for (index, value) in wire.into_iter().enumerate() {
+            let Ok(mut msg) = serde_json::from_value::<crate::rest::Message>(value) else {
+                continue; // RSF1: undecodable entries are skipped
+            };
+            // TM2a: id defaults to protocolMessage.id + ":" + index
+            if msg.id.is_none() {
+                if let Some(pm_id) = &pm.id {
+                    msg.id = Some(format!("{}:{}", pm_id, index));
+                }
+            }
+            // TM2c: connectionId inherited unless already present
+            if msg.connection_id.is_none() {
+                msg.connection_id = pm.connection_id.clone();
+            }
+            // TM2f: timestamp inherited unless already present
+            if msg.timestamp.is_none() {
+                msg.timestamp = pm.timestamp;
+            }
+            // RSL6: decode/decrypt with the channel cipher
+            let (data, encoding) =
+                crate::rest::decode_data(msg.data, msg.encoding, ch.options.cipher.as_ref());
+            msg.data = data;
+            msg.encoding = encoding;
+            ch.deliver(&msg);
         }
     }
 
@@ -636,6 +995,7 @@ impl ConnectionCtx {
                     pending_detach: Vec::new(),
                     op_deadline: None,
                     op_revert_state: ChannelState::Initialized,
+                    subscribers: Vec::new(),
                     snapshot_tx,
                     events_tx,
                 });
@@ -688,6 +1048,31 @@ impl ConnectionCtx {
                     self.start_connect();
                 }
             },
+            Command::Publish { name, messages, params, reply } => {
+                self.handle_publish(name, messages, params, reply);
+            }
+            Command::Subscribe { name, id, filter, sender } => {
+                if let Some(ch) = self.channels.get_mut(&name) {
+                    ch.subscribers.push(Subscriber { id, filter, sender });
+                }
+            }
+            Command::Unsubscribe { name, spec } => {
+                if let Some(ch) = self.channels.get_mut(&name) {
+                    match spec {
+                        // RTL8a: remove the listener from every registration
+                        UnsubscribeSpec::Id(id) => ch.subscribers.retain(|s| s.id != id),
+                        // RTL8b: remove only the name-specific registration
+                        UnsubscribeSpec::NameAndId(filter_name, id) => {
+                            ch.subscribers.retain(|s| {
+                                !(s.id == id
+                                    && matches!(&s.filter, SubscriberFilter::Name(n) if n == &filter_name))
+                            })
+                        }
+                        // RTL8c: remove everything
+                        UnsubscribeSpec::All => ch.subscribers.clear(),
+                    }
+                }
+            }
             Command::Ping { reply } => match self.state {
                 ConnectionState::Connected => self.send_ping(reply),
                 // RTN13d: deferred until the connection (re)connects
@@ -777,6 +1162,11 @@ impl ConnectionCtx {
             action::ERROR => self.handle_channel_error(pm),
             action::ATTACHED => self.handle_attached(pm),
             action::DETACHED => self.handle_detached(pm),
+            action::ACK => self.handle_ack(pm),
+            action::NACK => self.handle_nack(pm),
+            action::MESSAGE => self.handle_message_action(pm),
+            // 5.7 brings the presence engine; RTL15b serial updates apply now
+            action::PRESENCE | action::SYNC => self.update_channel_serial(&pm),
             action::HEARTBEAT => {
                 // RTN13e: only a HEARTBEAT carrying a known ping id resolves a
                 // ping; id-less heartbeats are server liveness traffic only
@@ -854,6 +1244,10 @@ impl ConnectionCtx {
                 // connection id; RTN15c7: a new id means the resume failed and
                 // the server's error (if any) becomes the change reason.
                 let reason = pm.error.clone();
+                // (was this a resume at all, and did it succeed? RTN19a2)
+                let resume_succeeded = self.last_connected_id.is_some()
+                    && new_id == self.last_connected_id
+                    && reason.is_none();
 
                 self.id = new_id.clone();
                 self.key = new_key.clone();
@@ -877,6 +1271,21 @@ impl ConnectionCtx {
                     }
                 }
                 self.transition(ConnectionState::Connected, reason);
+                // RTN19a: pending publishes are resent on the new transport.
+                // RTN19a2: serials are kept on a successful resume; a failed
+                // resume reset the counter (RTN15c7, below), so renumber.
+                if !resume_succeeded {
+                    self.msg_serial = 0;
+                    let mut next = 0;
+                    for p in &mut self.pending_publishes {
+                        p.msg_serial = next;
+                        next += 1;
+                    }
+                    self.msg_serial = next;
+                }
+                self.resend_pending_publishes();
+                // RTL6c2: queued publishes go out after the resends, in order
+                self.flush_queued_publishes();
             }
             ConnectionState::Connected => {
                 // RTN4h: UPDATE event; refresh id/key/details
@@ -1242,6 +1651,12 @@ impl ConnectionCtx {
                 }
                 ch.op_deadline = Some(Instant::now() + rtt);
                 to_send.push(attach_message(ch));
+            } else if ch.state == ChannelState::Detaching {
+                // RTN19b: a pending DETACH is resent on the new transport
+                ch.op_deadline = Some(Instant::now() + rtt);
+                let mut msg = ProtocolMessage::new(action::DETACH);
+                msg.channel = Some(ch.name.clone());
+                to_send.push(msg);
             }
         }
         for msg in to_send {
@@ -1641,6 +2056,9 @@ pub(crate) fn spawn_connection_loop(
         pending_pings: Vec::new(),
         deferred_pings: Vec::new(),
         pending_authorize: Vec::new(),
+        msg_serial: 0,
+        pending_publishes: Vec::new(),
+        queued_publishes: Vec::new(),
         channels: std::collections::HashMap::new(),
         snapshot_tx,
         events_tx: events_tx.clone(),

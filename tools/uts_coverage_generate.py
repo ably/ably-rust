@@ -28,14 +28,7 @@ SPEC = REPO.parent / "specification" / "uts"
 
 # --- whole-file exclusions (future stages / recorded deferrals) ---
 EXCLUDE_FILES = {
-    "realtime/unit/channels/channel_publish.md": "stage 5.5 (channel messages)",
-    "realtime/unit/channels/channel_subscribe.md": "stage 5.5 (channel messages)",
-    "realtime/unit/channels/message_field_population.md": "stage 5.5 (channel messages)",
-    "realtime/unit/channels/channel_history.md": "stage 5.5 (channel messages)",
-    "realtime/unit/channels/channel_get_message.md": "stage 5.5 (channel messages)",
-    "realtime/unit/channels/channel_message_versions.md": "stage 5.5 (channel messages)",
-    "realtime/unit/channels/channel_update_delete_message.md": "stage 5.5 (message update/delete)",
-    "realtime/unit/channels/channel_error.md": "stage 5.5/5.6 (message + retry paths)",
+    "realtime/unit/channels/channel_error.md": "stage 5.6 (channel error/retry paths)",
     "realtime/unit/channels/channel_annotations.md": "stage 5.8 (annotations)",
     "realtime/unit/channels/channel_delta_decoding.md": "delta/vcdiff decoding not planned (needs vcdiff plugin)",
     "realtime/unit/channels/channel_server_initiated_detach.md": "stage 5.6 (RTL13)",
@@ -72,8 +65,8 @@ OVERRIDES = {
     "realtime/unit/RTN23b/heartbeats-false-query-param-0": "!! SDK consumes protocol-level heartbeats (heartbeats=true; RTN23b design choice, stage 5.2)",
     "realtime/unit/RTN23b/multiple-pings-keep-alive-6": "!! transport ping frames are not surfaced by tungstenite; protocol heartbeats used instead",
     "realtime/unit/RSA4f/callback-invalid-type-format-0": "!! unrepresentable: the typed Rust AuthCallback cannot return a wrong-typed token",
-    "realtime/unit/RTF1/unrecognised-attributes-ignored-0": "!! stage 5.5 (needs message delivery; serde is already tolerant)",
-    "realtime/unit/RSF1/message-unrecognised-attrs-0": "!! stage 5.5 (needs message delivery; serde is already tolerant)",
+    "realtime/unit/RTF1/unrecognised-attributes-ignored-0": "rtf1_rsf1_unrecognised_attributes_ignored",
+    "realtime/unit/RSF1/message-unrecognised-attrs-0": "rtf1_rsf1_unrecognised_attributes_ignored",
     # ---- rest: verified manual mappings ----
     "rest/unit/RSC19d/pagination-with-link-headers-6": "hp2_request_pagination",
     "rest/unit/TG/link-header-parsing-1": "tg2_pagination_with_link_header",
@@ -122,6 +115,14 @@ OVERRIDES = {
     "realtime/unit/RTS5/get-derived-with-options-0": "!! derived channels not yet implemented (post-5.6)",
     # ---- rest: manual mapping ----
     "rest/unit/RSAN1c6/publish-post-annotation-create-0": "rsan1c_publish_sends_post",
+    # ---- realtime: 5.5 manual mappings ----
+    "realtime/unit/RTL10a/supports-rest-params-0": "rtl10b_until_attach",
+    "realtime/unit/RTL7f/no-echo-messages-0": "rtn2b_echo_param",
+    "realtime/unit/RTL22a/filter-matching-name-0": "rtl22_message_filters",
+    "realtime/unit/RTL22a/filter-matching-ref-timeserial-1": "rtl22_message_filters",
+    "realtime/unit/RTL22a/filter-matching-clientid-2": "rtl22_message_filters",
+    "realtime/unit/RTL22b/filter-isref-false-0": "rtl22_message_filters",
+    "realtime/unit/RTL22c/filter-multiple-criteria-0": "rtl22_message_filters",
     # ---- rest: exclusions ----
     "rest/unit/TM2s1/version-defaults-from-message-0": "!! version defaulting deferred (recorded; ignored test exists)",
     "rest/unit/TP5/presence-message-size-0": "!! PresenceMessage::size() deferred (recorded; ignored test exists)",

@@ -71,6 +71,8 @@ mod tests_uts_coverage;
 mod tests_realtime_uts_connection;
 #[cfg(test)]
 mod tests_realtime_uts_channels;
+#[cfg(test)]
+mod tests_realtime_uts_messages;
 
 // Realtime unit tests
 #[cfg(test)]

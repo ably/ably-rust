@@ -27,7 +27,7 @@ realtime/unit/RSA4d/callback-403-reauth-failed-1 => rsa4d_callback_403_during_re
 realtime/unit/RSA4e/rest-callback-error-40170-0 => rsa4e_rest_callback_error_produces_40170
 realtime/unit/RSA4f/callback-invalid-type-format-0 !! unrepresentable: the typed Rust AuthCallback cannot return a wrong-typed token
 realtime/unit/RSA4f/callback-oversized-token-format-1 => rsa4f_oversized_token_disconnects
-realtime/unit/RSF1/message-unrecognised-attrs-0 !! stage 5.5 (needs message delivery; serde is already tolerant)
+realtime/unit/RSF1/message-unrecognised-attrs-0 => rtf1_rsf1_unrecognised_attributes_ignored
 realtime/unit/RTAN1a/encodes-data-json-2 !! stage 5.8 (annotations)
 realtime/unit/RTAN1a/publish-sends-annotation-0 !! stage 5.8 (annotations)
 realtime/unit/RTAN1a/validates-type-required-1 !! stage 5.8 (annotations)
@@ -76,10 +76,10 @@ realtime/unit/RTC8c/authorize-disconnected-initiates-connection-0 => rtc8c_autho
 realtime/unit/RTC8c/authorize-failed-initiates-connection-1 => rtc8c_authorize_from_initialized_initiates_connection
 realtime/unit/RTC9/request-proxies-rest-0 => rtc9_realtime_request_proxies_to_rest
 realtime/unit/RTF1/unknown-action-handled-1 => rtf1_unknown_action_ignored
-realtime/unit/RTF1/unrecognised-attributes-ignored-0 !! stage 5.5 (needs message delivery; serde is already tolerant)
-realtime/unit/RTL10a/supports-rest-params-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL10b/adds-from-serial-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL10b/errors-when-not-attached-1 !! stage 5.5 (channel messages)
+realtime/unit/RTF1/unrecognised-attributes-ignored-0 => rtf1_rsf1_unrecognised_attributes_ignored
+realtime/unit/RTL10a/supports-rest-params-0 => rtl10b_until_attach
+realtime/unit/RTL10b/adds-from-serial-0 => rtl10b_until_attach
+realtime/unit/RTL10b/errors-when-not-attached-1 => rtl10b_until_attach
 realtime/unit/RTL11/queued-presence-fail-detached-0 !! stage 5.7 (presence)
 realtime/unit/RTL11/queued-presence-fail-failed-2 !! stage 5.7 (presence)
 realtime/unit/RTL11/queued-presence-fail-suspended-1 !! stage 5.7 (presence)
@@ -94,11 +94,11 @@ realtime/unit/RTL13b/attaching-detached-to-suspended-1 !! stage 5.6 (RTL13)
 realtime/unit/RTL13b/failed-reattach-suspended-retry-0 !! stage 5.6 (RTL13)
 realtime/unit/RTL13b/repeated-failure-cycle-2 !! stage 5.6 (RTL13)
 realtime/unit/RTL13c/retry-cancelled-disconnected-0 !! stage 5.6 (RTL13)
-realtime/unit/RTL14/attached-to-failed-0 !! stage 5.5/5.6 (message + retry paths)
-realtime/unit/RTL14/attaching-to-failed-1 !! stage 5.5/5.6 (message + retry paths)
-realtime/unit/RTL14/cancels-pending-timers-4 !! stage 5.5/5.6 (message + retry paths)
-realtime/unit/RTL14/other-channels-unaffected-3 !! stage 5.5/5.6 (message + retry paths)
-realtime/unit/RTL14/pending-detach-error-2 !! stage 5.5/5.6 (message + retry paths)
+realtime/unit/RTL14/attached-to-failed-0 !! stage 5.6 (channel error/retry paths)
+realtime/unit/RTL14/attaching-to-failed-1 !! stage 5.6 (channel error/retry paths)
+realtime/unit/RTL14/cancels-pending-timers-4 !! stage 5.6 (channel error/retry paths)
+realtime/unit/RTL14/other-channels-unaffected-3 !! stage 5.6 (channel error/retry paths)
+realtime/unit/RTL14/pending-detach-error-2 !! stage 5.6 (channel error/retry paths)
 realtime/unit/RTL15a/attach-serial-from-attached-0 => rtl15a_attach_serial_from_attached
 realtime/unit/RTL15a/attach-serial-server-reattach-1 => rtl15a_attach_serial_from_attached
 realtime/unit/RTL15b/channel-serial-from-attached-0 => rtl15b_channel_serial_from_attached
@@ -110,7 +110,7 @@ realtime/unit/RTL15b1/serial-cleared-failed-2 => rtl15b1_channel_serial_cleared_
 realtime/unit/RTL15b1/serial-cleared-suspended-1 => rtl15b1_channel_serial_cleared_on_detached
 realtime/unit/RTL16/set-options-updates-0 !! stage 5.6 (set_options/RTL16)
 realtime/unit/RTL16a/triggers-reattach-0 !! stage 5.6 (set_options/RTL16)
-realtime/unit/RTL17/no-delivery-when-not-attached-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL17/no-delivery-when-not-attached-0 => rtl17_no_delivery_when_not_attached
 realtime/unit/RTL18/decode-failure-recovery-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
 realtime/unit/RTL18/single-recovery-at-time-1 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
 realtime/unit/RTL18c/recovery-completes-on-attached-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
@@ -122,11 +122,11 @@ realtime/unit/RTL2/filtered-event-subscription-0 => rtl2_filtered_event_subscrip
 realtime/unit/RTL20/last-id-updated-on-decode-1 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
 realtime/unit/RTL20/mismatched-id-triggers-recovery-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
 realtime/unit/RTL21/ascending-index-order-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
-realtime/unit/RTL22a/filter-matching-clientid-2 !! stage 5.5 (channel messages)
-realtime/unit/RTL22a/filter-matching-name-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL22a/filter-matching-ref-timeserial-1 !! stage 5.5 (channel messages)
-realtime/unit/RTL22b/filter-isref-false-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL22c/filter-multiple-criteria-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL22a/filter-matching-clientid-2 => rtl22_message_filters
+realtime/unit/RTL22a/filter-matching-name-0 => rtl22_message_filters
+realtime/unit/RTL22a/filter-matching-ref-timeserial-1 => rtl22_message_filters
+realtime/unit/RTL22b/filter-isref-false-0 => rtl22_message_filters
+realtime/unit/RTL22c/filter-multiple-criteria-0 => rtl22_message_filters
 realtime/unit/RTL23/name-attribute-0 => rtl23_channel_name_attribute
 realtime/unit/RTL24/error-reason-attach-failure-1 => rtl24_error_reason_cleared_on_attach
 realtime/unit/RTL24/error-reason-channel-error-0 => rtl24_error_reason_cleared_on_attach
@@ -136,7 +136,7 @@ realtime/unit/RTL25a/resolves-immediately-current-0 => rtl25a_when_state_fires_i
 realtime/unit/RTL25b/fires-once-only-1 => rtl25b_when_state_fires_only_once
 realtime/unit/RTL25b/waits-for-state-change-0 => rtl25b_when_state_waits_for_transition
 realtime/unit/RTL26/annotations-attribute-type-0 !! stage 5.8 (annotations)
-realtime/unit/RTL28/identical-to-rest-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL28/identical-to-rest-0 => rtl28_get_message_delegates_to_rest
 realtime/unit/RTL2a/state-change-events-emitted-0 => rtl2a_state_change_events_emitted
 realtime/unit/RTL2b/channel-state-attribute-0 => rtl2b_channel_initial_state_depth
 realtime/unit/RTL2b/initial-state-initialized-1 => rtl2b_channel_initial_state_is_initialized
@@ -147,16 +147,16 @@ realtime/unit/RTL2g/no-duplicate-state-events-1 => rtl2g_no_duplicate_state_even
 realtime/unit/RTL2g/update-event-condition-change-0 => rtl2g_update_event_and_no_duplicates
 realtime/unit/RTL2i/has-backlog-flag-false-1 => rtl2i_has_backlog_false_when_not_present
 realtime/unit/RTL2i/has-backlog-flag-true-0 => rtl2i_has_backlog_flag
-realtime/unit/RTL31/identical-to-rest-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL32a/serial-validation-required-0 !! stage 5.5 (message update/delete)
-realtime/unit/RTL32b/append-message-action-2 !! stage 5.5 (message update/delete)
-realtime/unit/RTL32b/delete-message-action-1 !! stage 5.5 (message update/delete)
-realtime/unit/RTL32b/update-message-action-0 !! stage 5.5 (message update/delete)
-realtime/unit/RTL32b2/version-from-operation-0 !! stage 5.5 (message update/delete)
-realtime/unit/RTL32c/no-message-mutation-0 !! stage 5.5 (message update/delete)
-realtime/unit/RTL32d/ack-returns-result-0 !! stage 5.5 (message update/delete)
-realtime/unit/RTL32d/nack-returns-error-1 !! stage 5.5 (message update/delete)
-realtime/unit/RTL32e/params-in-protocol-message-0 !! stage 5.5 (message update/delete)
+realtime/unit/RTL31/identical-to-rest-0 => rtl31_message_versions_delegates_to_rest
+realtime/unit/RTL32a/serial-validation-required-0 => rtl32a_serial_validation
+realtime/unit/RTL32b/append-message-action-2 => rtl32b_append_message_sends_message
+realtime/unit/RTL32b/delete-message-action-1 => rtl32b_delete_message_sends_message
+realtime/unit/RTL32b/update-message-action-0 => rtl32b_update_message_sends_message
+realtime/unit/RTL32b2/version-from-operation-0 => rtl32b2_version_from_operation
+realtime/unit/RTL32c/no-message-mutation-0 => rtl32c_does_not_mutate_message
+realtime/unit/RTL32d/ack-returns-result-0 => rtl32d_nack_returns_error
+realtime/unit/RTL32d/nack-returns-error-1 => rtl32d_nack_returns_error
+realtime/unit/RTL32e/params-in-protocol-message-0 => rtl32e_params_in_protocol_message
 realtime/unit/RTL3a/failed-attached-to-failed-0 => rtl3a_failed_connection_transitions_attached_to_failed
 realtime/unit/RTL3a/failed-attaching-to-failed-1 => rtl3a_failed_to_attaching_channel_failed
 realtime/unit/RTL3a/other-states-unaffected-2 => rtl3a_initialized_unaffected_by_failed
@@ -203,44 +203,44 @@ realtime/unit/RTL5k/attached-while-detached-1 => rtl5k_attached_while_detached_s
 realtime/unit/RTL5k/attached-while-detaching-0 => rtl5k_attached_while_detaching_sends_new_detach
 realtime/unit/RTL5l/detach-attached-when-disconnected-1 => rtl5l_detach_when_not_connected_transitions_immediately
 realtime/unit/RTL5l/detach-not-connected-immediate-0 => rtl5l_detach_when_not_connected_transitions_immediately
-realtime/unit/RTL6c1/publish-when-attached-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL6c1/publish-when-attaching-1 !! stage 5.5 (channel messages)
-realtime/unit/RTL6c1/publish-when-initialized-2 !! stage 5.5 (channel messages)
-realtime/unit/RTL6c2/fails-no-queue-messages-3 !! stage 5.5 (channel messages)
-realtime/unit/RTL6c2/queued-messages-order-4 !! stage 5.5 (channel messages)
-realtime/unit/RTL6c2/queued-when-connecting-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL6c2/queued-when-disconnected-1 !! stage 5.5 (channel messages)
-realtime/unit/RTL6c2/queued-when-initialized-2 !! stage 5.5 (channel messages)
-realtime/unit/RTL6c4/fails-channel-failed-4 !! stage 5.5 (channel messages)
-realtime/unit/RTL6c4/fails-channel-suspended-3 !! stage 5.5 (channel messages)
-realtime/unit/RTL6c4/fails-conn-closed-1 !! stage 5.5 (channel messages)
-realtime/unit/RTL6c4/fails-conn-failed-2 !! stage 5.5 (channel messages)
-realtime/unit/RTL6c4/fails-conn-suspended-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL6c5/no-implicit-attach-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL6i1/publish-message-object-1 !! stage 5.5 (channel messages)
-realtime/unit/RTL6i1/publish-name-and-data-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL6i2/publish-message-array-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL6i3/null-fields-json-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL6i3/null-fields-msgpack-1 !! stage 5.5 (channel messages)
-realtime/unit/RTL6j/batch-publish-serials-1 !! stage 5.5 (channel messages)
-realtime/unit/RTL6j/incrementing-msg-serial-2 !! stage 5.5 (channel messages)
-realtime/unit/RTL6j/nack-results-error-3 !! stage 5.5 (channel messages)
-realtime/unit/RTL6j/publish-result-serials-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL7a/multiple-messages-per-protocol-1 !! stage 5.5 (channel messages)
-realtime/unit/RTL7a/subscribe-all-messages-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL7b/multiple-name-subscriptions-1 !! stage 5.5 (channel messages)
-realtime/unit/RTL7b/name-filtered-subscribe-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL7f/no-echo-messages-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL7g/implicit-attach-detached-1 !! stage 5.5 (channel messages)
-realtime/unit/RTL7g/implicit-attach-initialized-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL7g/listener-registered-attach-fails-2 !! stage 5.5 (channel messages)
-realtime/unit/RTL7g/no-attach-when-attached-3 !! stage 5.5 (channel messages)
-realtime/unit/RTL7g/no-attach-when-attaching-4 !! stage 5.5 (channel messages)
-realtime/unit/RTL7h/no-attach-on-subscribe-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL8a/unsubscribe-noop-not-subscribed-1 !! stage 5.5 (channel messages)
-realtime/unit/RTL8a/unsubscribe-specific-listener-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL8b/unsubscribe-named-listener-0 !! stage 5.5 (channel messages)
-realtime/unit/RTL8c/unsubscribe-all-listeners-0 !! stage 5.5 (channel messages)
+realtime/unit/RTL6c1/publish-when-attached-0 => rtl6c1_publish_immediately_when_attached
+realtime/unit/RTL6c1/publish-when-attaching-1 => rtl6c1_publish_when_channel_attaching
+realtime/unit/RTL6c1/publish-when-initialized-2 => rtl6c1_publish_immediately_when_initialized
+realtime/unit/RTL6c2/fails-no-queue-messages-3 => rtl6c2_fails_when_queue_messages_false
+realtime/unit/RTL6c2/queued-messages-order-4 => rtl6c2_multiple_queued_messages_order
+realtime/unit/RTL6c2/queued-when-connecting-0 => rtl6c2_publish_queued_when_connecting
+realtime/unit/RTL6c2/queued-when-disconnected-1 => rtl6c2_publish_queued_when_connecting
+realtime/unit/RTL6c2/queued-when-initialized-2 => rtl6c2_publish_queued_when_initialized
+realtime/unit/RTL6c4/fails-channel-failed-4 => rtl6c4_publish_fails_when_channel_failed
+realtime/unit/RTL6c4/fails-channel-suspended-3 => rtl6c4_fails_when_channel_suspended
+realtime/unit/RTL6c4/fails-conn-closed-1 => rtl6c4_fails_when_channel_suspended
+realtime/unit/RTL6c4/fails-conn-failed-2 => rtl6c4_publish_fails_when_channel_failed
+realtime/unit/RTL6c4/fails-conn-suspended-0 => rtl6c4_fails_when_channel_suspended
+realtime/unit/RTL6c5/no-implicit-attach-0 => rtl6c1_rtl6c5_publish_immediately_no_implicit_attach
+realtime/unit/RTL6i1/publish-message-object-1 => rtl6i1_publish_message_object
+realtime/unit/RTL6i1/publish-name-and-data-0 => rtl6i1_rtl6j_publish_name_data_with_ack_serials
+realtime/unit/RTL6i2/publish-message-array-0 => rtl6i2_publish_array_of_messages
+realtime/unit/RTL6i3/null-fields-json-0 => rtl6i3_null_fields_omitted
+realtime/unit/RTL6i3/null-fields-msgpack-1 => rtl6i3_null_fields_omitted
+realtime/unit/RTL6j/batch-publish-serials-1 => rtl6j_batch_publish_returns_multiple_serials
+realtime/unit/RTL6j/incrementing-msg-serial-2 => rtl6j_incrementing_serials_and_nack
+realtime/unit/RTL6j/nack-results-error-3 => rtl6j_nack_error
+realtime/unit/RTL6j/publish-result-serials-0 => rtl6i1_rtl6j_publish_name_data_with_ack_serials
+realtime/unit/RTL7a/multiple-messages-per-protocol-1 => rtl7a_subscribe_multiple_messages_in_single_protocol_message
+realtime/unit/RTL7a/subscribe-all-messages-0 => rtl7a_subscribe_receives_all_messages
+realtime/unit/RTL7b/multiple-name-subscriptions-1 => rtl7b_multiple_name_specific_subscriptions_independent
+realtime/unit/RTL7b/name-filtered-subscribe-0 => rtl7b_name_filtered_subscriptions_independent
+realtime/unit/RTL7f/no-echo-messages-0 => rtn2b_echo_param
+realtime/unit/RTL7g/implicit-attach-detached-1 => rtl7g_subscribe_triggers_implicit_attach
+realtime/unit/RTL7g/implicit-attach-initialized-0 => rtl7g_subscribe_triggers_implicit_attach
+realtime/unit/RTL7g/listener-registered-attach-fails-2 => rtl7g_listener_registered_when_attach_fails
+realtime/unit/RTL7g/no-attach-when-attached-3 => rtl7g_subscribe_no_attach_when_already_attached
+realtime/unit/RTL7g/no-attach-when-attaching-4 => rtl7g_subscribe_no_attach_when_already_attached
+realtime/unit/RTL7h/no-attach-on-subscribe-0 => rtl7h_subscribe_no_attach_when_disabled
+realtime/unit/RTL8a/unsubscribe-noop-not-subscribed-1 => rtl8a_unsubscribe_non_subscribed_is_noop
+realtime/unit/RTL8a/unsubscribe-specific-listener-0 => rtl8a_unsubscribe_specific_listener
+realtime/unit/RTL8b/unsubscribe-named-listener-0 => rtl8b_unsubscribe_from_specific_name
+realtime/unit/RTL8c/unsubscribe-all-listeners-0 => rtl8c_unsubscribe_all
 realtime/unit/RTL9/presence-attribute-0 !! stage 5.7 (presence)
 realtime/unit/RTN13a/ping-heartbeat-roundtrip-0 => rtn13a_ping_sends_heartbeat_and_resolves_roundtrip
 realtime/unit/RTN13b/deferred-ping-error-failed-4 => rtn13b_deferred_ping_fails_on_failed
@@ -290,11 +290,11 @@ realtime/unit/RTN17h/fallback-domains-from-rec2-0 => rtn17h_fallback_domains_fro
 realtime/unit/RTN17i/prefer-primary-domain-0 => rtn17i_always_try_primary_first
 realtime/unit/RTN17j/connectivity-check-before-fallback-0 => rtn17j_fallback_hosts_random_order
 realtime/unit/RTN17j/fallback-random-order-1 => rtn17j_fallback_hosts_random_order
-realtime/unit/RTN19a/resent-on-new-transport-0 !! stage 5.5 (channel messages)
-realtime/unit/RTN19a2/new-serial-failed-resume-1 !! stage 5.5 (channel messages)
-realtime/unit/RTN19a2/same-serial-on-resume-0 !! stage 5.5 (channel messages)
-realtime/unit/RTN19b/attach-resent-on-reconnect-0 !! stage 5.5 (channel messages)
-realtime/unit/RTN19b/detach-resent-on-reconnect-1 !! stage 5.5 (channel messages)
+realtime/unit/RTN19a/resent-on-new-transport-0 => rtn19a_rtn19a2_resend_keeps_serials_on_resume
+realtime/unit/RTN19a2/new-serial-failed-resume-1 => rtn19a2_failed_resume_renumbers_serials
+realtime/unit/RTN19a2/same-serial-on-resume-0 => rtn19a_rtn19a2_resend_keeps_serials_on_resume
+realtime/unit/RTN19b/attach-resent-on-reconnect-0 => rtn19b_pending_attach_and_detach_resent
+realtime/unit/RTN19b/detach-resent-on-reconnect-1 => rtn19b_pending_attach_and_detach_resent
 realtime/unit/RTN20a/network-loss-connected-disconnects-0 !! OS network-event detection not implemented (recorded deferral)
 realtime/unit/RTN20a/network-loss-connecting-disconnects-1 !! OS network-event detection not implemented (recorded deferral)
 realtime/unit/RTN20b/network-available-disconnected-connects-0 !! OS network-event detection not implemented (recorded deferral)
@@ -339,13 +339,13 @@ realtime/unit/RTN2e/token-before-websocket-0 => rtn2e_token_obtained_before_conn
 realtime/unit/RTN3/auto-connect-false-1 => rtn3_auto_connect_false_does_not_connect
 realtime/unit/RTN3/auto-connect-true-0 => rtn3_auto_connect_true_connects_immediately
 realtime/unit/RTN3/explicit-connect-after-false-2 => rtn3_explicit_connect_after_auto_connect_false
-realtime/unit/RTN7d/fail-disconnected-no-queue-0 !! stage 5.5 (channel messages)
-realtime/unit/RTN7d/survive-disconnected-queue-1 !! stage 5.5 (channel messages)
-realtime/unit/RTN7e/error-represents-reason-4 !! stage 5.5 (channel messages)
-realtime/unit/RTN7e/multiple-pending-fail-3 !! stage 5.5 (channel messages)
-realtime/unit/RTN7e/pending-fail-closed-1 !! stage 5.5 (channel messages)
-realtime/unit/RTN7e/pending-fail-failed-2 !! stage 5.5 (channel messages)
-realtime/unit/RTN7e/pending-fail-suspended-0 !! stage 5.5 (channel messages)
+realtime/unit/RTN7d/fail-disconnected-no-queue-0 => rtn7d_rtn7e_connection_retry_behavior
+realtime/unit/RTN7d/survive-disconnected-queue-1 => rtn7d_rtn7e_connection_retry_behavior
+realtime/unit/RTN7e/error-represents-reason-4 => rtn7d_rtn7e_connection_retry_behavior, rtn7e_pending_publishes_fail_on_failed, rtn7e_pending_publishes_fail_on_suspended
+realtime/unit/RTN7e/multiple-pending-fail-3 => rtn7e_pending_publishes_fail_on_failed
+realtime/unit/RTN7e/pending-fail-closed-1 => rtn7e_pending_publishes_fail_on_failed
+realtime/unit/RTN7e/pending-fail-failed-2 => rtn7e_pending_publishes_fail_on_failed
+realtime/unit/RTN7e/pending-fail-suspended-0 => rtn7e_pending_publishes_fail_on_suspended
 realtime/unit/RTN8a/id-unset-until-connected-0 => rtn8a_rtn9a_id_and_key_unset_until_connected
 realtime/unit/RTN8b/id-unique-per-connection-0 => rtn8b_rtn9b_id_and_key_unique_per_connection
 realtime/unit/RTN8c/id-key-null-after-failed-1 => rtn8c_rtn9c_id_and_key_null_after_failed
@@ -476,14 +476,14 @@ realtime/unit/TB2c/options-with-params-0 => tb2c_channel_options_with_params
 realtime/unit/TB2d/options-with-modes-0 => tb2d_channel_options_with_modes
 realtime/unit/TB3/with-cipher-key-0 => tb3_cipher_key_channel_options
 realtime/unit/TB4/attach-on-subscribe-default-0 => tb4_attach_on_subscribe_default
-realtime/unit/TM2a/all-fields-populated-together-3 !! stage 5.5 (channel messages)
-realtime/unit/TM2a/existing-id-not-overwritten-1 !! stage 5.5 (channel messages)
-realtime/unit/TM2a/id-from-protocol-message-0 !! stage 5.5 (channel messages)
-realtime/unit/TM2a/no-id-without-protocol-id-2 !! stage 5.5 (channel messages)
-realtime/unit/TM2c/connectionid-from-protocol-0 !! stage 5.5 (channel messages)
-realtime/unit/TM2c/existing-connectionid-kept-1 !! stage 5.5 (channel messages)
-realtime/unit/TM2f/existing-timestamp-kept-1 !! stage 5.5 (channel messages)
-realtime/unit/TM2f/timestamp-from-protocol-0 !! stage 5.5 (channel messages)
+realtime/unit/TM2a/all-fields-populated-together-3 => tm2a_message_id_populated
+realtime/unit/TM2a/existing-id-not-overwritten-1 => tm2a_existing_id_not_overwritten
+realtime/unit/TM2a/id-from-protocol-message-0 => tm2a_no_id_when_protocol_message_has_no_id
+realtime/unit/TM2a/no-id-without-protocol-id-2 => tm2a_no_id_when_protocol_message_has_no_id
+realtime/unit/TM2c/connectionid-from-protocol-0 => tm2c_connection_id_populated, tm2c_existing_connection_id_not_overwritten, tm2c_rest_message_data_object
+realtime/unit/TM2c/existing-connectionid-kept-1 => tm2c_existing_connection_id_not_overwritten
+realtime/unit/TM2f/existing-timestamp-kept-1 => tm2f_existing_timestamp_not_overwritten
+realtime/unit/TM2f/timestamp-from-protocol-0 => tm2f_existing_timestamp_not_overwritten
 rest/unit/AO/auth-options-with-callback-0 => rsa16a_token_from_callback
 rest/unit/AO2/auth-options-attributes-0 => ao2_auth_options_attributes
 rest/unit/BAR2/all-failure-counts-0 => bar2_all_failure
