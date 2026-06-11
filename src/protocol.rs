@@ -70,6 +70,9 @@ pub struct ChannelStateChange {
     pub reason: Option<ErrorInfo>,
     pub resumed: bool,
     pub has_backlog: bool,
+    /// RTL13b/RTB1: when SUSPENDED with a scheduled reattach retry, the
+    /// delay until that retry.
+    pub retry_in: Option<std::time::Duration>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

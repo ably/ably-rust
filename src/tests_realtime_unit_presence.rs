@@ -4341,7 +4341,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
         assert_eq!(channel.state(), crate::protocol::ChannelState::Initialized);
 
         // Subscribe — should NOT trigger implicit attach

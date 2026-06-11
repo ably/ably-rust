@@ -38,32 +38,63 @@ impl Channels {
         }
     }
 
-    /// RTS3a: get-or-create a channel. Repeated gets return the same instance.
+    /// RTS3a: get-or-create a channel. Repeated gets return the same
+    /// instance; a bare get never modifies an existing channel's options.
     pub fn get(&self, name: &str) -> Arc<RealtimeChannel> {
-        self.get_with_options(name, RealtimeChannelOptions::default())
+        if let Some(existing) = self.registry.lock().unwrap().get(name) {
+            return existing.clone();
+        }
+        self.create(name, RealtimeChannelOptions::default())
     }
 
-    /// RTS3c: get with options (applied only on first creation here; use
-    /// set_options to change an existing channel's options).
+    /// RTS3c: get with options. Creates the channel with them, or updates an
+    /// existing channel's options — unless the change would force a
+    /// reattachment (params/modes changed while ATTACHING/ATTACHED), which is
+    /// an error (RTS3c1). Use set_options (RTL16) to change options WITH a
+    /// reattach.
     pub fn get_with_options(
         &self,
         name: &str,
         options: RealtimeChannelOptions,
-    ) -> Arc<RealtimeChannel> {
+    ) -> Result<Arc<RealtimeChannel>> {
+        let existing = self.registry.lock().unwrap().get(name).cloned();
+        let Some(existing) = existing else {
+            return Ok(self.create(name, options));
+        };
+        let new_spec = options_spec(&options);
+        let snapshot = existing.snapshot();
+        if snapshot.options.reattach_needed(&new_spec)
+            && matches!(
+                snapshot.state,
+                ChannelState::Attaching | ChannelState::Attached
+            )
+        {
+            // RTS3c1
+            return Err(ErrorInfo::new(
+                crate::error::ErrorCode::BadRequest.code(),
+                "Channel options would trigger a reattachment; use set_options",
+            ));
+        }
+        // RTS3c: safe update, applied by the loop
+        let (reply, _rx) = oneshot::channel();
+        let _ = self.input_tx.send(LoopInput::Cmd(Command::SetOptions {
+            name: name.to_string(),
+            options: new_spec,
+            reply,
+        }));
+        Ok(existing)
+    }
+
+    fn create(&self, name: &str, options: RealtimeChannelOptions) -> Arc<RealtimeChannel> {
         let mut registry = self.registry.lock().unwrap();
         if let Some(existing) = registry.get(name) {
             return existing.clone();
         }
-        let spec = ChannelOptionsSpec {
-            params: options
-                .params
-                .clone()
-                .map(|m| m.into_iter().collect())
-                .unwrap_or_default(),
-            modes: options.modes.clone().unwrap_or_default(),
-            cipher: options.cipher.clone(),
-        };
-        let (snapshot_tx, snapshot_rx) = watch::channel(ChannelSnapshot::default());
+        let spec = options_spec(&options);
+        let (snapshot_tx, snapshot_rx) = watch::channel(ChannelSnapshot {
+            options: spec.clone(),
+            ..Default::default()
+        });
         let (events_tx, _) = broadcast::channel(64);
         let _ = self.input_tx.send(LoopInput::Cmd(Command::EnsureChannel {
             name: name.to_string(),
@@ -73,7 +104,6 @@ impl Channels {
         }));
         let channel = Arc::new(RealtimeChannel {
             name: name.to_string(),
-            options,
             input_tx: self.input_tx.clone(),
             snapshot_rx,
             events_tx,
@@ -83,8 +113,35 @@ impl Channels {
         channel
     }
 
-    pub fn get_derived(&self, _name: &str, _derive: DeriveOptions) -> Arc<RealtimeChannel> {
-        todo!("derived channels arrive in a later stage")
+    /// RTS5a: a derived (filtered) channel — the filter expression travels
+    /// base64-encoded in the qualified channel name.
+    pub fn get_derived(&self, name: &str, derive: DeriveOptions) -> Arc<RealtimeChannel> {
+        self.get_derived_with_options(name, derive, RealtimeChannelOptions::default())
+            .expect("derived channel creation cannot conflict")
+    }
+
+    /// RTS5: derived channel with channel options; RTS5a2: channel params
+    /// join the qualifier.
+    pub fn get_derived_with_options(
+        &self,
+        name: &str,
+        derive: DeriveOptions,
+        options: RealtimeChannelOptions,
+    ) -> Result<Arc<RealtimeChannel>> {
+        let encoded = base64::encode(derive.filter.as_bytes());
+        let mut qualifier = format!("filter={}", encoded);
+        if let Some(params) = &options.params {
+            if !params.is_empty() {
+                let mut kv: Vec<_> = params.iter().collect();
+                kv.sort();
+                let query: Vec<String> =
+                    kv.into_iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+                qualifier.push('?');
+                qualifier.push_str(&query.join("&"));
+            }
+        }
+        let qualified = format!("[{}]{}", qualifier, name);
+        self.get_with_options(&qualified, options)
     }
 
     /// RTS2: whether a channel instance exists in the collection.
@@ -203,7 +260,6 @@ impl MessageFilter {
 /// Holds no protocol state (DESIGN.md §4).
 pub struct RealtimeChannel {
     pub(crate) name: String,
-    pub(crate) options: RealtimeChannelOptions,
     pub(crate) input_tx: mpsc::UnboundedSender<LoopInput>,
     pub(crate) snapshot_rx: watch::Receiver<ChannelSnapshot>,
     pub(crate) events_tx: broadcast::Sender<ChannelStateChange>,
@@ -224,7 +280,6 @@ impl RealtimeChannel {
         let (events_tx, _) = broadcast::channel(8);
         Self {
             name: name.to_string(),
-            options: RealtimeChannelOptions::default(),
             input_tx: _input_tx,
             snapshot_rx,
             events_tx,
@@ -237,8 +292,8 @@ impl RealtimeChannel {
     /// The REST view of this channel (shared auth/options/cipher).
     fn rest_channel(&self) -> crate::rest::Channel<'_> {
         let builder = self.rest.channels().name(self.name.clone());
-        match &self.options.cipher {
-            Some(c) => builder.cipher(c.clone()).get(),
+        match self.snapshot().options.cipher {
+            Some(c) => builder.cipher(c).get(),
             None => builder.get(),
         }
     }
@@ -261,8 +316,23 @@ impl RealtimeChannel {
         self.snapshot().error_reason
     }
 
+    /// RTS3c/RTL16: the authoritative options, as held by the loop.
     pub fn options(&self) -> RealtimeChannelOptions {
-        self.options.clone()
+        let spec = self.snapshot().options;
+        RealtimeChannelOptions {
+            params: if spec.params.is_empty() {
+                None
+            } else {
+                Some(spec.params.into_iter().collect())
+            },
+            modes: if spec.modes.is_empty() {
+                None
+            } else {
+                Some(spec.modes)
+            },
+            cipher: spec.cipher,
+            attach_on_subscribe: Some(spec.attach_on_subscribe),
+        }
     }
 
     /// RTL4m: the modes granted by the server on attach.
@@ -302,8 +372,18 @@ impl RealtimeChannel {
         rx.await.map_err(|_| closed_loop_error())?
     }
 
-    pub async fn set_options(&self, _options: RealtimeChannelOptions) -> Result<()> {
-        todo!("set_options arrives with RTL16 in stage 5.6")
+    /// RTL16: set/update the channel options; RTL16a: reattaches (and waits
+    /// for the reattach) when the change requires it.
+    pub async fn set_options(&self, options: RealtimeChannelOptions) -> Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.input_tx
+            .send(LoopInput::Cmd(Command::SetOptions {
+                name: self.name.clone(),
+                options: options_spec(&options),
+                reply,
+            }))
+            .map_err(|_| closed_loop_error())?;
+        rx.await.map_err(|_| closed_loop_error())?
     }
 
     /// RTL2a: subscribe to channel state changes.
@@ -327,6 +407,7 @@ impl RealtimeChannel {
                 reason: current.error_reason,
                 resumed: false,
                 has_backlog: false,
+                retry_in: None,
             });
             return;
         }
@@ -440,7 +521,7 @@ impl RealtimeChannel {
     /// RTL7h). Fire-and-forget: a failed implicit attach surfaces via channel
     /// state, never by unregistering the listener.
     fn maybe_implicit_attach(&self) {
-        if self.options.attach_on_subscribe.unwrap_or(true) {
+        if self.snapshot().options.attach_on_subscribe {
             let (reply, _rx) = oneshot::channel();
             let _ = self.input_tx.send(LoopInput::Cmd(Command::Attach {
                 name: self.name.clone(),
@@ -716,6 +797,21 @@ impl<'a> RealtimeAnnotations<'a> {
     ) -> SubscriptionId { todo!() }
     pub fn unsubscribe(&self, _id: SubscriptionId) { todo!() }
     pub fn unsubscribe_all(&self) { todo!() }
+}
+
+pub(crate) fn options_spec(options: &RealtimeChannelOptions) -> ChannelOptionsSpec {
+    let mut params: Vec<(String, String)> = options
+        .params
+        .clone()
+        .map(|m| m.into_iter().collect())
+        .unwrap_or_default();
+    params.sort();
+    ChannelOptionsSpec {
+        params,
+        modes: options.modes.clone().unwrap_or_default(),
+        cipher: options.cipher.clone(),
+        attach_on_subscribe: options.attach_on_subscribe.unwrap_or(true),
+    }
 }
 
 fn closed_loop_error() -> ErrorInfo {

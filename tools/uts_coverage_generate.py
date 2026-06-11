@@ -28,11 +28,8 @@ SPEC = REPO.parent / "specification" / "uts"
 
 # --- whole-file exclusions (future stages / recorded deferrals) ---
 EXCLUDE_FILES = {
-    "realtime/unit/channels/channel_error.md": "stage 5.6 (channel error/retry paths)",
     "realtime/unit/channels/channel_annotations.md": "stage 5.8 (annotations)",
     "realtime/unit/channels/channel_delta_decoding.md": "delta/vcdiff decoding not planned (needs vcdiff plugin)",
-    "realtime/unit/channels/channel_server_initiated_detach.md": "stage 5.6 (RTL13)",
-    "realtime/unit/channels/channel_additional_attached.md": "stage 5.6 (RTL12 full semantics)",
     "realtime/unit/presence/local_presence_map.md": "stage 5.7 (presence)",
     "realtime/unit/presence/presence_map.md": "stage 5.7 (presence)",
     "realtime/unit/presence/presence_sync.md": "stage 5.7 (presence)",
@@ -61,7 +58,7 @@ OVERRIDES = {
     # ---- realtime: exclusions ----
     "realtime/unit/RTC1c/recover-option-0": "!! RTN16 recovery not yet implemented (planned post-5.6)",
     "realtime/unit/RTC13/push-attribute-0": "!! push: LocalDevice not implemented (recorded deferral)",
-    "realtime/unit/RTB1/suspended-channel-retry-delay-1": "!! stage 5.6 (RTL13 channel retries)",
+    "realtime/unit/RTB1/suspended-channel-retry-delay-1": "rtl13b_failed_reattach_suspends_and_retries, rtb1a_backoff_coefficient_sequence",
     "realtime/unit/RTN23b/heartbeats-false-query-param-0": "!! SDK consumes protocol-level heartbeats (heartbeats=true; RTN23b design choice, stage 5.2)",
     "realtime/unit/RTN23b/multiple-pings-keep-alive-6": "!! transport ping frames are not surfaced by tungstenite; protocol heartbeats used instead",
     "realtime/unit/RSA4f/callback-invalid-type-format-0": "!! unrepresentable: the typed Rust AuthCallback cannot return a wrong-typed token",
@@ -103,16 +100,16 @@ OVERRIDES = {
     "rest/unit/RSL4a/number-type-rejected-1": "rsl4a_number_type_rejected",
     "rest/unit/RSL4a/boolean-type-rejected-2": "rsl4a_boolean_type_rejected",
     "rest/unit/RSC15f/expired-not-resurrected-2": "rsc15f_expired_fallback_not_resurrected",
-    # ---- realtime: channel options / derived channels (later stages) ----
-    "realtime/unit/RTS3c/options-updated-existing-0": "!! stage 5.6 (channel options; needs fallible get_with_options)",
-    "realtime/unit/RTS3c1/error-reattach-params-0": "!! stage 5.6 (channel options; needs fallible get_with_options)",
-    "realtime/unit/RTS3c1/error-reattach-modes-1": "!! stage 5.6 (channel options; needs fallible get_with_options)",
-    "realtime/unit/RTL16/set-options-updates-0": "!! stage 5.6 (set_options/RTL16)",
-    "realtime/unit/RTL16a/triggers-reattach-0": "!! stage 5.6 (set_options/RTL16)",
-    "realtime/unit/RTS5a/creates-derived-channel-0": "!! derived channels not yet implemented (post-5.6)",
-    "realtime/unit/RTS5a1/filter-base64-encoded-0": "!! derived channels not yet implemented (post-5.6)",
-    "realtime/unit/RTS5a2/derived-with-params-0": "!! derived channels not yet implemented (post-5.6)",
-    "realtime/unit/RTS5/get-derived-with-options-0": "!! derived channels not yet implemented (post-5.6)",
+    # ---- realtime: 5.6 channel options / derived channels ----
+    "realtime/unit/RTS3c/options-updated-existing-0": "rts3c_options_updated_on_existing_channel",
+    "realtime/unit/RTS3c1/error-reattach-params-0": "rts3c1_get_with_conflicting_options_errors",
+    "realtime/unit/RTS3c1/error-reattach-modes-1": "rts3c1_get_with_conflicting_options_errors",
+    "realtime/unit/RTL16/set-options-updates-0": "rtl16_set_options_updates",
+    "realtime/unit/RTL16a/triggers-reattach-0": "rtl16a_set_options_triggers_reattach",
+    "realtime/unit/RTS5a/creates-derived-channel-0": "rts5a_derived_channel_name_qualification",
+    "realtime/unit/RTS5a1/filter-base64-encoded-0": "rts5a_derived_channel_name_qualification",
+    "realtime/unit/RTS5a2/derived-with-params-0": "rts5a2_derived_with_params_and_options",
+    "realtime/unit/RTS5/get-derived-with-options-0": "rts5a2_derived_with_params_and_options",
     # ---- rest: manual mapping ----
     "rest/unit/RSAN1c6/publish-post-annotation-create-0": "rsan1c_publish_sends_post",
     # ---- realtime: 5.5 manual mappings ----

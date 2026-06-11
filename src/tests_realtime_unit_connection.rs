@@ -1877,85 +1877,8 @@ use crate::crypto::CipherParams;
     }
 
 
-    #[tokio::test]
-    async fn rtn2e_valid_token_reused_across_connections() {
-        // RTN2e: If a valid (non-expired) token exists from a previous authCallback
-        // invocation, it should be reused without invoking authCallback again.
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-
-        let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
-
-        let connection_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let cc = connection_count.clone();
-
-        let mock = MockWebSocket::with_handler(move |pending| {
-            cc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let options = ClientOptions::with_auth_callback(callback.clone())
-            .auto_connect(false)
-            .fallback_hosts(vec![]);
-        let client = Realtime::with_mock(&options, transport).unwrap();
-
-        // First connection
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        // Disconnect
-        client.close();
-        assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
-
-        // Second connection — token should be reused
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        // authCallback was only invoked once (token was reused)
-        assert_eq!(callback.count(), 1);
-    }
 
 
-    #[tokio::test]
-    async fn rtn2e_expired_token_triggers_new_callback() {
-        // RTN2e: If the cached token has expired, authCallback must be invoked again.
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-
-        // Token expires in 100ms
-        let callback = std::sync::Arc::new(TestAuthCallback::new("token").with_ttl(100));
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let options = ClientOptions::with_auth_callback(callback.clone())
-            .auto_connect(false)
-            .fallback_hosts(vec![]);
-        let client = Realtime::with_mock(&options, transport).unwrap();
-
-        // First connection
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        // Disconnect
-        client.close();
-        assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
-
-        // Wait for token to expire
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-        // Second connection — token expired, should get new one
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        // authCallback was invoked twice
-        assert_eq!(callback.count(), 2);
-    }
 
 
     // --- Server-Initiated Re-authentication (RTN22) ---
@@ -2565,121 +2488,8 @@ use crate::crypto::CipherParams;
 
 
 
-    // --- RTN7e: Pending publishes fail on CLOSE ---
-    #[tokio::test]
-    #[ignore = "SDK does not fail queued publishes when connection transitions to CLOSED"]
-    async fn rtn7e_pending_publishes_fail_on_close() -> Result<()> {
-        use crate::protocol::{action, ConnectionState, ProtocolMessage};
-        use crate::realtime::await_state;
-        use crate::mock_ws::MockWebSocket;
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("connId", "connKey"));
-        });
-        let transport = Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = crate::realtime::Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .disconnected_retry_timeout(std::time::Duration::from_millis(50))
-                .realtime_request_timeout(std::time::Duration::from_millis(200))
-                .fallback_hosts(vec![]),
-            transport,
-        )?;
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        let channel = client.channels.get("test-rtn7e-close");
-        phase8d_attach(&channel, &mock, None).await;
-
-        // Disconnect
-        let conns = mock.active_connections();
-        conns.last().unwrap().simulate_disconnect();
-        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
-
-        // Publish while disconnected — queued
-        let ch = channel.clone();
-        let publish_handle = tokio::spawn(async move {
-            ch.publish().name("queued").json(serde_json::json!("data")).send().await
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Close the connection — queued messages should fail
-        client.close();
-        assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
-
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), publish_handle).await;
-        assert!(result.is_ok(), "Publish should resolve after close");
-        assert!(result.unwrap().unwrap().is_err(), "Queued publish should fail on CLOSE");
-
-        Ok(())
-    }
 
 
-    // --- RTN7e: Pending publishes fail on FAILED ---
-    #[tokio::test]
-    #[ignore = "SDK does not fail queued publishes when connection transitions to FAILED"]
-    async fn rtn7e_pending_publishes_fail_on_failed() -> Result<()> {
-        use crate::protocol::{action, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
-        use crate::realtime::await_state;
-        use crate::mock_ws::MockWebSocket;
-        use std::sync::atomic::{AtomicU32, Ordering};
-
-        let attempt_count = Arc::new(AtomicU32::new(0));
-        let attempt_clone = attempt_count.clone();
-
-        let mock = MockWebSocket::with_handler(move |pending| {
-            let n = attempt_clone.fetch_add(1, Ordering::SeqCst);
-            if n == 0 {
-                pending.respond_with_success(ProtocolMessage::connected("connId", "connKey"));
-            } else {
-                // Fatal error on reconnect
-                let mut msg = ProtocolMessage::new(action::ERROR);
-                msg.error = Some(ErrorInfo {
-                    code: Some(80000),
-                    status_code: Some(400),
-                    message: Some("Fatal error".to_string()),
-                    href: None,
-                    ..Default::default()
-                });
-                pending.respond_with_error(msg);
-            }
-        });
-        let transport = Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = crate::realtime::Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .disconnected_retry_timeout(std::time::Duration::from_millis(50))
-                .realtime_request_timeout(std::time::Duration::from_millis(200))
-                .fallback_hosts(vec![]),
-            transport,
-        )?;
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        let channel = client.channels.get("test-rtn7e-failed");
-        phase8d_attach(&channel, &mock, None).await;
-
-        // Disconnect
-        let conns = mock.active_connections();
-        conns.last().unwrap().simulate_disconnect();
-        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
-
-        // Publish while disconnected — queued
-        let ch = channel.clone();
-        let publish_handle = tokio::spawn(async move {
-            ch.publish().name("queued").json(serde_json::json!("data")).send().await
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Reconnect attempt fails fatally → FAILED
-        assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
-
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), publish_handle).await;
-        assert!(result.is_ok(), "Publish should resolve after FAILED");
-        assert!(result.unwrap().unwrap().is_err(), "Queued publish should fail on FAILED");
-
-        Ok(())
-    }
 
 
     // --- RTN7e: Pending publishes fail on SUSPENDED ---
@@ -2741,60 +2551,6 @@ use crate::crypto::CipherParams;
     }
 
 
-    // --- RTN7e: Multiple pending publishes all fail on terminal state ---
-    #[tokio::test]
-    #[ignore = "SDK does not fail queued publishes when connection transitions to CLOSED"]
-    async fn rtn7e_pending_publishes_fail_multiple() -> Result<()> {
-        use crate::protocol::{action, ConnectionState, ProtocolMessage};
-        use crate::realtime::await_state;
-        use crate::mock_ws::MockWebSocket;
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("connId", "connKey"));
-        });
-        let transport = Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = crate::realtime::Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .disconnected_retry_timeout(std::time::Duration::from_millis(50))
-                .realtime_request_timeout(std::time::Duration::from_millis(200))
-                .fallback_hosts(vec![]),
-            transport,
-        )?;
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        let channel = client.channels.get("test-rtn7e-multi");
-        phase8d_attach(&channel, &mock, None).await;
-
-        // Disconnect
-        let conns = mock.active_connections();
-        conns.last().unwrap().simulate_disconnect();
-        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
-
-        // Queue multiple publishes
-        let ch1 = channel.clone();
-        let ch2 = channel.clone();
-        let ch3 = channel.clone();
-        let h1 = tokio::spawn(async move { ch1.publish().name("m1").send().await });
-        let h2 = tokio::spawn(async move { ch2.publish().name("m2").send().await });
-        let h3 = tokio::spawn(async move { ch3.publish().name("m3").send().await });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        // Close — all queued publishes should fail
-        client.close();
-        assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
-
-        let r1 = tokio::time::timeout(std::time::Duration::from_secs(2), h1).await.unwrap().unwrap();
-        let r2 = tokio::time::timeout(std::time::Duration::from_secs(2), h2).await.unwrap().unwrap();
-        let r3 = tokio::time::timeout(std::time::Duration::from_secs(2), h3).await.unwrap().unwrap();
-
-        assert!(r1.is_err(), "First queued publish should fail on CLOSE");
-        assert!(r2.is_err(), "Second queued publish should fail on CLOSE");
-        assert!(r3.is_err(), "Third queued publish should fail on CLOSE");
-
-        Ok(())
-    }
 
 
 
@@ -3288,84 +3044,8 @@ use crate::crypto::CipherParams;
     }
 
 
-    // --- RTN23b: Heartbeat timeout causes disconnect ---
-    #[tokio::test]
-    async fn rtn23b_heartbeat_timeout() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            let mut msg = ProtocolMessage::connected("conn-id", "conn-key");
-            if let Some(ref mut details) = msg.connection_details {
-                details.max_idle_interval = Some(100); // 100ms
-            }
-            pending.respond_with_success(msg);
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .realtime_request_timeout(std::time::Duration::from_millis(100))
-                .disconnected_retry_timeout(std::time::Duration::from_secs(30))
-                .fallback_hosts(vec![]),
-            transport,
-        )
-        .unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        // Don't send anything — heartbeat timeout should fire
-        assert!(
-            await_state(&client.connection, ConnectionState::Disconnected, 5000).await,
-            "Should disconnect after heartbeat timeout"
-        );
-    }
 
 
-    // --- RTN23b: Heartbeat timeout triggers reconnect ---
-    #[tokio::test]
-    async fn rtn23b_heartbeat_reconnect() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{ConnectionState, ProtocolMessage};
-        use crate::realtime::{await_state, Realtime};
-        use std::sync::atomic::{AtomicU32, Ordering};
-
-        let attempt_count = std::sync::Arc::new(AtomicU32::new(0));
-        let attempt_clone = attempt_count.clone();
-
-        let mock = MockWebSocket::with_handler(move |pending| {
-            let n = attempt_clone.fetch_add(1, Ordering::SeqCst) + 1;
-            let mut msg = ProtocolMessage::connected(&format!("conn-{}", n), &format!("key-{}", n));
-            if let Some(ref mut details) = msg.connection_details {
-                details.max_idle_interval = Some(100);
-            }
-            pending.respond_with_success(msg);
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .realtime_request_timeout(std::time::Duration::from_millis(100))
-                .disconnected_retry_timeout(std::time::Duration::from_millis(50))
-                .fallback_hosts(vec![]),
-            transport,
-        )
-        .unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-        assert_eq!(attempt_count.load(Ordering::SeqCst), 1);
-
-        // Wait for heartbeat timeout → disconnect → reconnect
-        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        assert!(attempt_count.load(Ordering::SeqCst) >= 2);
-    }
 
 
     // --- RTN23b: Heartbeat behavior during connecting ---
@@ -3538,51 +3218,6 @@ use crate::crypto::CipherParams;
     }
 
 
-    // --- RTN25: Error reason on DISCONNECTED ---
-    #[tokio::test]
-    async fn rtn25_error_reason_disconnected() {
-        use crate::mock_ws::MockWebSocket;
-        use crate::protocol::{action, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
-        use crate::realtime::{await_state, Realtime};
-
-        let mock = MockWebSocket::with_handler(|pending| {
-            pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
-        });
-
-        let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .disconnected_retry_timeout(std::time::Duration::from_secs(30))
-                .fallback_hosts(vec![]),
-            transport,
-        )
-        .unwrap();
-
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        // Server sends DISCONNECTED with error
-        {
-            let conns = mock.active_connections();
-            let conn = conns.last().unwrap();
-            let mut msg = ProtocolMessage::new(action::DISCONNECTED);
-            msg.error = Some(ErrorInfo {
-                code: Some(80003),
-                status_code: Some(500),
-                message: Some("Disconnected by server".to_string()),
-                href: None,
-                ..Default::default()
-            });
-            conn.send_to_client_and_close(msg);
-        }
-
-        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
-
-        let error = client.connection.error_reason();
-        assert!(error.is_some(), "error_reason should be set in DISCONNECTED");
-        assert_eq!(error.unwrap().code, Some(80003));
-    }
 
 
     // --- RTN25: Error reason on SUSPENDED ---

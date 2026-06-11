@@ -1660,6 +1660,21 @@ task → `TokenReady` → loop sends AUTH with new token over the writer queue.
 `RealtimeAuth::authorize()` delegates to REST authorize, then issues an
 `Authorize` command so the loop applies RTC8 (in-place reauth) with the result.
 
+## Stage 5.6 amendments (2026-06-11, approved)
+
+- **Fallible `Channels::get_with_options`** — returns
+  `Result<Arc<RealtimeChannel>>`: `Err(40000)` when the supplied options
+  would force a reattachment (params/modes changed while ATTACHING/ATTACHED,
+  RTS3c1); safe updates (cipher, attachOnSubscribe) are applied via the loop
+  (RTS3c) with EVENTUAL visibility — `options()` reads the loop-published
+  snapshot. `get(name)` stays infallible and never touches options.
+- **Authoritative channel options live in `ChannelCtx`** and are observable
+  through `ChannelSnapshot.options`; the handle no longer carries a copy.
+- **`ChannelStateChange.retry_in`** added (RTL13b/RTB1): the delay to the
+  scheduled reattach retry on SUSPENDED transitions.
+- **Derived channels (RTS5)**: name qualification `[filter=<b64>?<params>]`,
+  registry semantics unchanged.
+
 ## 14. Enforcement: how this design stays adhered to
 
 Prose does not survive implementation pressure; these mechanisms do:

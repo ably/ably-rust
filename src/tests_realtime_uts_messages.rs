@@ -637,7 +637,7 @@ async fn rtl7h_no_attach_when_disabled() {
             attach_on_subscribe: Some(false),
             ..Default::default()
         },
-    );
+    ).unwrap();
     let (_id, _rx) = ch.subscribe();
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     assert_eq!(ch.state(), ChannelState::Initialized, "RTL7h");
@@ -689,7 +689,7 @@ async fn rtl17_no_delivery_when_not_attached() {
             attach_on_subscribe: Some(false),
             ..Default::default()
         },
-    );
+    ).unwrap();
     let (_id, mut rx) = ch.subscribe();
     tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
 

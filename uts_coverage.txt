@@ -42,7 +42,7 @@ realtime/unit/RTAN4e1/no-warn-unattached-0 !! stage 5.8 (annotations)
 realtime/unit/RTAN5a/unsubscribe-removes-listeners-0 !! stage 5.8 (annotations)
 realtime/unit/RTAN5a/unsubscribe-type-filter-1 !! stage 5.8 (annotations)
 realtime/unit/RTB1/disconnected-retry-delay-0 => rtb1a_backoff_coefficient_sequence, rtb1b_jitter_coefficient_range, rtn14d_retries_after_recoverable_failure
-realtime/unit/RTB1/suspended-channel-retry-delay-1 !! stage 5.6 (RTL13 channel retries)
+realtime/unit/RTB1/suspended-channel-retry-delay-1 => rtl13b_failed_reattach_suspends_and_retries, rtb1a_backoff_coefficient_sequence
 realtime/unit/RTB1a/backoff-coefficient-sequence-0 => rtb1a_backoff_coefficient_sequence
 realtime/unit/RTB1b/jitter-coefficient-range-0 => rtb1b_jitter_coefficient_range
 realtime/unit/RTC12/constructor-string-detection-0 => rtc12_constructor_detects_key_vs_token
@@ -84,21 +84,21 @@ realtime/unit/RTL11/queued-presence-fail-detached-0 !! stage 5.7 (presence)
 realtime/unit/RTL11/queued-presence-fail-failed-2 !! stage 5.7 (presence)
 realtime/unit/RTL11/queued-presence-fail-suspended-1 !! stage 5.7 (presence)
 realtime/unit/RTL11a/ack-nack-unaffected-by-state-0 !! stage 5.7 (presence)
-realtime/unit/RTL12/no-error-null-reason-2 !! stage 5.6 (RTL12 full semantics)
-realtime/unit/RTL12/resumed-no-update-1 !! stage 5.6 (RTL12 full semantics)
-realtime/unit/RTL12/update-emits-with-error-0 !! stage 5.6 (RTL12 full semantics)
-realtime/unit/RTL13a/attached-reattach-triggered-0 !! stage 5.6 (RTL13)
-realtime/unit/RTL13a/detaching-not-server-initiated-2 !! stage 5.6 (RTL13)
-realtime/unit/RTL13a/suspended-reattach-triggered-1 !! stage 5.6 (RTL13)
-realtime/unit/RTL13b/attaching-detached-to-suspended-1 !! stage 5.6 (RTL13)
-realtime/unit/RTL13b/failed-reattach-suspended-retry-0 !! stage 5.6 (RTL13)
-realtime/unit/RTL13b/repeated-failure-cycle-2 !! stage 5.6 (RTL13)
-realtime/unit/RTL13c/retry-cancelled-disconnected-0 !! stage 5.6 (RTL13)
-realtime/unit/RTL14/attached-to-failed-0 !! stage 5.6 (channel error/retry paths)
-realtime/unit/RTL14/attaching-to-failed-1 !! stage 5.6 (channel error/retry paths)
-realtime/unit/RTL14/cancels-pending-timers-4 !! stage 5.6 (channel error/retry paths)
-realtime/unit/RTL14/other-channels-unaffected-3 !! stage 5.6 (channel error/retry paths)
-realtime/unit/RTL14/pending-detach-error-2 !! stage 5.6 (channel error/retry paths)
+realtime/unit/RTL12/no-error-null-reason-2 => rtl12_additional_attached_no_error_null_reason
+realtime/unit/RTL12/resumed-no-update-1 => rtl12_additional_attached_resumed_no_update
+realtime/unit/RTL12/update-emits-with-error-0 => rtl12_additional_attached_not_resumed_emits_update
+realtime/unit/RTL13a/attached-reattach-triggered-0 => rtl13a_server_detached_triggers_reattach
+realtime/unit/RTL13a/detaching-not-server-initiated-2 => rtl13a_detached_while_detaching_is_normal
+realtime/unit/RTL13a/suspended-reattach-triggered-1 => rtl13a_server_detached_triggers_reattach
+realtime/unit/RTL13b/attaching-detached-to-suspended-1 => rtl13b_server_detached_reattach_timeout_to_suspended
+realtime/unit/RTL13b/failed-reattach-suspended-retry-0 => rtl13b_failed_reattach_suspends_and_retries
+realtime/unit/RTL13b/repeated-failure-cycle-2 => rtl13b_repeated_failures_cycle_suspended_attaching
+realtime/unit/RTL13c/retry-cancelled-disconnected-0 => rtl13c_retry_cancelled_when_not_connected
+realtime/unit/RTL14/attached-to-failed-0 => rtl14_channel_error_attached_to_failed
+realtime/unit/RTL14/attaching-to-failed-1 => rtl14_channel_error_attached_to_failed
+realtime/unit/RTL14/cancels-pending-timers-4 => rtl14_channel_error_cancels_retry
+realtime/unit/RTL14/other-channels-unaffected-3 => rtl14_channel_error_does_not_affect_other_channels
+realtime/unit/RTL14/pending-detach-error-2 => rtl14_channel_error_during_detach
 realtime/unit/RTL15a/attach-serial-from-attached-0 => rtl15a_attach_serial_from_attached
 realtime/unit/RTL15a/attach-serial-server-reattach-1 => rtl15a_attach_serial_from_attached
 realtime/unit/RTL15b/channel-serial-from-attached-0 => rtl15b_channel_serial_from_attached
@@ -107,9 +107,9 @@ realtime/unit/RTL15b/serial-not-updated-empty-2 => rtl15b_channel_serial_not_upd
 realtime/unit/RTL15b/serial-not-updated-irrelevant-3 => rtl15b_channel_serial_not_updated_when_absent
 realtime/unit/RTL15b1/serial-cleared-detached-0 => rtl15b1_channel_serial_cleared_on_detached
 realtime/unit/RTL15b1/serial-cleared-failed-2 => rtl15b1_channel_serial_cleared_on_failed
-realtime/unit/RTL15b1/serial-cleared-suspended-1 => rtl15b1_channel_serial_cleared_on_detached
-realtime/unit/RTL16/set-options-updates-0 !! stage 5.6 (set_options/RTL16)
-realtime/unit/RTL16a/triggers-reattach-0 !! stage 5.6 (set_options/RTL16)
+realtime/unit/RTL15b1/serial-cleared-suspended-1 => rtl15b1_channel_serial_cleared_on_suspended
+realtime/unit/RTL16/set-options-updates-0 => rtl16_set_options_updates
+realtime/unit/RTL16a/triggers-reattach-0 => rtl16a_set_options_triggers_reattach
 realtime/unit/RTL17/no-delivery-when-not-attached-0 => rtl17_no_delivery_when_not_attached
 realtime/unit/RTL18/decode-failure-recovery-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
 realtime/unit/RTL18/single-recovery-at-time-1 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
@@ -179,7 +179,7 @@ realtime/unit/RTL4c/error-cleared-on-attach-0 => rtl4c_attach_sends_message_and_
 realtime/unit/RTL4c/error-cleared-preserved-detach-1 => rtl4c_error_reason_after_reattach_from_suspended_state_change
 realtime/unit/RTL4c/error-reason-cleared-attach-0 => rtl4c_error_reason_after_reattach_from_suspended_state_change
 realtime/unit/RTL4c/sends-attach-message-1 => rtl4c_attach_sends_message_and_transitions
-realtime/unit/RTL4c1/includes-channel-serial-0 => rtl4c1_rtl4j_reattach_serial_and_resume_flag
+realtime/unit/RTL4c1/includes-channel-serial-0 => rtl4c1_attach_includes_channel_serial
 realtime/unit/RTL4f/timeout-to-suspended-0 => rtl4f_attach_timeout_transitions_to_suspended
 realtime/unit/RTL4g/attach-from-failed-0 => rtl4g_attach_from_failed_clears_error_reason
 realtime/unit/RTL4h/attach-while-attaching-0 => rtl4h_attach_while_attaching_waits
@@ -319,13 +319,13 @@ realtime/unit/RTN24/connected-emits-update-0 => rtn24_connected_while_connected_
 realtime/unit/RTN24/connection-details-override-2 => rtn24_update_event_connection_details
 realtime/unit/RTN24/no-duplicate-connected-event-3 => rtn24_update_event_no_duplicate
 realtime/unit/RTN24/update-event-with-error-1 => rtn24_update_event_with_error_reason
-realtime/unit/RTN25/error-reason-cleared-on-connect-4 => rtn25_error_reason_on_disconnected
+realtime/unit/RTN25/error-reason-cleared-on-connect-4 => rtn25_error_reason_cleared_on_success
 realtime/unit/RTN25/error-reason-disconnected-1 => rtn25_error_reason_on_disconnected
 realtime/unit/RTN25/error-reason-in-state-change-6 => rtn25_error_reason_in_state_change_events
 realtime/unit/RTN25/error-reason-on-failed-0 => rtn25_error_reason_set_on_failed
-realtime/unit/RTN25/error-reason-protocol-error-5 => rtn25_error_reason_in_state_change_events
+realtime/unit/RTN25/error-reason-protocol-error-5 => rtn25_error_reason_cleared
 realtime/unit/RTN25/error-reason-suspended-2 => rtn25_error_reason_suspended
-realtime/unit/RTN25/error-reason-token-error-3 => rtn25_error_reason_in_state_change_events
+realtime/unit/RTN25/error-reason-token-error-3 => rtn25_error_reason_cleared
 realtime/unit/RTN26/whenstate-different-states-0 => rtn26_when_state_different_states
 realtime/unit/RTN26a/immediate-callback-current-state-0 => rtn26a_when_state_immediate_if_in_state
 realtime/unit/RTN26a/multiple-whenstate-calls-1 => rtn26a_multiple_when_state_listeners_all_fire
@@ -461,16 +461,16 @@ realtime/unit/RTS3a/get-creates-new-channel-0 => rts3a_get_after_release_creates
 realtime/unit/RTS3a/get-returns-existing-channel-1 => rts3a_get_returns_existing_channel
 realtime/unit/RTS3a/subscript-operator-channel-2 => rts3a_get_after_release_creates_new_channel
 realtime/unit/RTS3b/options-set-on-new-0 => rts3b_options_set_on_new_channel
-realtime/unit/RTS3c/options-updated-existing-0 !! stage 5.6 (channel options; needs fallible get_with_options)
-realtime/unit/RTS3c1/error-reattach-modes-1 !! stage 5.6 (channel options; needs fallible get_with_options)
-realtime/unit/RTS3c1/error-reattach-params-0 !! stage 5.6 (channel options; needs fallible get_with_options)
+realtime/unit/RTS3c/options-updated-existing-0 => rts3c_options_updated_on_existing_channel
+realtime/unit/RTS3c1/error-reattach-modes-1 => rts3c1_get_with_conflicting_options_errors
+realtime/unit/RTS3c1/error-reattach-params-0 => rts3c1_get_with_conflicting_options_errors
 realtime/unit/RTS4a/release-detaches-attached-2 => rts4a_release_detaches_and_removes
 realtime/unit/RTS4a/release-nonexistent-noop-1 => rts4a_release_nonexistent_is_noop
 realtime/unit/RTS4a/release-removes-channel-0 => rts4a_release_removes_channel
-realtime/unit/RTS5/get-derived-with-options-0 !! derived channels not yet implemented (post-5.6)
-realtime/unit/RTS5a/creates-derived-channel-0 !! derived channels not yet implemented (post-5.6)
-realtime/unit/RTS5a1/filter-base64-encoded-0 !! derived channels not yet implemented (post-5.6)
-realtime/unit/RTS5a2/derived-with-params-0 !! derived channels not yet implemented (post-5.6)
+realtime/unit/RTS5/get-derived-with-options-0 => rts5a2_derived_with_params_and_options
+realtime/unit/RTS5a/creates-derived-channel-0 => rts5a_derived_channel_name_qualification
+realtime/unit/RTS5a1/filter-base64-encoded-0 => rts5a_derived_channel_name_qualification
+realtime/unit/RTS5a2/derived-with-params-0 => rts5a2_derived_with_params_and_options
 realtime/unit/TB2/channel-options-attributes-0 => tb2_channel_options_defaults
 realtime/unit/TB2c/options-with-params-0 => tb2c_channel_options_with_params
 realtime/unit/TB2d/options-with-modes-0 => tb2d_channel_options_with_modes

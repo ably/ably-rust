@@ -557,3 +557,41 @@ This pass added:
 - Next: 5.6 advanced channels (RTL12, RTL13, RTL16/RTS3c — needs the
   fallible get_with_options API decision, RTN17j).
 
+### 5.6 Advanced Channels — DONE (2026-06-11)
+- Channel options: authoritative options moved into ChannelCtx, observable
+  via ChannelSnapshot. get_with_options is now FALLIBLE (approved §14.4
+  amendment): Err 40000 when params/modes change on an attaching/attached
+  channel (RTS3c1); safe updates flow through Command::SetOptions with
+  eventual visibility (RTS3c, soft-deprecated per UTS). RTL16/RTL16a
+  set_options reattaches when needed, resolving on re-ATTACHED via the
+  pending_attach repliers. TB2/TB4 attributes and defaults.
+- RTL13 server-initiated DETACHED: immediate reattach from ATTACHED/
+  SUSPENDED (RTL13a, reason surfaced on the ATTACHING change); DETACHED
+  while ATTACHING = failed reattach -> SUSPENDED with an RTB1-jittered
+  channelRetryTimeout retry (RTL13b; ChannelStateChange.retry_in carries the
+  delay; retry cycle ends on successful attach); retries cancelled whenever
+  the connection leaves CONNECTED (RTL13c). Attach timeouts join the same
+  retry cycle.
+- RTL12: additional-ATTACHED details verified (UPDATE with error,
+  RESUMED-suppression, null reason) — implementation was already correct.
+- RTS5 derived channels: [filter=<base64>?<params>] name qualification;
+  get_derived(_with_options); registry identity preserved.
+- RTN25 detail: a clean CONNECTED now clears errorReason (UTS sanctions
+  either behavior; cleared matches common practice).
+- RTN17j connectivity check REMAINS deferred (dual WS+HTTP mock injection
+  still unavailable; recorded since 5.3).
+- Tests: 10 UTS-derived in tests_realtime_uts_channels_advanced.rs (all
+  green). Ported sweep: rtl13/rtl16/rts3c/rts5/rtl15b1/rtl4c1 groups now
+  ADOPTED (2 broken rts5 ports fixed to pass channel options per UTS; rts3c
+  adapted for eventual visibility); 9 superseded/deleted (rtl13c+rtn25
+  Disconnected races, rtn2e/rtn23b close-shape mocks, 3 stale-ignored
+  rtn7e stubs superseded by the 5.5 UTS tests). get_with_options call sites
+  mechanically unwrapped (~45).
+- Matrix: channel_options/additional_attached/server_initiated_detach/
+  channel_error exclusions converted (791 mapped / 174 excluded); both
+  ratchets green. Lock inventory UNCHANGED.
+- Test status: 1185 pass / 112 fail (presence 94, annotations 14, presence-
+  adjacent channel 4) / 63 ignored.
+- Next: 5.7 presence (PresenceCtx in the loop; DELETES the 2 temporary stub
+  mutexes and reduces the channel.rs conformance allowance 3 -> 1).
+

@@ -390,7 +390,7 @@ async fn rtl4k_rtl4l_rtl4m_params_and_modes() {
         modes: Some(vec![ChannelMode::Publish, ChannelMode::Subscribe]),
         ..Default::default()
     };
-    let ch = client.channels.get_with_options("modal", options);
+    let ch = client.channels.get_with_options("modal", options).unwrap();
     let ch2 = ch.clone();
     let attach = tokio::spawn(async move { ch2.attach().await });
 

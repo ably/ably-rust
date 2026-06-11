@@ -554,7 +554,7 @@ use crate::crypto::CipherParams;
 
         let mut ch_opts = RealtimeChannelOptions::default();
         ch_opts.attach_on_subscribe = Some(false);
-        let channel = client.channels.get_with_options("test-rtan4e1", ch_opts);
+        let channel = client.channels.get_with_options("test-rtan4e1", ch_opts).unwrap();
 
         let _id = channel.annotations().subscribe(|_ann| {});
         assert!(!warned.load(Ordering::SeqCst), "Should not warn when not attached");

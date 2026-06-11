@@ -1019,7 +1019,7 @@ use crate::crypto::CipherParams;
 
         let channel = client
             .channels
-            .get_with_options("test-channel", channel_options);
+            .get_with_options("test-channel", channel_options).unwrap();
 
         let opts = channel.options();
         assert_eq!(opts.params.unwrap().get("rewind").unwrap(), "1");
@@ -1048,7 +1048,7 @@ use crate::crypto::CipherParams;
         };
         let channel = client
             .channels
-            .get_with_options("test-channel", initial_options);
+            .get_with_options("test-channel", initial_options).unwrap();
 
         let new_options = RealtimeChannelOptions {
             attach_on_subscribe: Some(true),
@@ -1056,10 +1056,15 @@ use crate::crypto::CipherParams;
         };
         let same_channel = client
             .channels
-            .get_with_options("test-channel", new_options);
+            .get_with_options("test-channel", new_options).unwrap();
 
         assert!(std::sync::Arc::ptr_eq(&channel, &same_channel));
-        assert_eq!(channel.options().attach_on_subscribe, Some(true));
+        // Applied by the connection loop; visibility is eventual
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while channel.options().attach_on_subscribe != Some(true) {
+            assert!(std::time::Instant::now() < deadline, "options update propagates");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
     }
 
 
@@ -1253,7 +1258,8 @@ use crate::crypto::CipherParams;
 
         let channel = client
             .channels
-            .get_derived("test-rts5a2", derive_opts);
+            .get_derived_with_options("test-rts5a2", derive_opts, channel_opts)
+            .unwrap();
 
         let name = channel.name().to_string();
         assert!(name.ends_with("]test-rts5a2"));
@@ -1298,7 +1304,8 @@ use crate::crypto::CipherParams;
 
         let channel = client
             .channels
-            .get_derived("test-rts5", derive_opts);
+            .get_derived_with_options("test-rts5", derive_opts, channel_opts)
+            .unwrap();
 
         let opts = channel.options();
         assert!(opts.modes.as_ref().unwrap().contains(&ChannelMode::Subscribe));
@@ -1910,7 +1917,7 @@ use crate::crypto::CipherParams;
         };
         let channel = client
             .channels
-            .get_with_options(channel_name, opts);
+            .get_with_options(channel_name, opts).unwrap();
 
         let ch = channel.clone();
         let attach_task = tokio::spawn(async move { ch.attach().await });
@@ -1970,7 +1977,7 @@ use crate::crypto::CipherParams;
         };
         let channel = client
             .channels
-            .get_with_options(channel_name, opts);
+            .get_with_options(channel_name, opts).unwrap();
 
         let ch = channel.clone();
         let attach_task = tokio::spawn(async move { ch.attach().await });
@@ -3007,7 +3014,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // Attach
         let ch = channel.clone();
@@ -3080,7 +3087,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
         assert_eq!(channel.state(), ChannelState::Initialized);
 
         // Publish on initialized channel — should send immediately (RTL6c1)
@@ -3135,7 +3142,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
         assert_eq!(channel.state(), ChannelState::Initialized);
 
         let ch = channel.clone();
@@ -3186,7 +3193,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         client.connect();
         assert!(await_state(&client.connection, ConnectionState::Connecting, 5000).await);
@@ -3270,7 +3277,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
         assert_eq!(client.connection.state(), ConnectionState::Initialized);
 
         // Publish before connecting — should be queued
@@ -3345,7 +3352,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         client.connect();
         assert!(await_state(&client.connection, ConnectionState::Connecting, 5000).await);
@@ -3446,7 +3453,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         let result = channel
             .publish().name("fail").json(serde_json::json!("should-error")).send()
@@ -3487,7 +3494,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // Attach fails → channel enters FAILED
         let ch = channel.clone();
@@ -3544,7 +3551,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         client.connect();
         assert!(await_state(&client.connection, ConnectionState::Connecting, 5000).await);
@@ -3587,7 +3594,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // Attach
         let ch = channel.clone();
@@ -3665,7 +3672,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // Attach
         let ch = channel.clone();
@@ -3741,7 +3748,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // Attach
         let ch = channel.clone();
@@ -3823,7 +3830,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // Attach
         let ch = channel.clone();
@@ -3895,7 +3902,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // Attach
         let ch = channel.clone();
@@ -3973,7 +3980,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // Attach
         let ch = channel.clone();
@@ -4104,7 +4111,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
         assert_eq!(channel.state(), ChannelState::Initialized);
 
         channel.subscribe();
@@ -4210,7 +4217,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         let (_sub_id, mut rx) = channel.subscribe();
 
@@ -4270,7 +4277,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // Attach
         let ch = channel.clone();
@@ -4348,7 +4355,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // Attach
         let ch = channel.clone();
@@ -4432,7 +4439,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // Attach
         let ch = channel.clone();
@@ -6150,80 +6157,6 @@ use crate::crypto::CipherParams;
     }
 
 
-    // UTS: realtime/unit/channels/channel_server_initiated_detach.md — RTL13c
-    // Spec: If connection leaves CONNECTED, pending auto-reattach is cancelled.
-    #[tokio::test]
-    async fn rtl13c_server_detached_while_attaching() -> Result<()> {
-        use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage}; use crate::error::ErrorInfo;
-        use crate::realtime::await_state;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let attach_count = Arc::new(AtomicUsize::new(0));
-        let attach_count_h = attach_count.clone();
-
-        let mock = crate::mock_ws::MockWebSocket::with_handler(move |pending| {
-            pending.respond_with_success(ProtocolMessage::connected("connId", "connKey"));
-        });
-        let transport = Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
-        let client = crate::realtime::Realtime::with_mock(
-            &ClientOptions::new("appId.keyId:keySecret")
-                .auto_connect(false)
-                .disconnected_retry_timeout(std::time::Duration::from_millis(50))
-                .realtime_request_timeout(std::time::Duration::from_millis(100))
-                .suspended_retry_timeout(std::time::Duration::from_millis(200))
-                .fallback_hosts(vec![]),
-            transport,
-        )?;
-        client.connect();
-        assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
-
-        let channel = client.channels.get("test-rtl13c");
-        let ch = channel.clone();
-        let attach_task = tokio::spawn(async move { ch.attach().await });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        let conns = mock.active_connections();
-        let conn = conns.last().unwrap();
-        conn.send_to_client(ProtocolMessage {
-            action: action::ATTACHED,
-            channel: Some("test-rtl13c".to_string()),
-            ..ProtocolMessage::new(action::ATTACHED)
-        });
-        attach_task.await.unwrap().unwrap();
-        assert_eq!(channel.state(), ChannelState::Attached);
-
-        // Server sends DETACHED — triggers reattach (RTL13a)
-        conn.send_to_client(ProtocolMessage {
-            action: action::DETACHED,
-            channel: Some("test-rtl13c".to_string()),
-            error: Some(ErrorInfo {
-                code: Some(90198),
-                status_code: Some(500),
-                message: Some("Detach".to_string()),
-                href: None,
-                ..Default::default()
-            }),
-            ..ProtocolMessage::new(action::DETACHED)
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        assert_eq!(channel.state(), ChannelState::Attaching);
-
-        // Disconnect connection — RTL13c: pending reattach should be cancelled
-        conn.simulate_disconnect();
-        assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
-
-        // RTL3d handles this: channel state after disconnect depends on RTL3
-        // The key assertion: channel doesn't stay permanently ATTACHING
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let state = channel.state();
-        assert!(
-            state == ChannelState::Attaching || state == ChannelState::Suspended,
-            "Channel should be ATTACHING (pending RTL3d reattach) or SUSPENDED, got {:?}",
-            state
-        );
-
-        Ok(())
-    }
 
 
     // UTS: realtime/unit/channels/channel_publish.md — RTL6i3
@@ -6655,7 +6588,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // Attach
         let ch = channel.clone();
@@ -6722,7 +6655,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // Attach
         let ch = channel.clone();
@@ -6818,7 +6751,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // Start attach but don't respond — channel stays ATTACHING
         let ch = channel.clone();
@@ -6887,7 +6820,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         client.connect();
         assert!(await_state(&client.connection, ConnectionState::Connecting, 5000).await);
@@ -7009,7 +6942,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // RTL6c4: Publish should fail when connection SUSPENDED
         let result = channel
@@ -7951,7 +7884,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         let ch = channel.clone();
         let cn = channel_name.to_string();
@@ -8028,7 +7961,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         let ch = channel.clone();
         let cn = channel_name.to_string();
@@ -8092,7 +8025,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         // Attach
         let ch = channel.clone();
@@ -8167,7 +8100,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         let ch = channel.clone();
         let cn = channel_name.to_string();
@@ -8230,7 +8163,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         let ch = channel.clone();
         let cn = channel_name.to_string();
@@ -8293,7 +8226,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         let ch = channel.clone();
         let cn = channel_name.to_string();
@@ -8358,7 +8291,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         let ch = channel.clone();
         let cn = channel_name.to_string();
@@ -8423,7 +8356,7 @@ use crate::crypto::CipherParams;
                     attach_on_subscribe: Some(false),
                     ..Default::default()
                 },
-            );
+            ).unwrap();
 
         let ch = channel.clone();
         let cn = channel_name.to_string();

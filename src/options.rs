@@ -290,6 +290,12 @@ impl ClientOptions {
         self
     }
 
+    /// TO3l7-shaped: delay between channel reattach retries (RTL13b).
+    pub fn channel_retry_timeout(mut self, timeout: Duration) -> Self {
+        self.channel_retry_timeout = timeout;
+        self
+    }
+
     pub fn suspended_retry_timeout(mut self, timeout: Duration) -> Self {
         self.suspended_retry_timeout = timeout;
         self

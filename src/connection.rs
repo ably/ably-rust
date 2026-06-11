@@ -111,6 +111,12 @@ pub(crate) enum Command {
     },
     /// RTL8: remove message subscriber(s).
     Unsubscribe { name: String, spec: UnsubscribeSpec },
+    /// RTL16: set/update channel options; reattaches when needed (RTL16a).
+    SetOptions {
+        name: String,
+        options: ChannelOptionsSpec,
+        reply: oneshot::Sender<Result<()>>,
+    },
 }
 
 /// RTL7/RTL22: what a subscriber wants delivered.
@@ -141,12 +147,23 @@ pub(crate) struct ChannelOptionsSpec {
     pub modes: Vec<ChannelMode>,
     /// RSL5/RSL6: message encryption/decryption.
     pub cipher: Option<crate::crypto::CipherParams>,
+    /// RTL7g/TB4: implicit attach on subscribe (default true).
+    pub attach_on_subscribe: bool,
+}
+
+impl ChannelOptionsSpec {
+    /// RTS3c1: would switching to `new` force a reattachment?
+    pub fn reattach_needed(&self, new: &ChannelOptionsSpec) -> bool {
+        self.params != new.params || self.modes != new.modes
+    }
 }
 
 /// The per-channel snapshot observable by handles (DESIGN.md §4).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ChannelSnapshot {
     pub state: ChannelState,
+    /// RTS3c/RTL16: the authoritative channel options.
+    pub options: ChannelOptionsSpec,
     pub error_reason: Option<ErrorInfo>,
     pub channel_serial: Option<String>,
     pub attach_serial: Option<String>,
@@ -230,6 +247,11 @@ struct ChannelCtx {
     pending_detach: Vec<oneshot::Sender<Result<()>>>,
     /// RTL4f/RTL5f: in-flight attach/detach op deadline.
     op_deadline: Option<Instant>,
+    /// RTL13b: scheduled reattach retry.
+    retry_at: Option<Instant>,
+    retry_count: u32,
+    /// RTL13b: retryIn for the next SUSPENDED state change event.
+    next_retry_in: Option<Duration>,
     /// RTL5f: the state to return to if a detach times out.
     op_revert_state: ChannelState,
     /// RTL7/RTL8: message subscribers (§8 — unbounded, pruned on close).
@@ -270,6 +292,7 @@ impl ChannelCtx {
                 reason,
                 resumed,
                 has_backlog,
+                retry_in: self.next_retry_in.take(),
             });
         }
     }
@@ -284,12 +307,14 @@ impl ChannelCtx {
             reason,
             resumed,
             has_backlog,
+            retry_in: None,
         });
     }
 
     fn publish_snapshot(&self) {
         let _ = self.snapshot_tx.send(ChannelSnapshot {
             state: self.state,
+            options: self.options.clone(),
             error_reason: self.error_reason.clone(),
             channel_serial: self.channel_serial.clone(),
             attach_serial: self.attach_serial.clone(),
@@ -994,6 +1019,9 @@ impl ConnectionCtx {
                     pending_attach: Vec::new(),
                     pending_detach: Vec::new(),
                     op_deadline: None,
+                    retry_at: None,
+                    retry_count: 0,
+                    next_retry_in: None,
                     op_revert_state: ChannelState::Initialized,
                     subscribers: Vec::new(),
                     snapshot_tx,
@@ -1071,6 +1099,31 @@ impl ConnectionCtx {
                         // RTL8c: remove everything
                         UnsubscribeSpec::All => ch.subscribers.clear(),
                     }
+                }
+            }
+            Command::SetOptions { name, options, reply } => {
+                let connected = self.state == ConnectionState::Connected;
+                let rtt = self.rest.inner.opts.realtime_request_timeout;
+                let Some(ch) = self.channels.get_mut(&name) else {
+                    let _ = reply.send(Ok(()));
+                    return;
+                };
+                let reattach = ch.options.reattach_needed(&options)
+                    && matches!(ch.state, ChannelState::Attached | ChannelState::Attaching);
+                ch.options = options;
+                ch.publish_snapshot();
+                if reattach && connected {
+                    // RTL16a: reattach with the new options; the reply joins
+                    // the attach repliers and resolves on ATTACHED
+                    ch.pending_attach.push(reply);
+                    if ch.state != ChannelState::Attaching {
+                        ch.transition(ChannelState::Attaching, None, false, false);
+                    }
+                    ch.op_deadline = Some(Instant::now() + rtt);
+                    let msg = attach_message(ch);
+                    self.send_protocol(msg);
+                } else {
+                    let _ = reply.send(Ok(()));
                 }
             }
             Command::Ping { reply } => match self.state {
@@ -1269,6 +1322,11 @@ impl ConnectionCtx {
                     if host != &self.rest.inner.opts.primary_host {
                         self.rest.cache_fallback_host(host);
                     }
+                }
+                // RTN25 (UTS error-reason-cleared-on-connect-4): a clean
+                // CONNECTED clears the previous errorReason
+                if reason.is_none() {
+                    self.error_reason = None;
                 }
                 self.transition(ConnectionState::Connected, reason);
                 // RTN19a: pending publishes are resent on the new transport.
@@ -1514,6 +1572,9 @@ impl ConnectionCtx {
                 ch.attached_modes = pm.flags.map(modes_from_flags);
                 ch.has_been_attached = true;
                 ch.op_deadline = None;
+                // RTL13b: a successful attach ends the retry cycle
+                ch.retry_at = None;
+                ch.retry_count = 0;
                 ch.resolve_attach(Ok(()));
                 ch.transition(ChannelState::Attached, pm.error, resumed, has_backlog);
                 // RTL5i: a queued detach proceeds now
@@ -1568,8 +1629,31 @@ impl ConnectionCtx {
                     self.handle_attach(name, tx);
                 }
             }
-            // Server-initiated DETACHED while attached/attaching → 5.6 (RTL13);
-            // minimal: surface as Detached for now? Deferred to 5.6 — ignore.
+            // RTL13a: server-initiated DETACHED on an ATTACHED or SUSPENDED
+            // channel triggers an immediate reattach
+            ChannelState::Attached | ChannelState::Suspended => {
+                let rtt = self.rest.inner.opts.realtime_request_timeout;
+                let Some(ch) = self.channels.get_mut(&name) else { return };
+                ch.transition(ChannelState::Attaching, pm.error, false, false);
+                ch.op_deadline = Some(Instant::now() + rtt);
+                let msg = attach_message(ch);
+                self.send_protocol(msg);
+            }
+            // RTL13b: DETACHED while ATTACHING is a failed (re)attach — go
+            // SUSPENDED and schedule a retry
+            ChannelState::Attaching => {
+                let reason = pm.error.clone();
+                if let Some(ch) = self.channels.get_mut(&name) {
+                    ch.op_deadline = None;
+                    ch.resolve_attach(Err(reason.clone().unwrap_or_else(|| {
+                        ErrorInfo::new(
+                            ErrorCode::ChannelOperationFailedInvalidChannelState.code(),
+                            "Attach rejected by the server",
+                        )
+                    })));
+                }
+                self.suspend_channel_with_retry(&name, reason);
+            }
             _ => {}
         }
     }
@@ -1631,6 +1715,28 @@ impl ConnectionCtx {
             // RTL3e: DISCONNECTED leaves channel states untouched
             _ => {}
         }
+        // RTL13c: channel reattach retries only run while CONNECTED
+        if conn_state != ConnectionState::Connected {
+            for ch in self.channels.values_mut() {
+                ch.retry_at = None;
+            }
+        }
+    }
+
+    /// RTL13b: transition a channel to SUSPENDED and schedule the next
+    /// reattach retry (RTB1 backoff over channelRetryTimeout), provided the
+    /// connection is still CONNECTED (RTL13c).
+    fn suspend_channel_with_retry(&mut self, name: &str, reason: Option<ErrorInfo>) {
+        let connected = self.state == ConnectionState::Connected;
+        let base = self.rest.inner.opts.channel_retry_timeout;
+        let Some(ch) = self.channels.get_mut(name) else { return };
+        if connected {
+            let delay = retry_delay(base, ch.retry_count);
+            ch.retry_count += 1;
+            ch.retry_at = Some(Instant::now() + delay);
+            ch.next_retry_in = Some(delay);
+        }
+        ch.transition(ChannelState::Suspended, reason, false, false);
     }
 
     /// RTL3d: on CONNECTED, (re)attach channels that were attached, attaching,
@@ -1688,6 +1794,7 @@ impl ConnectionCtx {
         consider(self.idle_deadline);
         consider(self.pending_pings.iter().map(|p| p.deadline).min());
         consider(self.channels.values().filter_map(|c| c.op_deadline).min());
+        consider(self.channels.values().filter_map(|c| c.retry_at).min());
         next
     }
 
@@ -1776,7 +1883,8 @@ impl ConnectionCtx {
             if let Some(ch) = self.channels.get_mut(&name) {
                 ch.op_deadline = None;
                 match ch.state {
-                    // RTL4f: attach timeout → SUSPENDED with the error
+                    // RTL4f: attach timeout → SUSPENDED with the error;
+                    // RTL13b: with a scheduled reattach retry
                     ChannelState::Attaching => {
                         let err = ErrorInfo::with_status(
                             ErrorCode::ChannelOperationFailedNoResponseFromServer.code(),
@@ -1784,7 +1892,8 @@ impl ConnectionCtx {
                             "Attach timed out",
                         );
                         ch.resolve_attach(Err(err.clone()));
-                        ch.transition(ChannelState::Suspended, Some(err), false, false);
+                        self.suspend_channel_with_retry(&name, Some(err));
+                        continue;
                     }
                     // RTL5f: detach timeout → return to the previous state
                     ChannelState::Detaching => {
@@ -1800,6 +1909,33 @@ impl ConnectionCtx {
                     _ => {}
                 }
             }
+        }
+
+        // RTL13b: scheduled channel reattach retries (only while CONNECTED,
+        // RTL13c — leaving CONNECTED clears retry_at)
+        let retries: Vec<String> = self
+            .channels
+            .values()
+            .filter(|c| c.retry_at.map(|d| d <= now).unwrap_or(false))
+            .map(|c| c.name.clone())
+            .collect();
+        for name in retries {
+            let rtt = self.rest.inner.opts.realtime_request_timeout;
+            if self.state != ConnectionState::Connected {
+                if let Some(ch) = self.channels.get_mut(&name) {
+                    ch.retry_at = None;
+                }
+                continue;
+            }
+            let Some(ch) = self.channels.get_mut(&name) else { continue };
+            ch.retry_at = None;
+            if ch.state != ChannelState::Suspended {
+                continue;
+            }
+            ch.transition(ChannelState::Attaching, None, false, false);
+            ch.op_deadline = Some(Instant::now() + rtt);
+            let msg = attach_message(ch);
+            self.send_protocol(msg);
         }
 
         // RTN13c: ping timeouts

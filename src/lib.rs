@@ -73,6 +73,8 @@ mod tests_realtime_uts_connection;
 mod tests_realtime_uts_channels;
 #[cfg(test)]
 mod tests_realtime_uts_messages;
+#[cfg(test)]
+mod tests_realtime_uts_channels_advanced;
 
 // Realtime unit tests
 #[cfg(test)]
