@@ -8,6 +8,13 @@
 # spec repo adds IDs, or a referenced test is renamed/deleted, the test fails.
 # Regenerate/update via tools/uts_coverage_generate.py, then REVIEW the diff —
 # the matrix is a curated artifact, not a build product.
+!area docs -- spec-authoring guide; Test IDs are illustrative examples
+!area objects/helpers -- LiveObjects is not implemented in this SDK (out of scope)
+!area objects/integration -- LiveObjects is not implemented in this SDK (out of scope)
+!area objects/unit -- LiveObjects is not implemented in this SDK (out of scope)
+!area realtime/integration -- pending TASK-11 (integration-spec traceability; realtime integration largely unimplemented)
+!area rest/integration -- pending TASK-11 (integration-spec traceability)
+
 realtime/unit/DO2a/filter-attribute-0 => do2a_derive_options_filter_attribute
 realtime/unit/PC3/no-plugin-fails-1 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
 realtime/unit/PC3/vcdiff-plugin-decodes-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)

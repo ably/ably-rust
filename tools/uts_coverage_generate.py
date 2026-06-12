@@ -182,6 +182,15 @@ for tid, src in ids:
         # claim coverage by the full candidate set (the spec point's tests)
         out_lines.append(f"{tid} => {', '.join(cands)}")
 
+AREA_EXCLUSIONS = {
+    "rest/integration": "pending TASK-11 (integration-spec traceability)",
+    "realtime/integration": "pending TASK-11 (integration-spec traceability; realtime integration largely unimplemented)",
+    "objects/unit": "LiveObjects is not implemented in this SDK (out of scope)",
+    "objects/integration": "LiveObjects is not implemented in this SDK (out of scope)",
+    "objects/helpers": "LiveObjects is not implemented in this SDK (out of scope)",
+    "docs": "spec-authoring guide; Test IDs are illustrative examples",
+}
+
 header = """# UTS coverage matrix — one line per UTS Test ID (rest/unit + realtime/unit).
 #
 #   <test-id> => <rust_test_fn>[, ...]   covered by these passing tests
@@ -193,7 +202,10 @@ header = """# UTS coverage matrix — one line per UTS Test ID (rest/unit + real
 # Regenerate/update via tools/uts_coverage_generate.py, then REVIEW the diff —
 # the matrix is a curated artifact, not a build product.
 """
-(REPO / "uts_coverage.txt").write_text(header + "\n".join(sorted(out_lines)) + "\n")
+area_lines = [f"!area {a} -- {r}" for a, r in sorted(AREA_EXCLUSIONS.items())]
+(REPO / "uts_coverage.txt").write_text(
+    header + "\n".join(area_lines) + "\n\n" + "\n".join(sorted(out_lines)) + "\n"
+)
 print(f"ids: {len(ids)}, unresolved: {len(unresolved)}")
 for u in unresolved:
     print(" ??", u)

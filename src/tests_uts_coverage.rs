@@ -38,6 +38,82 @@ fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Every directory under uts/ that contains Test IDs. The matrix must trace
+/// each area's IDs or carry an explicit `!area <name> -- <reason>` line
+/// (CLAUDE.md engineering policy 2: the whole spec tree is dispositioned).
+fn discover_areas(spec: &Path) -> BTreeSet<String> {
+    let mut areas = BTreeSet::new();
+    let Ok(entries) = std::fs::read_dir(spec) else {
+        return areas;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        // areas are one or two levels deep (rest/unit, rest/integration, …)
+        let mut subdirs = Vec::new();
+        if let Ok(subs) = std::fs::read_dir(&path) {
+            for sub in subs.flatten() {
+                if sub.path().is_dir() {
+                    subdirs.push(format!("{}/{}", name, sub.file_name().to_string_lossy()));
+                }
+            }
+        }
+        let candidates = if subdirs.is_empty() {
+            vec![name.clone()]
+        } else {
+            let mut c = subdirs;
+            c.push(name.clone());
+            c
+        };
+        for area in candidates {
+            let mut files = Vec::new();
+            collect_md_files(&spec.join(&area), &mut files);
+            let has_ids = files.iter().any(|f| {
+                std::fs::read_to_string(f)
+                    .map(|t| t.contains("**Test ID**"))
+                    .unwrap_or(false)
+            });
+            if has_ids {
+                areas.insert(area);
+            }
+        }
+    }
+    // keep only the most specific areas (drop a parent when a child exists)
+    let specific: BTreeSet<String> = areas
+        .iter()
+        .filter(|a| !areas.iter().any(|b| b.starts_with(&format!("{}/", a))))
+        .cloned()
+        .collect();
+    specific
+}
+
+fn collect_area_ids(spec: &Path, area: &str) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    let mut files = Vec::new();
+    collect_md_files(&spec.join(area), &mut files);
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let mut rest = text.as_str();
+        while let Some(pos) = rest.find("**Test ID**:") {
+            rest = &rest[pos + 12..];
+            if let Some(start) = rest.find('`') {
+                if let Some(end) = rest[start + 1..].find('`') {
+                    ids.insert(rest[start + 1..start + 1 + end].to_string());
+                    rest = &rest[start + 1 + end..];
+                    continue;
+                }
+            }
+            break;
+        }
+    }
+    ids
+}
+
 fn collect_spec_ids(spec: &Path) -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
     for area in ["rest/unit", "realtime/unit"] {
@@ -131,10 +207,22 @@ fn uts_coverage_matrix_is_complete() {
     let mut mapped: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut excluded: BTreeMap<String, String> = BTreeMap::new();
     let mut problems: Vec<String> = Vec::new();
-
+    let mut excluded_areas: BTreeMap<String, String> = BTreeMap::new();
     for (lineno, line) in matrix_text.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("!area ") {
+            match rest.split_once(" -- ") {
+                Some((area, reason)) if !reason.trim().is_empty() => {
+                    excluded_areas.insert(area.trim().to_string(), reason.trim().to_string());
+                }
+                _ => problems.push(format!(
+                    "line {}: `!area` requires `<name> -- <reason>`",
+                    lineno + 1
+                )),
+            }
             continue;
         }
         if let Some((id, fns)) = line.split_once(" => ") {
@@ -169,6 +257,26 @@ fn uts_coverage_matrix_is_complete() {
             "matrix lists {} but the spec no longer defines it",
             id
         ));
+    }
+
+    // CLAUDE.md policy 2: every spec area with Test IDs is dispositioned
+    let matrix_ids_all: BTreeSet<String> =
+        mapped.keys().chain(excluded.keys()).cloned().collect();
+    for area in discover_areas(&spec) {
+        if excluded_areas.contains_key(&area) {
+            continue;
+        }
+        let area_ids = collect_area_ids(&spec, &area);
+        let untracked = area_ids
+            .iter()
+            .filter(|id| !matrix_ids_all.contains(*id))
+            .count();
+        if untracked > 0 {
+            problems.push(format!(
+                "spec area `{}` has {} Test IDs not in the matrix and no `!area {} -- <reason>` exclusion",
+                area, untracked, area
+            ));
+        }
     }
 
     let fns = collect_test_fns();

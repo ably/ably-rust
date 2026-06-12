@@ -1675,6 +1675,42 @@ task → `TokenReady` → loop sends AUTH with new token over the writer queue.
 - **Derived channels (RTS5)**: name qualification `[filter=<b64>?<params>]`,
   registry semantics unchanged.
 
+## Observability (logging) policy — NORMATIVE
+
+Added 2026-06-12 after review found 6 log call sites in the whole library and
+silent-discard paths. This section is binding for all subsequent work; per
+CLAUDE.md, instrumentation per this policy is part of every change's
+definition of done.
+
+Levels (RSC2 scale) and what belongs at each:
+
+- **Error** — anything discarded or failed that a user would need to diagnose:
+  undecodable inbound frames (including tolerant-decode failures), undecodable
+  message/presence/annotation entries, ACK/NACK for unknown serials, transport
+  write failures, token acquisition failures that surface to state.
+- **Major** — material lifecycle events: connection state transitions (with
+  reason), channel state transitions (with reason), resume outcome
+  (success/failed + why), forced disconnects, re-entry failures, warnings
+  (missing modes, non-renewable tokens).
+- **Minor** — protocol-event detail: retry scheduling (delay, attempt),
+  host-fallback steps, AUTH/token renewal flow, sync start/complete,
+  queue/flush of pending operations.
+- **Micro** — trace: entry to every public API method (name + key arguments),
+  HTTP request/response lines, protocol messages sent/received (action +
+  channel + serial; never payloads or credentials).
+
+Rules:
+1. **No silent discards.** Every code path that drops data it received or
+   abandons an operation MUST log (Error or Major) with enough context to
+   diagnose — channel, action, serial as applicable.
+2. **Never log secrets or payloads**: no tokens, keys, message data, or
+   presence data at any level; ids/serials/names are fine.
+3. New public API methods land WITH their Micro entry trace; new state
+   machines land WITH their Major transition logs.
+4. The default client has no handler installed; library code must not assume
+   a sink exists (the `log` helper gates this) — but features SHOULD be
+   testable by installing a handler, and discard-path tests assert the log.
+
 ## 14. Enforcement: how this design stays adhered to
 
 Prose does not survive implementation pressure; these mechanisms do:

@@ -51,6 +51,27 @@ This avoids `as_any()` downcasting on the `HttpClient` trait. The handle is retr
 
 See `DESIGN.md` for the API surface and the plan in `.claude/plans/noble-strolling-marble.md` for phase tracking. `PROGRESS.md` tracks what's done per phase (all phases COMPLETE as of 2026-06-12).
 
+## Engineering policies (BINDING — added 2026-06-12 after review)
+
+These exist because each absence caused a real shortfall; they extend the
+definition of done for ALL subsequent work:
+
+1. **Observability is part of done.** Every change instruments per the
+   normative policy in DESIGN.md "Observability (logging) policy": Micro
+   trace at new API entries, Major for state transitions, Error for ANY
+   discarded data — no silent discards, ever. Discard paths get a test that
+   asserts the log.
+2. **The whole UTS tree is dispositioned.** tests_uts_coverage.rs enumerates
+   every area under uts/ that contains Test IDs; each area is either traced
+   in the matrix or carries an explicit `!area <name> -- <reason>` line.
+   An unaccounted area fails the build — "we didn't look there" cannot recur.
+3. **Matrix mappings are verified claims.** A generator/bootstrap may only
+   produce drafts; a mapping line asserting coverage of a Test ID must have
+   had its specific variant verified by a human-reviewed disposition. One ID
+   → several tests is only valid when each listed test genuinely contributes
+   to that ID's assertions. When in doubt, leave `?? UNRESOLVED` and let the
+   ratchet fail until resolved.
+
 ## Work management (Backlog.md)
 
 Subsequent work is managed with the Backlog.md CLI (tasks live in `backlog/tasks/`;
