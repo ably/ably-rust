@@ -1683,11 +1683,9 @@ Prose does not survive implementation pressure; these mechanisms do:
    embeds the realtime source files via `include_str!` and fails if any sync
    primitive (`Mutex`, `RwLock`, `Atomic*`, `OnceLock`, …) appears in them beyond
    the whitelist documented here. Steady-state whitelist: exactly one — the
-   `Channels` handle registry. Current temporary additions: the two pre-design
-   stub presence-map mutexes in channel.rs, which exist only because ~21 ported
-   presence tests poke them directly; stage 5.7 supersedes those tests per §12
-   and deletes the fields, reducing the channel.rs allowance from 3 to 1 (that
-   reduction is part of 5.7's definition of done). The ratchet runs on every
+   `Channels` handle registry. (The two temporary pre-design stub presence
+   mutexes were deleted in stage 5.7 as planned; the channel.rs allowance is
+   1, the steady state.) The ratchet runs on every
    `cargo test`; the first "harmless extra lock" fails the build and forces the
    design conversation at the moment it matters. Changing the whitelist requires
    editing the conformance test AND this section in the same commit — which is

@@ -117,6 +117,36 @@ pub(crate) enum Command {
         options: ChannelOptionsSpec,
         reply: oneshot::Sender<Result<()>>,
     },
+    /// RTP8/9/10/14/15: a presence operation (ENTER/UPDATE/LEAVE).
+    PresenceOp {
+        name: String,
+        message: crate::rest::PresenceMessage,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// RTP11: read the presence members.
+    PresenceGet {
+        name: String,
+        wait_for_sync: bool,
+        client_id: Option<String>,
+        connection_id: Option<String>,
+        reply: oneshot::Sender<Result<Vec<crate::rest::PresenceMessage>>>,
+    },
+    /// RTP6: register a presence subscriber.
+    PresenceSubscribe {
+        name: String,
+        id: u64,
+        actions: Option<Vec<crate::rest::PresenceAction>>,
+        sender: mpsc::UnboundedSender<crate::rest::PresenceMessage>,
+    },
+    /// RTP7: remove presence subscriber(s).
+    PresenceUnsubscribe {
+        name: String,
+        id: Option<u64>,
+        action: Option<crate::rest::PresenceAction>,
+    },
+    /// RTP17e (internal): a failed automatic re-entry becomes a channel
+    /// UPDATE event carrying the error.
+    PresenceReentryFailed { name: String, error: ErrorInfo },
 }
 
 /// RTL7/RTL22: what a subscriber wants delivered.
@@ -164,6 +194,8 @@ pub(crate) struct ChannelSnapshot {
     pub state: ChannelState,
     /// RTS3c/RTL16: the authoritative channel options.
     pub options: ChannelOptionsSpec,
+    /// RTP13: whether the initial presence sync has completed.
+    pub presence_sync_complete: bool,
     pub error_reason: Option<ErrorInfo>,
     pub channel_serial: Option<String>,
     pub attach_serial: Option<String>,
@@ -256,6 +288,8 @@ struct ChannelCtx {
     op_revert_state: ChannelState,
     /// RTL7/RTL8: message subscribers (§8 — unbounded, pruned on close).
     subscribers: Vec<Subscriber>,
+    /// RTP: the presence engine (DESIGN.md §9).
+    presence: PresenceCtx,
     snapshot_tx: watch::Sender<ChannelSnapshot>,
     events_tx: broadcast::Sender<ChannelStateChange>,
 }
@@ -265,6 +299,39 @@ struct Subscriber {
     id: u64,
     filter: SubscriberFilter,
     sender: mpsc::UnboundedSender<crate::rest::Message>,
+}
+
+/// DESIGN.md §9: per-channel presence state, loop-owned.
+#[derive(Default)]
+struct PresenceCtx {
+    map: crate::presence::PresenceMap,
+    /// RTP17: members entered through this connection, keyed by clientId.
+    internal: crate::presence::LocalPresenceMap,
+    /// RTP13: whether the initial post-attach sync has completed.
+    sync_complete: bool,
+    /// RTP6: presence subscribers.
+    subscribers: Vec<PresenceSubscriber>,
+    /// RTP11: get(waitForSync) replies deferred until the sync completes.
+    pending_get: Vec<DeferredPresenceGet>,
+    /// RTP16b: ops queued while the channel is ATTACHING.
+    queued_ops: Vec<QueuedPresenceOp>,
+}
+
+struct PresenceSubscriber {
+    id: u64,
+    actions: Option<Vec<crate::rest::PresenceAction>>,
+    sender: mpsc::UnboundedSender<crate::rest::PresenceMessage>,
+}
+
+struct DeferredPresenceGet {
+    client_id: Option<String>,
+    connection_id: Option<String>,
+    reply: oneshot::Sender<Result<Vec<crate::rest::PresenceMessage>>>,
+}
+
+struct QueuedPresenceOp {
+    message: crate::rest::PresenceMessage,
+    reply: oneshot::Sender<Result<()>>,
 }
 
 impl ChannelCtx {
@@ -282,6 +349,50 @@ impl ChannelCtx {
             ChannelState::Detached | ChannelState::Suspended | ChannelState::Failed
         ) {
             self.channel_serial = None;
+        }
+        // RTP5a: DETACHED/FAILED clear both presence maps and fail queued
+        // presence ops + deferred gets (RTL11); RTP5f: SUSPENDED keeps the
+        // map but the sync state is no longer authoritative
+        match to {
+            ChannelState::Detached | ChannelState::Failed => {
+                self.presence.map.clear();
+                self.presence.internal.clear();
+                self.presence.sync_complete = false;
+                let err = reason.clone().unwrap_or_else(|| {
+                    ErrorInfo::new(
+                        ErrorCode::ChannelOperationFailedInvalidChannelState.code(),
+                        format!("Channel became {:?}", to),
+                    )
+                });
+                for op in self.presence.queued_ops.drain(..) {
+                    let _ = op.reply.send(Err(err.clone()));
+                }
+                for get in self.presence.pending_get.drain(..) {
+                    let _ = get.reply.send(Err(err.clone()));
+                }
+            }
+            ChannelState::Suspended => {
+                self.presence.sync_complete = false;
+                let err = reason.clone().unwrap_or_else(|| {
+                    ErrorInfo::new(
+                        ErrorCode::ChannelOperationFailedInvalidChannelState.code(),
+                        "Channel suspended",
+                    )
+                });
+                for op in self.presence.queued_ops.drain(..) {
+                    let _ = op.reply.send(Err(err.clone()));
+                }
+                // RTP11d: a deferred waiting get cannot complete once the
+                // presence state is out of sync
+                for get in self.presence.pending_get.drain(..) {
+                    let _ = get.reply.send(Err(ErrorInfo::with_status(
+                        91005,
+                        400,
+                        "Presence state is out of sync (channel suspended)",
+                    )));
+                }
+            }
+            _ => {}
         }
         self.publish_snapshot();
         if previous != to {
@@ -315,6 +426,7 @@ impl ChannelCtx {
         let _ = self.snapshot_tx.send(ChannelSnapshot {
             state: self.state,
             options: self.options.clone(),
+            presence_sync_complete: self.presence.sync_complete,
             error_reason: self.error_reason.clone(),
             channel_serial: self.channel_serial.clone(),
             attach_serial: self.attach_serial.clone(),
@@ -360,6 +472,58 @@ fn channel_state_event(state: ChannelState) -> ChannelEvent {
         ChannelState::Suspended => ChannelEvent::Suspended,
         ChannelState::Failed => ChannelEvent::Failed,
     }
+}
+
+/// RTP6a/RTP6b: deliver to matching presence subscribers; prune closed.
+fn deliver_presence(
+    subscribers: &mut Vec<PresenceSubscriber>,
+    event: &crate::rest::PresenceMessage,
+) {
+    subscribers.retain(|sub| {
+        let matches = match &sub.actions {
+            None => true,
+            Some(actions) => event
+                .action
+                .map(|a| actions.contains(&a))
+                .unwrap_or(false),
+        };
+        if !matches {
+            return true;
+        }
+        sub.sender.send(event.clone()).is_ok()
+    });
+}
+
+/// RTP11: resolve deferred gets now that the sync state is settled.
+fn resolve_presence_gets(presence: &mut PresenceCtx) {
+    for get in std::mem::take(&mut presence.pending_get) {
+        let members = presence_members(presence, &get.client_id, &get.connection_id);
+        let _ = get.reply.send(Ok(members));
+    }
+}
+
+/// RTP11c2/c3: the members list with optional clientId/connectionId filters.
+fn presence_members(
+    presence: &PresenceCtx,
+    client_id: &Option<String>,
+    connection_id: &Option<String>,
+) -> Vec<crate::rest::PresenceMessage> {
+    presence
+        .map
+        .values()
+        .into_iter()
+        .filter(|m| {
+            client_id
+                .as_ref()
+                .map(|c| m.client_id.as_deref() == Some(c.as_str()))
+                .unwrap_or(true)
+                && connection_id
+                    .as_ref()
+                    .map(|c| m.connection_id.as_deref() == Some(c.as_str()))
+                    .unwrap_or(true)
+        })
+        .cloned()
+        .collect()
 }
 
 /// All mutable connection state, owned exclusively by the loop task.
@@ -685,6 +849,146 @@ impl ConnectionCtx {
         }
     }
 
+    /// RTP8/9/10: a presence operation per the RTP16 connection/channel
+    /// state table: send when ATTACHED, queue while ATTACHING (or implicit
+    /// attach from INITIALIZED, RTP8d), error otherwise (RTP8g/RTP16c).
+    fn handle_presence_op(
+        &mut self,
+        name: String,
+        message: crate::rest::PresenceMessage,
+        reply: oneshot::Sender<Result<()>>,
+    ) {
+        let connected = self.state == ConnectionState::Connected;
+        let rtt = self.rest.inner.opts.realtime_request_timeout;
+        let Some(ch) = self.channels.get_mut(&name) else {
+            let _ = reply.send(Err(ErrorInfo::new(
+                ErrorCode::BadRequest.code(),
+                "Unknown channel",
+            )));
+            return;
+        };
+        match ch.state {
+            ChannelState::Attached => {
+                if connected {
+                    self.send_presence(name, message, reply);
+                } else if self.rest.inner.opts.queue_messages
+                    && matches!(
+                        self.state,
+                        ConnectionState::Connecting | ConnectionState::Disconnected
+                    )
+                {
+                    ch.presence.queued_ops.push(QueuedPresenceOp { message, reply });
+                } else {
+                    let _ = reply.send(Err(ErrorInfo::new(
+                        ErrorCode::Disconnected.code(),
+                        format!("Cannot send presence in connection state {:?}", self.state),
+                    )));
+                }
+            }
+            // RTP16b: queued until the attach completes
+            ChannelState::Attaching => {
+                ch.presence.queued_ops.push(QueuedPresenceOp { message, reply });
+            }
+            // RTP8d: an INITIALIZED channel is implicitly attached
+            ChannelState::Initialized => {
+                ch.presence.queued_ops.push(QueuedPresenceOp { message, reply });
+                let (attach_reply, _rx) = oneshot::channel();
+                self.handle_attach(name, attach_reply);
+            }
+            // RTP8g/RTP16c: DETACHED/DETACHING/SUSPENDED/FAILED error
+            _ => {
+                let _ = reply.send(Err(ErrorInfo::with_status(
+                    ErrorCode::UnableToEnterPresenceChannelInvalidChannelState.code(),
+                    400,
+                    format!("Cannot send presence in channel state {:?}", ch.state),
+                )));
+            }
+        }
+    }
+
+    /// Send a PRESENCE ProtocolMessage with the next msgSerial; the ACK/NACK
+    /// resolves the reply through the pending-publish machinery (RTL11a:
+    /// resolution is unaffected by later channel state changes).
+    fn send_presence(
+        &mut self,
+        name: String,
+        message: crate::rest::PresenceMessage,
+        reply: oneshot::Sender<Result<()>>,
+    ) {
+        let wire = match serde_json::to_value(&message) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = reply.send(Err(e.into()));
+                return;
+            }
+        };
+        let serial = self.msg_serial;
+        self.msg_serial += 1;
+        let mut pm = ProtocolMessage::new(action::PRESENCE);
+        pm.channel = Some(name.clone());
+        pm.msg_serial = Some(serial);
+        pm.presence = Some(vec![wire]);
+        self.send_protocol(pm);
+        let (ack_reply, ack_rx) = oneshot::channel::<Result<crate::rest::PublishResult>>();
+        self.pending_publishes.push(PendingPublish {
+            msg_serial: serial,
+            channel: name,
+            wire_messages: Vec::new(),
+            params: None,
+            reply: ack_reply,
+        });
+        tokio::spawn(async move {
+            let outcome = match ack_rx.await {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(ErrorInfo::new(
+                    ErrorCode::Disconnected.code(),
+                    "Connection loop dropped the presence op",
+                )),
+            };
+            let _ = reply.send(outcome);
+        });
+    }
+
+    /// RTP11: presence get with waitForSync semantics.
+    fn handle_presence_get(
+        &mut self,
+        name: String,
+        wait_for_sync: bool,
+        client_id: Option<String>,
+        connection_id: Option<String>,
+        reply: oneshot::Sender<Result<Vec<crate::rest::PresenceMessage>>>,
+    ) {
+        let Some(ch) = self.channels.get_mut(&name) else {
+            let _ = reply.send(Ok(Vec::new()));
+            return;
+        };
+        // RTP11d: SUSPENDED errors unless waitForSync=false
+        if ch.state == ChannelState::Suspended {
+            if wait_for_sync {
+                let _ = reply.send(Err(ErrorInfo::with_status(
+                    91005,
+                    400,
+                    "Presence state is out of sync (channel suspended)",
+                )));
+            } else {
+                let _ = reply.send(Ok(presence_members(&ch.presence, &client_id, &connection_id)));
+            }
+            return;
+        }
+        if !wait_for_sync || ch.presence.sync_complete {
+            let _ = reply.send(Ok(presence_members(&ch.presence, &client_id, &connection_id)));
+            return;
+        }
+        // RTP11a/RTP11b: defer until the sync completes (the implicit attach
+        // is issued handle-side)
+        ch.presence.pending_get.push(DeferredPresenceGet {
+            client_id,
+            connection_id,
+            reply,
+        });
+    }
+
     /// RTL15b: MESSAGE/PRESENCE/SYNC carrying a channelSerial update the
     /// channel's serial.
     fn update_channel_serial(&mut self, pm: &ProtocolMessage) {
@@ -731,6 +1035,62 @@ impl ConnectionCtx {
             msg.data = data;
             msg.encoding = encoding;
             ch.deliver(&msg);
+        }
+    }
+
+    /// RTP6/RTP17/RTP18/RTP19: inbound PRESENCE or SYNC. Field population
+    /// follows TM2 conventions; events are dispatched per RTP2 newness.
+    fn handle_presence_action(&mut self, pm: ProtocolMessage, is_sync: bool) {
+        self.update_channel_serial(&pm);
+        let Some(name) = pm.channel.clone() else { return };
+        let own_connection = self.id.clone();
+        let Some(ch) = self.channels.get_mut(&name) else { return };
+
+        if is_sync && !ch.presence.map.sync_in_progress() {
+            // RTP18a: a new sync page stream begins
+            ch.presence.map.start_sync();
+            ch.presence.sync_complete = false;
+            ch.publish_snapshot();
+        }
+
+        let wire = pm.presence.clone().unwrap_or_default();
+        for (index, value) in wire.into_iter().enumerate() {
+            let Ok(mut msg) = serde_json::from_value::<crate::rest::PresenceMessage>(value)
+            else {
+                continue;
+            };
+            // TM2-shaped inheritance
+            if msg.id.is_none() {
+                if let Some(pm_id) = &pm.id {
+                    msg.id = Some(format!("{}:{}", pm_id, index));
+                }
+            }
+            if msg.connection_id.is_none() {
+                msg.connection_id = pm.connection_id.clone();
+            }
+            if msg.timestamp.is_none() {
+                msg.timestamp = pm.timestamp;
+            }
+            msg.decode_with_cipher(ch.options.cipher.as_ref());
+            // RTP17: members entered through THIS connection feed the
+            // internal map
+            if own_connection.is_some() && msg.connection_id == own_connection {
+                ch.presence.internal.put(&msg);
+            }
+            if let Some(event) = ch.presence.map.put(&msg) {
+                deliver_presence(&mut ch.presence.subscribers, &event);
+            }
+        }
+
+        // RTP18b/RTP18c: the sync completes when the cursor is exhausted
+        if is_sync && !crate::presence::sync_continues(&pm.channel_serial) {
+            let leaves = ch.presence.map.end_sync();
+            for leave in &leaves {
+                deliver_presence(&mut ch.presence.subscribers, leave);
+            }
+            ch.presence.sync_complete = true;
+            ch.publish_snapshot();
+            resolve_presence_gets(&mut ch.presence);
         }
     }
 
@@ -1024,11 +1384,62 @@ impl ConnectionCtx {
                     next_retry_in: None,
                     op_revert_state: ChannelState::Initialized,
                     subscribers: Vec::new(),
+                    presence: PresenceCtx::default(),
                     snapshot_tx,
                     events_tx,
                 });
             }
             Command::Attach { name, reply } => self.handle_attach(name, reply),
+            Command::PresenceOp { name, message, reply } => {
+                self.handle_presence_op(name, message, reply);
+            }
+            Command::PresenceGet { name, wait_for_sync, client_id, connection_id, reply } => {
+                self.handle_presence_get(name, wait_for_sync, client_id, connection_id, reply);
+            }
+            Command::PresenceSubscribe { name, id, actions, sender } => {
+                // RTP6: registration only; implicit attach happens handle-side
+                if let Some(ch) = self.channels.get_mut(&name) {
+                    ch.presence.subscribers.push(PresenceSubscriber { id, actions, sender });
+                }
+            }
+            Command::PresenceReentryFailed { name, error } => {
+                if let Some(ch) = self.channels.get_mut(&name) {
+                    // RTP17e: 91004 wraps the underlying failure
+                    let mut wrapped = ErrorInfo::with_cause(
+                        91004,
+                        "Automatic presence re-entry failed",
+                        error,
+                    );
+                    wrapped.status_code = Some(400);
+                    // RTP17e: resumed=true — the channel itself was continuous
+                    ch.emit_update(Some(wrapped), true, false);
+                }
+            }
+            Command::PresenceUnsubscribe { name, id, action } => {
+                if let Some(ch) = self.channels.get_mut(&name) {
+                    match (id, action) {
+                        // RTP7b: narrow this listener's registration by one
+                        // action; drop it only when nothing remains
+                        (Some(id), Some(act)) => {
+                            for sub in ch.presence.subscribers.iter_mut() {
+                                if sub.id == id {
+                                    if let Some(actions) = &mut sub.actions {
+                                        actions.retain(|a| *a != act);
+                                    }
+                                }
+                            }
+                            ch.presence.subscribers.retain(|s| {
+                                !(s.id == id
+                                    && s.actions.as_ref().is_some_and(|a| a.is_empty()))
+                            });
+                        }
+                        // RTP7a: this listener everywhere
+                        (Some(id), None) => ch.presence.subscribers.retain(|s| s.id != id),
+                        // RTP7c: everyone
+                        _ => ch.presence.subscribers.clear(),
+                    }
+                }
+            }
             Command::Detach { name, reply } => self.handle_detach(name, reply),
             Command::ReleaseChannel { name, reply } => {
                 let mut reply = Some(reply);
@@ -1218,8 +1629,8 @@ impl ConnectionCtx {
             action::ACK => self.handle_ack(pm),
             action::NACK => self.handle_nack(pm),
             action::MESSAGE => self.handle_message_action(pm),
-            // 5.7 brings the presence engine; RTL15b serial updates apply now
-            action::PRESENCE | action::SYNC => self.update_channel_serial(&pm),
+            action::PRESENCE => self.handle_presence_action(pm, false),
+            action::SYNC => self.handle_presence_action(pm, true),
             action::HEARTBEAT => {
                 // RTN13e: only a HEARTBEAT carrying a known ping id resolves a
                 // ping; id-less heartbeats are server liveness traffic only
@@ -1575,10 +1986,66 @@ impl ConnectionCtx {
                 // RTL13b: a successful attach ends the retry cycle
                 ch.retry_at = None;
                 ch.retry_count = 0;
+                // RTP1/RTP19a: HAS_PRESENCE announces an incoming sync;
+                // without it the presence set is authoritatively empty
+                let has_presence = pm
+                    .flags
+                    .map(|f| f & flags::HAS_PRESENCE != 0)
+                    .unwrap_or(false);
+                if has_presence {
+                    ch.presence.map.start_sync();
+                    ch.presence.sync_complete = false;
+                } else {
+                    ch.presence.map.start_sync();
+                    let leaves = ch.presence.map.end_sync();
+                    for leave in &leaves {
+                        deliver_presence(&mut ch.presence.subscribers, leave);
+                    }
+                    ch.presence.sync_complete = true;
+                    resolve_presence_gets(&mut ch.presence);
+                }
                 ch.resolve_attach(Ok(()));
                 ch.transition(ChannelState::Attached, pm.error, resumed, has_backlog);
+                // RTP5b: queued presence ops go out now
+                let queued: Vec<QueuedPresenceOp> = ch.presence.queued_ops.drain(..).collect();
+                // RTP17i: automatic re-entry of internal members on a
+                // non-resumed attach; RTP17g1: the id is omitted when the
+                // connectionId changed
+                let mut reentries = Vec::new();
+                if !resumed {
+                    let own = self.id.clone();
+                    for member in ch.presence.internal.values() {
+                        let mut enter = member.clone();
+                        enter.action = Some(crate::rest::PresenceAction::Enter);
+                        if enter.connection_id != own {
+                            enter.id = None;
+                        }
+                        enter.connection_id = None;
+                        reentries.push(enter);
+                    }
+                }
+                let detach_now = std::mem::take(&mut ch.detach_pending);
+                for op in queued {
+                    self.send_presence(name.clone(), op.message, op.reply);
+                }
+                for enter in reentries {
+                    let (reply, rx) = oneshot::channel();
+                    self.send_presence(name.clone(), enter, reply);
+                    // RTP17e: a failed re-entry surfaces as a channel UPDATE
+                    // with the error
+                    let input_tx = self.input_tx.clone();
+                    let chan = name.clone();
+                    tokio::spawn(async move {
+                        if let Ok(Err(err)) = rx.await {
+                            let _ = input_tx.send(LoopInput::Cmd(Command::PresenceReentryFailed {
+                                name: chan,
+                                error: err,
+                            }));
+                        }
+                    });
+                }
                 // RTL5i: a queued detach proceeds now
-                if std::mem::take(&mut ch.detach_pending) {
+                if detach_now {
                     let (tx, _rx) = oneshot::channel();
                     self.handle_detach(name, tx);
                 }
@@ -1593,6 +2060,52 @@ impl ConnectionCtx {
                 // RTL12: RESUMED means continuity was preserved — no UPDATE
                 if !resumed {
                     ch.emit_update(pm.error, resumed, has_backlog);
+                    // RTP1/RTP19a: the flagless re-ATTACHED makes the
+                    // presence set authoritatively empty; with HAS_PRESENCE a
+                    // fresh sync follows
+                    let has_presence = pm
+                        .flags
+                        .map(|f| f & flags::HAS_PRESENCE != 0)
+                        .unwrap_or(false);
+                    if has_presence {
+                        ch.presence.map.start_sync();
+                        ch.presence.sync_complete = false;
+                        ch.publish_snapshot();
+                    } else {
+                        ch.presence.map.start_sync();
+                        let leaves = ch.presence.map.end_sync();
+                        for leave in &leaves {
+                            deliver_presence(&mut ch.presence.subscribers, leave);
+                        }
+                        ch.presence.sync_complete = true;
+                        ch.publish_snapshot();
+                        resolve_presence_gets(&mut ch.presence);
+                    }
+                    // RTP17i: continuity was lost — re-enter internal members
+                    let own = self.id.clone();
+                    let mut reentries = Vec::new();
+                    for member in ch.presence.internal.values() {
+                        let mut enter = member.clone();
+                        enter.action = Some(crate::rest::PresenceAction::Enter);
+                        if enter.connection_id != own {
+                            enter.id = None; // RTP17g1
+                        }
+                        enter.connection_id = None;
+                        reentries.push(enter);
+                    }
+                    for enter in reentries {
+                        let (reply, rx) = oneshot::channel();
+                        self.send_presence(name.clone(), enter, reply);
+                        let input_tx = self.input_tx.clone();
+                        let chan = name.clone();
+                        tokio::spawn(async move {
+                            if let Ok(Err(err)) = rx.await {
+                                let _ = input_tx.send(LoopInput::Cmd(
+                                    Command::PresenceReentryFailed { name: chan, error: err },
+                                ));
+                            }
+                        });
+                    }
                 }
             }
             // RTL5k: an ATTACHED while detaching/detached is answered with DETACH

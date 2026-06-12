@@ -593,7 +593,15 @@ impl RealtimeChannel {
 
     pub fn annotations(&self) -> RealtimeAnnotations<'_> { RealtimeAnnotations { channel: self } }
 
-    pub fn presence(&self) -> RealtimePresence { todo!() }
+    /// RTL9: the channel's presence operations.
+    pub fn presence(&self) -> RealtimePresence {
+        RealtimePresence {
+            name: self.name.clone(),
+            input_tx: self.input_tx.clone(),
+            snapshot_rx: self.snapshot_rx.clone(),
+            rest: self.rest.clone(),
+        }
+    }
     /// RTL10: history via REST. RTL10b: untilAttach scopes the query to
     /// messages before the current attachment (requires ATTACHED).
     pub async fn history(&self, until_attach: bool) -> Result<PaginatedResult<Message>> {
@@ -730,50 +738,254 @@ pub struct PresenceGetOptions {
     pub connection_id: Option<String>,
 }
 
+/// RTL9: the presence handle — thin like every other handle; all presence
+/// state lives in the loop's PresenceCtx (DESIGN.md §9).
 pub struct RealtimePresence {
-    pub(crate) inner: Arc<RealtimePresenceInner>,
-}
-
-pub(crate) struct RealtimePresenceInner {
-    // TEMPORARY (pre-design stub): ~21 ported presence tests poke these maps
-    // directly. Per DESIGN.md Realtime §12 they are superseded by UTS-derived
-    // tests in stage 5.7, at which point these fields are deleted — presence
-    // state lives in the loop-owned PresenceCtx (§9). Whitelisted as temporary
-    // in tests_design_conformance.rs; adding any further lock fails the build.
-    pub(crate) presence_map: std::sync::Mutex<crate::presence::PresenceMap>,
-    pub(crate) local_presence_map: std::sync::Mutex<crate::presence::LocalPresenceMap>,
+    pub(crate) name: String,
+    pub(crate) input_tx: mpsc::UnboundedSender<LoopInput>,
+    pub(crate) snapshot_rx: watch::Receiver<ChannelSnapshot>,
+    pub(crate) rest: crate::rest::Rest,
 }
 
 impl RealtimePresence {
-    pub fn sync_complete(&self) -> bool { todo!() }
-    pub async fn get(&self) -> Result<Vec<PresenceMessage>> { todo!() }
-    pub async fn get_with_options(&self, _options: &PresenceGetOptions) -> Result<Vec<PresenceMessage>> { todo!() }
-    pub async fn history(&self) -> Result<PaginatedResult<PresenceMessage>> { todo!() }
+    /// RTP13: whether the initial presence sync has completed.
+    pub fn sync_complete(&self) -> bool {
+        self.snapshot_rx.borrow().presence_sync_complete
+    }
 
+    fn maybe_implicit_attach(&self) {
+        if self.snapshot_rx.borrow().options.attach_on_subscribe {
+            let (reply, _rx) = oneshot::channel();
+            let _ = self.input_tx.send(LoopInput::Cmd(Command::Attach {
+                name: self.name.clone(),
+                reply,
+            }));
+        }
+    }
+
+    /// RTP11: the current members (waits for the initial sync).
+    pub async fn get(&self) -> Result<Vec<PresenceMessage>> {
+        self.get_with_options(&PresenceGetOptions {
+            wait_for_sync: true,
+            ..Default::default()
+        })
+        .await
+    }
+
+    /// RTP11c: get with waitForSync/clientId/connectionId options.
+    pub async fn get_with_options(
+        &self,
+        options: &PresenceGetOptions,
+    ) -> Result<Vec<PresenceMessage>> {
+        // RTP11b: get implicitly attaches
+        self.maybe_implicit_attach();
+        let (reply, rx) = oneshot::channel();
+        self.input_tx
+            .send(LoopInput::Cmd(Command::PresenceGet {
+                name: self.name.clone(),
+                wait_for_sync: options.wait_for_sync,
+                client_id: options.client_id.clone(),
+                connection_id: options.connection_id.clone(),
+                reply,
+            }))
+            .map_err(|_| closed_loop_error())?;
+        rx.await.map_err(|_| closed_loop_error())?
+    }
+
+    /// RTP12: presence history via REST.
+    pub async fn history(&self) -> Result<PaginatedResult<PresenceMessage>> {
+        self.rest
+            .channels()
+            .get(self.name.clone())
+            .presence()
+            .history()
+            .send()
+            .await
+    }
+
+    fn register(
+        &self,
+        actions: Option<Vec<PresenceAction>>,
+        callback: impl Fn(PresenceMessage) + Send + Sync + 'static,
+    ) -> PresenceSubscriptionId {
+        let id: u64 = rand::random();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let _ = self.input_tx.send(LoopInput::Cmd(Command::PresenceSubscribe {
+            name: self.name.clone(),
+            id,
+            actions,
+            sender,
+        }));
+        // RTP6d: subscribe implicitly attaches (RTP6e: unless disabled)
+        self.maybe_implicit_attach();
+        tokio::spawn(async move {
+            while let Some(msg) = receiver.recv().await {
+                callback(msg);
+            }
+        });
+        PresenceSubscriptionId(id)
+    }
+
+    /// RTP6a: subscribe to all presence events.
     pub fn subscribe(
         &self,
-        _callback: impl Fn(PresenceMessage) + Send + Sync + 'static,
-    ) -> PresenceSubscriptionId { todo!() }
+        callback: impl Fn(PresenceMessage) + Send + Sync + 'static,
+    ) -> PresenceSubscriptionId {
+        self.register(None, callback)
+    }
+
+    /// RTP6b: subscribe to one presence action.
     pub fn subscribe_action(
         &self,
-        _action: PresenceAction,
-        _callback: impl Fn(PresenceMessage) + Send + Sync + 'static,
-    ) -> PresenceSubscriptionId { todo!() }
+        action: PresenceAction,
+        callback: impl Fn(PresenceMessage) + Send + Sync + 'static,
+    ) -> PresenceSubscriptionId {
+        self.register(Some(vec![action]), callback)
+    }
+
+    /// RTP6b: subscribe to a set of presence actions.
     pub fn subscribe_actions(
         &self,
-        _actions: &[PresenceAction],
-        _callback: impl Fn(PresenceMessage) + Send + Sync + 'static,
-    ) -> PresenceSubscriptionId { todo!() }
-    pub fn unsubscribe(&self, _id: PresenceSubscriptionId) { todo!() }
-    pub fn unsubscribe_action(&self, _id: PresenceSubscriptionId, _action: PresenceAction) { todo!() }
-    pub fn unsubscribe_all(&self) { todo!() }
+        actions: &[PresenceAction],
+        callback: impl Fn(PresenceMessage) + Send + Sync + 'static,
+    ) -> PresenceSubscriptionId {
+        self.register(Some(actions.to_vec()), callback)
+    }
 
-    pub async fn enter(&self, _data: Option<serde_json::Value>) -> Result<()> { todo!() }
-    pub async fn update(&self, _data: Option<serde_json::Value>) -> Result<()> { todo!() }
-    pub async fn leave(&self, _data: Option<serde_json::Value>) -> Result<()> { todo!() }
-    pub async fn enter_client(&self, _client_id: &str, _data: Option<serde_json::Value>) -> Result<()> { todo!() }
-    pub async fn update_client(&self, _client_id: &str, _data: Option<serde_json::Value>) -> Result<()> { todo!() }
-    pub async fn leave_client(&self, _client_id: &str, _data: Option<serde_json::Value>) -> Result<()> { todo!() }
+    /// RTP7a: remove this listener.
+    pub fn unsubscribe(&self, id: PresenceSubscriptionId) {
+        let _ = self.input_tx.send(LoopInput::Cmd(Command::PresenceUnsubscribe {
+            name: self.name.clone(),
+            id: Some(id.0),
+            action: None,
+        }));
+    }
+
+    /// RTP7b: remove this listener's registration for one action.
+    pub fn unsubscribe_action(&self, id: PresenceSubscriptionId, action: PresenceAction) {
+        let _ = self.input_tx.send(LoopInput::Cmd(Command::PresenceUnsubscribe {
+            name: self.name.clone(),
+            id: Some(id.0),
+            action: Some(action),
+        }));
+    }
+
+    /// RTP7c: remove every presence listener.
+    pub fn unsubscribe_all(&self) {
+        let _ = self.input_tx.send(LoopInput::Cmd(Command::PresenceUnsubscribe {
+            name: self.name.clone(),
+            id: None,
+            action: None,
+        }));
+    }
+
+    /// RTP8j/RTP14/RTP15f: resolve and validate the clientId for an op.
+    fn op_client_id(&self, explicit: Option<&str>) -> Result<String> {
+        let own = self.rest.auth().client_id();
+        match explicit {
+            // RTP8j: the wildcard is never a valid presence identity
+            Some("*") => Err(ErrorInfo::with_status(
+                crate::error::ErrorCode::UnableToEnterPresenceChannelNoClientID.code(),
+                400,
+                "The wildcard clientId cannot enter presence",
+            )),
+            Some(cid) => {
+                // RTP15f: an explicit clientId must be compatible
+                if let Some(own) = &own {
+                    if own != "*" && own != cid {
+                        return Err(ErrorInfo::with_status(
+                            crate::error::ErrorCode::InvalidClientID.code(),
+                            400,
+                            "clientId is incompatible with the client's identity",
+                        ));
+                    }
+                }
+                Ok(cid.to_string())
+            }
+            None => match own.as_deref() {
+                // RTP8j: an identified, non-wildcard clientId is required
+                None | Some("*") => Err(ErrorInfo::with_status(
+                    crate::error::ErrorCode::UnableToEnterPresenceChannelNoClientID.code(),
+                    400,
+                    "Presence operations require a clientId",
+                )),
+                Some(cid) => Ok(cid.to_string()),
+            },
+        }
+    }
+
+    async fn op(
+        &self,
+        action: PresenceAction,
+        client_id: Option<&str>,
+        data: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let explicit = client_id.is_some();
+        let resolved = self.op_client_id(client_id)?;
+        let message = PresenceMessage {
+            action: Some(action),
+            // RTP8c: own-identity ops omit clientId on the wire (the server
+            // applies the connection's identity); *_client variants carry it
+            client_id: if explicit { Some(resolved) } else { None },
+            data: match data {
+                None => crate::rest::Data::None,
+                Some(serde_json::Value::String(st)) => crate::rest::Data::String(st),
+                Some(v) => crate::rest::Data::JSON(v),
+            },
+            ..Default::default()
+        };
+        let (reply, rx) = oneshot::channel();
+        self.input_tx
+            .send(LoopInput::Cmd(Command::PresenceOp {
+                name: self.name.clone(),
+                message,
+                reply,
+            }))
+            .map_err(|_| closed_loop_error())?;
+        rx.await.map_err(|_| closed_loop_error())?
+    }
+
+    /// RTP8: enter this client into presence.
+    pub async fn enter(&self, data: Option<serde_json::Value>) -> Result<()> {
+        self.op(PresenceAction::Enter, None, data).await
+    }
+
+    /// RTP9: update this client's presence data.
+    pub async fn update(&self, data: Option<serde_json::Value>) -> Result<()> {
+        self.op(PresenceAction::Update, None, data).await
+    }
+
+    /// RTP10: leave presence.
+    pub async fn leave(&self, data: Option<serde_json::Value>) -> Result<()> {
+        self.op(PresenceAction::Leave, None, data).await
+    }
+
+    /// RTP14/RTP15: enter on behalf of another clientId.
+    pub async fn enter_client(
+        &self,
+        client_id: &str,
+        data: Option<serde_json::Value>,
+    ) -> Result<()> {
+        self.op(PresenceAction::Enter, Some(client_id), data).await
+    }
+
+    /// RTP15: update on behalf of another clientId.
+    pub async fn update_client(
+        &self,
+        client_id: &str,
+        data: Option<serde_json::Value>,
+    ) -> Result<()> {
+        self.op(PresenceAction::Update, Some(client_id), data).await
+    }
+
+    /// RTP15: leave on behalf of another clientId.
+    pub async fn leave_client(
+        &self,
+        client_id: &str,
+        data: Option<serde_json::Value>,
+    ) -> Result<()> {
+        self.op(PresenceAction::Leave, Some(client_id), data).await
+    }
 }
 
 // --- RealtimeAnnotations ---

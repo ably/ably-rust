@@ -595,3 +595,40 @@ This pass added:
 - Next: 5.7 presence (PresenceCtx in the loop; DELETES the 2 temporary stub
   mutexes and reduces the channel.rs conformance allowance 3 -> 1).
 
+### 5.7 Realtime Presence — DONE (2026-06-12)
+- PresenceMap/LocalPresenceMap rewritten as pure loop-owned data per the UTS
+  map specs: RTP2 newness (id msgSerial:index for same-connection real ids,
+  timestamps otherwise, RTP2b1a incoming-wins ties), RTP2d2 stored-as-PRESENT
+  with RTP2d1 original-action events, RTP2h LEAVE semantics (ABSENT during
+  sync, deleted at endSync), RTP18 sync lifecycle with RTP19 residual
+  tracking and synthesized LEAVEs (id=None), RTP17h clientId-keyed local map
+  with synthesized-leave immunity.
+- PresenceCtx in ChannelCtx (DESIGN §9): inbound PRESENCE/SYNC engine (TM2
+  field inheritance, cipher decode, RTL15b serials), RTP1/RTP19a attach-time
+  semantics (HAS_PRESENCE sync vs authoritative-empty, ALSO on additional
+  non-resumed ATTACHED), RTP5a/b/f channel-state effects, RTP17 internal-map
+  maintenance from own-connection echoes, RTP17i/g/g1 automatic re-entry
+  (id omitted when the connectionId changed) with RTP17e failed-re-entry
+  UPDATE (91004 wrapping the cause, resumed=true).
+- Operations: enter/update/leave (+_client) per the RTP16 state table; RTP8c
+  own-identity ops omit clientId on the wire; RTP8j identity required,
+  wildcard rejected (91000); RTP15f mismatch rejected (40012). RTP11 get
+  with waitForSync deferral — failed on channel DETACHED/FAILED and 91005 on
+  SUSPENDED (a deferred-get hang the UTS tests caught). RTP6/7 subscribe
+  with per-action narrowing (RTP7b fixed to narrow, not remove). RTP12
+  history via REST.
+- STUB MUTEXES DELETED: channel.rs conformance allowance reduced 3 → 1 (the
+  steady state). Lock inventory: Channels registry + 2 REST locks, exactly.
+- UPSTREAM UTS CONFLICT flagged: RTP8j (wildcard enter errors) vs
+  RTP14a/15a/15c/RTP4 setups using clientId "*" with plain enter(); we
+  follow RTP8j and adapted those ported tests to unidentified key auth.
+- Tests: 17 UTS-derived in tests_realtime_uts_presence.rs incl. a LIVE
+  sandbox enter→subscribe→get→leave round trip. Ported sweep: 93 adopted,
+  26 superseded/deleted (19 poked the deleted stub mutexes, 6 standalone
+  no-loop handles, 1 broken rtp17g1 port).
+- Matrix: all 9 presence spec files converted (895 mapped / 70 excluded);
+  both ratchets green.
+- Test status: 1274 pass / 14 fail (annotations, 5.8) / 63 ignored; no
+  hangs (~22s).
+- Next: 5.8 annotations, then Phase 6 final verification.
+

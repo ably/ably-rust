@@ -14,17 +14,15 @@
 ///
 /// Allowed inventory per DESIGN.md:
 /// - channel.rs: one `Mutex` — the `Channels` handle registry (handles only,
-///   no protocol state, never held across await) — PLUS, TEMPORARILY, the two
-///   pre-design stub presence-map mutexes that ~21 ported tests poke directly.
-///   Stage 5.7 supersedes those tests with UTS-derived ones and deletes the
-///   fields; its PROGRESS entry must reduce this allowance from 3 to 1.
+///   no protocol state, never held across await). The two temporary
+///   pre-design presence stub mutexes were deleted in stage 5.7 as planned.
 /// - everything else: zero.
 ///
 /// tokio mpsc/oneshot/watch/broadcast are the design's sanctioned primitives
 /// and are not counted.
 const REALTIME_MODULES: &[(&str, &str, usize)] = &[
     ("realtime.rs", include_str!("realtime.rs"), 0),
-    ("channel.rs", include_str!("channel.rs"), 3),
+    ("channel.rs", include_str!("channel.rs"), 1),
     ("presence.rs", include_str!("presence.rs"), 0),
     ("transport.rs", include_str!("transport.rs"), 0),
     ("protocol.rs", include_str!("protocol.rs"), 0),

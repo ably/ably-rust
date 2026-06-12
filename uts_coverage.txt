@@ -80,10 +80,10 @@ realtime/unit/RTF1/unrecognised-attributes-ignored-0 => rtf1_rsf1_unrecognised_a
 realtime/unit/RTL10a/supports-rest-params-0 => rtl10b_until_attach
 realtime/unit/RTL10b/adds-from-serial-0 => rtl10b_until_attach
 realtime/unit/RTL10b/errors-when-not-attached-1 => rtl10b_until_attach
-realtime/unit/RTL11/queued-presence-fail-detached-0 !! stage 5.7 (presence)
-realtime/unit/RTL11/queued-presence-fail-failed-2 !! stage 5.7 (presence)
-realtime/unit/RTL11/queued-presence-fail-suspended-1 !! stage 5.7 (presence)
-realtime/unit/RTL11a/ack-nack-unaffected-by-state-0 !! stage 5.7 (presence)
+realtime/unit/RTL11/queued-presence-fail-detached-0 => rtl11_queued_presence_fails_on_detached
+realtime/unit/RTL11/queued-presence-fail-failed-2 => rtl11_queued_presence_fails_on_failed
+realtime/unit/RTL11/queued-presence-fail-suspended-1 => rtl11_queued_presence_fails_on_detached
+realtime/unit/RTL11a/ack-nack-unaffected-by-state-0 => rtl11a_ack_unaffected_by_channel_state
 realtime/unit/RTL12/no-error-null-reason-2 => rtl12_additional_attached_no_error_null_reason
 realtime/unit/RTL12/resumed-no-update-1 => rtl12_additional_attached_resumed_no_update
 realtime/unit/RTL12/update-emits-with-error-0 => rtl12_additional_attached_not_resumed_emits_update
@@ -241,7 +241,7 @@ realtime/unit/RTL8a/unsubscribe-noop-not-subscribed-1 => rtl8a_unsubscribe_non_s
 realtime/unit/RTL8a/unsubscribe-specific-listener-0 => rtl8a_unsubscribe_specific_listener
 realtime/unit/RTL8b/unsubscribe-named-listener-0 => rtl8b_unsubscribe_from_specific_name
 realtime/unit/RTL8c/unsubscribe-all-listeners-0 => rtl8c_unsubscribe_all
-realtime/unit/RTL9/presence-attribute-0 !! stage 5.7 (presence)
+realtime/unit/RTL9/presence-attribute-0 => rtl9_channel_presence_attribute
 realtime/unit/RTN13a/ping-heartbeat-roundtrip-0 => rtn13a_ping_sends_heartbeat_and_resolves_roundtrip
 realtime/unit/RTN13b/deferred-ping-error-failed-4 => rtn13b_deferred_ping_fails_on_failed
 realtime/unit/RTN13b/deferred-ping-error-suspended-5 => rtn13b_deferred_ping_fails_on_suspended
@@ -354,105 +354,105 @@ realtime/unit/RTN8c/id-null-after-closed-0 => rtn8c_rtn9c_id_and_key_null_after_
 realtime/unit/RTN9a/key-unset-until-connected-0 => rtn8a_rtn9a_id_and_key_unset_until_connected
 realtime/unit/RTN9b/key-unique-per-connection-0 => rtn8b_rtn9b_id_and_key_unique_per_connection
 realtime/unit/RTN9c/key-null-after-closed-0 => rtn8c_rtn9c_id_and_key_null_after_closed
-realtime/unit/RTP1/has-presence-triggers-sync-0 !! stage 5.7 (presence)
-realtime/unit/RTP1/no-has-presence-clears-existing-2 !! stage 5.7 (presence)
-realtime/unit/RTP1/no-has-presence-empty-1 !! stage 5.7 (presence)
-realtime/unit/RTP10a/leave-sends-presence-leave-0 !! stage 5.7 (presence)
-realtime/unit/RTP10a/leave-with-data-1 !! stage 5.7 (presence)
-realtime/unit/RTP11a/get-returns-members-single-sync-0 !! stage 5.7 (presence)
-realtime/unit/RTP11a/get-waits-for-multi-sync-1 !! stage 5.7 (presence)
-realtime/unit/RTP11b/get-implicitly-attaches-0 !! stage 5.7 (presence)
-realtime/unit/RTP11c1/get-no-wait-returns-immediately-0 !! stage 5.7 (presence)
-realtime/unit/RTP11c2/get-filtered-by-clientid-0 !! stage 5.7 (presence)
-realtime/unit/RTP11c3/get-filtered-by-connectionid-0 !! stage 5.7 (presence)
-realtime/unit/RTP11d/get-suspended-errors-default-0 !! stage 5.7 (presence)
-realtime/unit/RTP11d/get-suspended-no-wait-returns-1 !! stage 5.7 (presence)
-realtime/unit/RTP12a/history-supports-rest-params-0 !! stage 5.7 (presence)
-realtime/unit/RTP12c/history-returns-paginated-result-0 !! stage 5.7 (presence)
-realtime/unit/RTP13/sync-complete-attribute-0 !! stage 5.7 (presence)
-realtime/unit/RTP14a/enterclient-on-behalf-0 !! stage 5.7 (presence)
-realtime/unit/RTP15a/updateclient-leaveclient-0 !! stage 5.7 (presence)
-realtime/unit/RTP15c/enterclient-no-side-effects-0 !! stage 5.7 (presence)
-realtime/unit/RTP15e/enterclient-implicitly-attaches-0 !! stage 5.7 (presence)
-realtime/unit/RTP15f/enterclient-mismatched-clientid-0 !! stage 5.7 (presence)
-realtime/unit/RTP16a/presence-sent-when-attached-0 !! stage 5.7 (presence)
-realtime/unit/RTP16b/presence-queued-when-attaching-0 !! stage 5.7 (presence)
-realtime/unit/RTP16c/presence-errors-other-states-0 !! stage 5.7 (presence)
-realtime/unit/RTP17/clear-resets-state-2 !! stage 5.7 (presence)
-realtime/unit/RTP17/get-null-unknown-clientid-3 !! stage 5.7 (presence)
-realtime/unit/RTP17/multiple-clientids-coexist-0 !! stage 5.7 (presence)
-realtime/unit/RTP17/remove-one-of-multiple-1 !! stage 5.7 (presence)
-realtime/unit/RTP17/remove-unknown-noop-4 !! stage 5.7 (presence)
-realtime/unit/RTP17a/server-publishes-without-subscribe-0 !! stage 5.7 (presence)
-realtime/unit/RTP17b/enter-adds-to-map-0 !! stage 5.7 (presence)
-realtime/unit/RTP17b/enter-overwrites-enter-2 !! stage 5.7 (presence)
-realtime/unit/RTP17b/non-synthesized-leave-removes-5 !! stage 5.7 (presence)
-realtime/unit/RTP17b/present-adds-to-map-4 !! stage 5.7 (presence)
-realtime/unit/RTP17b/synthesized-leave-ignored-6 !! stage 5.7 (presence)
-realtime/unit/RTP17b/update-adds-to-map-1 !! stage 5.7 (presence)
-realtime/unit/RTP17b/update-overwrites-enter-3 !! stage 5.7 (presence)
-realtime/unit/RTP17e/failed-reentry-emits-update-error-0 !! stage 5.7 (presence)
-realtime/unit/RTP17g/reentry-publishes-enter-with-data-0 !! stage 5.7 (presence)
-realtime/unit/RTP17g1/reentry-omits-id-new-connid-0 !! stage 5.7 (presence)
-realtime/unit/RTP17h/keyed-by-clientid-0 !! stage 5.7 (presence)
-realtime/unit/RTP17i/auto-reentry-on-attached-0 !! stage 5.7 (presence)
-realtime/unit/RTP17i/no-reentry-with-resumed-flag-1 !! stage 5.7 (presence)
-realtime/unit/RTP18/endsync-without-startsync-noop-0 !! stage 5.7 (presence)
-realtime/unit/RTP18a/new-sync-discards-previous-1 !! stage 5.7 (presence)
-realtime/unit/RTP18a/startsync-sets-flag-0 !! stage 5.7 (presence)
-realtime/unit/RTP18b/endsync-clears-flag-0 !! stage 5.7 (presence)
-realtime/unit/RTP18c/single-message-sync-0 !! stage 5.7 (presence)
-realtime/unit/RTP19/empty-map-sync-no-leaves-3 !! stage 5.7 (presence)
-realtime/unit/RTP19/new-member-during-sync-survives-6 !! stage 5.7 (presence)
-realtime/unit/RTP19/presence-echoes-then-sync-preserves-5 !! stage 5.7 (presence)
-realtime/unit/RTP19/stale-members-leave-after-sync-0 !! stage 5.7 (presence)
-realtime/unit/RTP19/stale-sync-removes-from-residuals-4 !! stage 5.7 (presence)
-realtime/unit/RTP19/synth-leave-null-id-timestamp-1 !! stage 5.7 (presence)
-realtime/unit/RTP19/updated-members-survive-sync-2 !! stage 5.7 (presence)
-realtime/unit/RTP19a/no-has-presence-clears-members-0 !! stage 5.7 (presence)
-realtime/unit/RTP2/basic-put-and-get-0 !! stage 5.7 (presence)
-realtime/unit/RTP2/clear-resets-state-3 !! stage 5.7 (presence)
-realtime/unit/RTP2/multiple-members-coexist-1 !! stage 5.7 (presence)
-realtime/unit/RTP2/values-excludes-absent-2 !! stage 5.7 (presence)
-realtime/unit/RTP2b1/newness-by-timestamp-0 !! stage 5.7 (presence)
-realtime/unit/RTP2b1/older-synth-leave-rejected-1 !! stage 5.7 (presence)
-realtime/unit/RTP2b1a/equal-timestamps-incoming-wins-0 !! stage 5.7 (presence)
-realtime/unit/RTP2b2/newness-by-index-same-serial-1 !! stage 5.7 (presence)
-realtime/unit/RTP2b2/newness-by-msgserial-index-0 !! stage 5.7 (presence)
-realtime/unit/RTP2c/sync-uses-same-newness-0 !! stage 5.7 (presence)
-realtime/unit/RTP2d1/put-returns-original-action-0 !! stage 5.7 (presence)
-realtime/unit/RTP2d2/enter-stored-as-present-0 !! stage 5.7 (presence)
-realtime/unit/RTP2d2/present-stored-as-present-2 !! stage 5.7 (presence)
-realtime/unit/RTP2d2/update-stored-as-present-1 !! stage 5.7 (presence)
-realtime/unit/RTP2h1/leave-nonexistent-returns-null-1 !! stage 5.7 (presence)
-realtime/unit/RTP2h1/leave-outside-sync-removes-0 !! stage 5.7 (presence)
-realtime/unit/RTP2h2a/leave-during-sync-absent-cleanup-0 !! stage 5.7 (presence)
-realtime/unit/RTP2h2a/leave-during-sync-stores-absent-0 !! stage 5.7 (presence)
-realtime/unit/RTP2h2b/absent-deleted-on-endsync-0 !! stage 5.7 (presence)
-realtime/unit/RTP4/bulk-enterclient-diff-connections-1 !! stage 5.7 (presence)
-realtime/unit/RTP4/bulk-enterclient-same-connection-0 !! stage 5.7 (presence)
-realtime/unit/RTP5a/detached-clears-presence-maps-0 !! stage 5.7 (presence)
-realtime/unit/RTP5a/failed-clears-presence-maps-1 !! stage 5.7 (presence)
-realtime/unit/RTP5b/attached-sends-queued-presence-0 !! stage 5.7 (presence)
-realtime/unit/RTP5f/suspended-maintains-presence-map-0 !! stage 5.7 (presence)
-realtime/unit/RTP6/multiple-presence-in-single-message-1 !! stage 5.7 (presence)
-realtime/unit/RTP6/presence-events-update-map-0 !! stage 5.7 (presence)
-realtime/unit/RTP6a/subscribe-all-presence-events-0 !! stage 5.7 (presence)
-realtime/unit/RTP6b/subscribe-filtered-by-action-0 !! stage 5.7 (presence)
-realtime/unit/RTP6b/subscribe-filtered-multiple-actions-1 !! stage 5.7 (presence)
-realtime/unit/RTP6d/subscribe-implicitly-attaches-0 !! stage 5.7 (presence)
-realtime/unit/RTP6e/subscribe-no-attach-option-0 !! stage 5.7 (presence)
-realtime/unit/RTP7a/unsubscribe-specific-listener-0 !! stage 5.7 (presence)
-realtime/unit/RTP7b/unsubscribe-for-specific-action-0 !! stage 5.7 (presence)
-realtime/unit/RTP7c/unsubscribe-all-listeners-0 !! stage 5.7 (presence)
-realtime/unit/RTP8a/enter-sends-presence-enter-0 !! stage 5.7 (presence)
-realtime/unit/RTP8d/enter-implicitly-attaches-0 !! stage 5.7 (presence)
-realtime/unit/RTP8e/enter-with-data-0 !! stage 5.7 (presence)
-realtime/unit/RTP8g/enter-detached-failed-errors-0 !! stage 5.7 (presence)
-realtime/unit/RTP8h/nack-presence-permission-denied-0 !! stage 5.7 (presence)
-realtime/unit/RTP8j/enter-null-clientid-errors-0 !! stage 5.7 (presence)
-realtime/unit/RTP8j/enter-wildcard-clientid-errors-1 !! stage 5.7 (presence)
-realtime/unit/RTP9a/update-sends-presence-update-0 !! stage 5.7 (presence)
+realtime/unit/RTP1/has-presence-triggers-sync-0 => rtp1_rtp13_has_presence_triggers_sync
+realtime/unit/RTP1/no-has-presence-clears-existing-2 => rtp1_no_has_presence_means_empty
+realtime/unit/RTP1/no-has-presence-empty-1 => rtp1_no_has_presence_means_empty
+realtime/unit/RTP10a/leave-sends-presence-leave-0 => rtp10a_leave_sends_presence_leave
+realtime/unit/RTP10a/leave-with-data-1 => rtp10a_leave_with_data
+realtime/unit/RTP11a/get-returns-members-single-sync-0 => rtp11a_get_waits_for_multi_message_sync
+realtime/unit/RTP11a/get-waits-for-multi-sync-1 => rtp11a_get_waits_for_multi_message_sync
+realtime/unit/RTP11b/get-implicitly-attaches-0 => rtp11b_get_implicitly_attaches
+realtime/unit/RTP11c1/get-no-wait-returns-immediately-0 => rtp11c1_get_no_wait_returns_immediately
+realtime/unit/RTP11c2/get-filtered-by-clientid-0 => rtp11c2_rtp11c3_get_filters
+realtime/unit/RTP11c3/get-filtered-by-connectionid-0 => rtp11c2_rtp11c3_get_filters
+realtime/unit/RTP11d/get-suspended-errors-default-0 => rtp11d_get_suspended_semantics
+realtime/unit/RTP11d/get-suspended-no-wait-returns-1 => rtp11d_get_suspended_semantics
+realtime/unit/RTP12a/history-supports-rest-params-0 => rtp12a_history_delegates_to_rest
+realtime/unit/RTP12c/history-returns-paginated-result-0 => rtp12c_presence_history_returns_paginated_result
+realtime/unit/RTP13/sync-complete-attribute-0 => rtp13_sync_complete_after_sync
+realtime/unit/RTP14a/enterclient-on-behalf-0 => rtp14a_enter_client, rtp14a_enter_client_wildcard_errors
+realtime/unit/RTP15a/updateclient-leaveclient-0 => rtp15a_update_client_and_leave_client
+realtime/unit/RTP15c/enterclient-no-side-effects-0 => rtp15c_enter_client_no_side_effects
+realtime/unit/RTP15e/enterclient-implicitly-attaches-0 => rtp15e_enter_client_implicitly_attaches
+realtime/unit/RTP15f/enterclient-mismatched-clientid-0 => rtp15f_enter_client_requires_valid_client_id
+realtime/unit/RTP16a/presence-sent-when-attached-0 => rtp16a_presence_sent_when_attached
+realtime/unit/RTP16b/presence-queued-when-attaching-0 => rtp16b_presence_queued_when_attaching
+realtime/unit/RTP16c/presence-errors-other-states-0 => rtp16c_presence_errors_in_detached
+realtime/unit/RTP17/clear-resets-state-2 => rtp17_clear_resets_all
+realtime/unit/RTP17/get-null-unknown-clientid-3 => rtp17_get_unknown_returns_none
+realtime/unit/RTP17/multiple-clientids-coexist-0 => rtp17_multiple_client_ids_coexist
+realtime/unit/RTP17/remove-one-of-multiple-1 => rtp17_remove_one_of_multiple
+realtime/unit/RTP17/remove-unknown-noop-4 => rtp17_remove_unknown_is_noop
+realtime/unit/RTP17a/server-publishes-without-subscribe-0 => rtp17g1_reentry_omits_id_when_connection_changed
+realtime/unit/RTP17b/enter-adds-to-map-0 => rtp17b_enter_adds_to_map
+realtime/unit/RTP17b/enter-overwrites-enter-2 => rtp17b_enter_after_enter_overwrites
+realtime/unit/RTP17b/non-synthesized-leave-removes-5 => rtp17b_nonsynthesized_leave_removes
+realtime/unit/RTP17b/present-adds-to-map-4 => rtp17b_present_adds_to_map
+realtime/unit/RTP17b/synthesized-leave-ignored-6 => rtp17b_synthesized_leave_ignored
+realtime/unit/RTP17b/update-adds-to-map-1 => rtp17b_update_with_no_prior_adds_to_map
+realtime/unit/RTP17b/update-overwrites-enter-3 => rtp17b_update_after_enter_overwrites
+realtime/unit/RTP17e/failed-reentry-emits-update-error-0 => rtp17e_failed_reentry_emits_update
+realtime/unit/RTP17g/reentry-publishes-enter-with-data-0 => rtp17g1_reentry_omits_id_when_connection_changed
+realtime/unit/RTP17g1/reentry-omits-id-new-connid-0 => rtp17g1_reentry_omits_id_when_connection_changed
+realtime/unit/RTP17h/keyed-by-clientid-0 => rtp17h_keyed_by_client_id_not_member_key
+realtime/unit/RTP17i/auto-reentry-on-attached-0 => rtp17i_reentry_on_non_resumed_attach
+realtime/unit/RTP17i/no-reentry-with-resumed-flag-1 => rtp17i_no_reentry_when_resumed
+realtime/unit/RTP18/endsync-without-startsync-noop-0 => rtp18_end_sync_without_start_is_noop
+realtime/unit/RTP18a/new-sync-discards-previous-1 => rtp18a_new_sync_discards_previous
+realtime/unit/RTP18a/startsync-sets-flag-0 => rtp18a_start_sync_sets_in_progress
+realtime/unit/RTP18b/endsync-clears-flag-0 => rtp18b_end_sync_clears_in_progress
+realtime/unit/RTP18c/single-message-sync-0 => rtp18c_single_message_sync
+realtime/unit/RTP19/empty-map-sync-no-leaves-3 => rtp19_empty_map_sync_no_leave_events
+realtime/unit/RTP19/new-member-during-sync-survives-6 => rtp19_new_member_during_sync_is_not_stale
+realtime/unit/RTP19/presence-echoes-then-sync-preserves-5 => rtp19_presence_echoes_followed_by_sync_preserves_all
+realtime/unit/RTP19/stale-members-leave-after-sync-0 => rtp19_stale_members_get_leave_events
+realtime/unit/RTP19/stale-sync-removes-from-residuals-4 => rtp19_stale_sync_message_still_removes_from_residuals
+realtime/unit/RTP19/synth-leave-null-id-timestamp-1 => rtp19_synthesized_leave_has_null_id_and_current_timestamp
+realtime/unit/RTP19/updated-members-survive-sync-2 => rtp19_members_updated_during_sync_survive
+realtime/unit/RTP19a/no-has-presence-clears-members-0 => rtp19a_no_has_presence_clears_members
+realtime/unit/RTP2/basic-put-and-get-0 => rtp2_basic_put_and_get
+realtime/unit/RTP2/clear-resets-state-3 => rtp2_clear_resets_all_state
+realtime/unit/RTP2/multiple-members-coexist-1 => rtp2_multiple_members_coexist
+realtime/unit/RTP2/values-excludes-absent-2 => rtp2_values_excludes_absent
+realtime/unit/RTP2b1/newness-by-timestamp-0 => rtp2b1_synthesized_leave_newer_by_timestamp
+realtime/unit/RTP2b1/older-synth-leave-rejected-1 => rtp2b1_synthesized_leave_rejected_when_older
+realtime/unit/RTP2b1a/equal-timestamps-incoming-wins-0 => rtp2b1a_equal_timestamps_incoming_wins
+realtime/unit/RTP2b2/newness-by-index-same-serial-1 => rtp2b2_newness_by_index_when_serial_equal
+realtime/unit/RTP2b2/newness-by-msgserial-index-0 => rtp2b2_newness_by_index_when_serial_equal
+realtime/unit/RTP2c/sync-uses-same-newness-0 => rtp2c_sync_messages_use_same_newness
+realtime/unit/RTP2d1/put-returns-original-action-0 => rtp2d1_put_returns_message_with_original_action
+realtime/unit/RTP2d2/enter-stored-as-present-0 => rtp2d2_enter_stored_as_present
+realtime/unit/RTP2d2/present-stored-as-present-2 => rtp2d2_enter_stored_as_present
+realtime/unit/RTP2d2/update-stored-as-present-1 => rtp2d2_update_stored_as_present
+realtime/unit/RTP2h1/leave-nonexistent-returns-null-1 => rtp2h1_leave_for_nonexistent_returns_none
+realtime/unit/RTP2h1/leave-outside-sync-removes-0 => rtp2h1_leave_outside_sync_removes_member
+realtime/unit/RTP2h2a/leave-during-sync-absent-cleanup-0 => rtp2h2a_leave_during_sync_stores_as_absent
+realtime/unit/RTP2h2a/leave-during-sync-stores-absent-0 => rtp2h2a_leave_during_sync_stores_as_absent
+realtime/unit/RTP2h2b/absent-deleted-on-endsync-0 => rtp2h2b_absent_members_deleted_on_end_sync
+realtime/unit/RTP4/bulk-enterclient-diff-connections-1 => rtp4_50_members_different_connection, rtp4_50_members_enter_client_same_connection, rtp4_50_members_same_connection
+realtime/unit/RTP4/bulk-enterclient-same-connection-0 => rtp4_50_members_enter_client_same_connection
+realtime/unit/RTP5a/detached-clears-presence-maps-0 => rtp5a_rtp5f_channel_state_effects
+realtime/unit/RTP5a/failed-clears-presence-maps-1 => rtp5a_rtp5f_channel_state_effects
+realtime/unit/RTP5b/attached-sends-queued-presence-0 => rtp5b_attached_sends_queued_presence
+realtime/unit/RTP5f/suspended-maintains-presence-map-0 => rtp5a_rtp5f_channel_state_effects
+realtime/unit/RTP6/multiple-presence-in-single-message-1 => rtp6_presence_events_update_map
+realtime/unit/RTP6/presence-events-update-map-0 => rtp6_presence_events_update_map
+realtime/unit/RTP6a/subscribe-all-presence-events-0 => rtp6a_subscribe_all_presence_events
+realtime/unit/RTP6b/subscribe-filtered-by-action-0 => rtp6b_subscribe_filtered_single_action
+realtime/unit/RTP6b/subscribe-filtered-multiple-actions-1 => rtp6b_subscribe_filtered_multiple_actions
+realtime/unit/RTP6d/subscribe-implicitly-attaches-0 => rtp6d_subscribe_implicitly_attaches
+realtime/unit/RTP6e/subscribe-no-attach-option-0 => rtp6e_subscribe_attach_on_subscribe_false
+realtime/unit/RTP7a/unsubscribe-specific-listener-0 => rtp7a_unsubscribe_specific_listener
+realtime/unit/RTP7b/unsubscribe-for-specific-action-0 => rtp7b_unsubscribe_for_specific_action
+realtime/unit/RTP7c/unsubscribe-all-listeners-0 => rtp7c_unsubscribe_all
+realtime/unit/RTP8a/enter-sends-presence-enter-0 => rtp8a_enter_sends_presence_enter
+realtime/unit/RTP8d/enter-implicitly-attaches-0 => rtp8d_enter_implicitly_attaches
+realtime/unit/RTP8e/enter-with-data-0 => rtp8e_enter_with_data
+realtime/unit/RTP8g/enter-detached-failed-errors-0 => rtp8g_enter_on_detached_errors
+realtime/unit/RTP8h/nack-presence-permission-denied-0 => rtp8h_nack_presence_permission
+realtime/unit/RTP8j/enter-null-clientid-errors-0 => rtp8j_enter_no_client_id_errors
+realtime/unit/RTP8j/enter-wildcard-clientid-errors-1 => rtp8j_enter_wildcard_client_id_errors
+realtime/unit/RTP9a/update-sends-presence-update-0 => rtp9a_update_sends_presence_update
 realtime/unit/RTS1/channels-collection-accessible-0 => rts1_channels_collection_accessible
 realtime/unit/RTS2/channel-exists-check-0 => rts2_channel_exists
 realtime/unit/RTS2/iterate-channels-1 => rts2_iterate_channels

@@ -75,6 +75,8 @@ mod tests_realtime_uts_channels;
 mod tests_realtime_uts_messages;
 #[cfg(test)]
 mod tests_realtime_uts_channels_advanced;
+#[cfg(test)]
+mod tests_realtime_uts_presence;
 
 // Realtime unit tests
 #[cfg(test)]

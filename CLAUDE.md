@@ -10,7 +10,7 @@ These are the same value. The versioning scheme changed from decimal (e.g. "1.2"
 
 ## Test baseline
 
-1185 pass / 112 fail / 63 ignored (post stage 5.6, 2026-06-11). ALL failures are
+1274 pass / 14 fail / 63 ignored (post stage 5.7, 2026-06-12). ALL failures are
 unimplemented realtime stubs in tests_realtime_* files — every test in tests_rest_*
 and tests_proxy passes. Integration: 62 pass / 15 ignored against the live nonprod
 sandbox; proxy: 8/8 via uts-proxy. Run integration/proxy with --test-threads=1
@@ -70,8 +70,9 @@ These are requirements, not guidance. They apply to ALL realtime work (Phase 5+)
 2. **Complete allowed lock inventory**: the `Channels` handle registry Mutex,
    plus the two REST locks (auth_state, fallback_state). Nothing else.
    `tests_design_conformance.rs` enforces this on every `cargo test` — if it
-   fails, STOP and read its message; never weaken or bypass it. (Two stub
-   presence-map mutexes are temporarily whitelisted until stage 5.7.)
+   fails, STOP and read its message; never weaken or bypass it. (The two
+   temporary stub presence mutexes were deleted in 5.7 as planned;
+   channel.rs allowance is now exactly 1.)
 3. **The loop never awaits I/O.** Blocking work (transport connect, token
    acquisition, writes) happens in spawned tasks posting LoopInput back,
    generation-tagged.
