@@ -26,8 +26,10 @@ impl Realtime {
     /// RTC1: create a realtime client. RTN3: connects immediately unless
     /// `auto_connect(false)`.
     pub fn new(options: &ClientOptions) -> Result<Self> {
-        let transport: Arc<dyn Transport> =
-            Arc::new(crate::ws_transport::WsTransport::new(options.format));
+        let transport: Arc<dyn Transport> = Arc::new(crate::ws_transport::WsTransport::new(
+            options.format,
+            options.logger(),
+        ));
         Self::with_transport(options, transport)
     }
 
@@ -64,6 +66,7 @@ impl Realtime {
             input_tx: input_tx.clone(),
             snapshot_rx,
             events_tx,
+            logger: rest.inner.opts.logger(),
         };
         let realtime = Self {
             connection,
@@ -148,6 +151,7 @@ pub struct Connection {
     pub(crate) input_tx: mpsc::UnboundedSender<LoopInput>,
     pub(crate) snapshot_rx: watch::Receiver<ConnectionSnapshot>,
     pub(crate) events_tx: broadcast::Sender<ConnectionStateChange>,
+    pub(crate) logger: crate::options::Logger,
 }
 
 impl Connection {
@@ -187,17 +191,20 @@ impl Connection {
 
     /// RTN11: explicitly initiate connecting.
     pub fn connect(&self) {
+        self.logger.micro(|| "API: Connection::connect".to_string());
         let _ = self.input_tx.send(LoopInput::Cmd(Command::Connect));
     }
 
     /// RTN12: close the connection.
     pub fn close(&self) {
+        self.logger.micro(|| "API: Connection::close".to_string());
         let _ = self.input_tx.send(LoopInput::Cmd(Command::Close));
     }
 
     /// RTN13: heartbeat ping over the live connection; resolves with the
     /// round-trip time.
     pub async fn ping(&self) -> Result<Duration> {
+        self.logger.micro(|| "API: Connection::ping".to_string());
         let (reply, rx) = tokio::sync::oneshot::channel();
         self.input_tx
             .send(LoopInput::Cmd(Command::Ping { reply }))
@@ -261,6 +268,7 @@ impl Clone for Connection {
             input_tx: self.input_tx.clone(),
             snapshot_rx: self.snapshot_rx.clone(),
             events_tx: self.events_tx.clone(),
+            logger: self.logger.clone(),
         }
     }
 }

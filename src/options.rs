@@ -598,13 +598,75 @@ impl ClientOptions {
     /// RSC2: emit a log event if a handler is configured and `level` is at
     /// or below the configured severity threshold.
     pub(crate) fn log(&self, level: LogLevel, msg: &str) {
-        if level == LogLevel::None || self.log_level == LogLevel::None {
+        self.logger().log(level, msg);
+    }
+
+    /// A cheap, cloneable logging handle (DESIGN.md Observability policy).
+    pub(crate) fn logger(&self) -> Logger {
+        Logger {
+            level: self.log_level,
+            handler: self.log_handler.clone(),
+        }
+    }
+}
+
+/// The library's logging handle: level-gated, lazily formatted, and (with
+/// the `tracing` feature) bridged to the `tracing` crate when no explicit
+/// handler is installed.
+#[derive(Clone)]
+pub(crate) struct Logger {
+    level: LogLevel,
+    handler: Option<LogHandler>,
+}
+
+impl Logger {
+    pub fn enabled(&self, level: LogLevel) -> bool {
+        if level == LogLevel::None || self.level == LogLevel::None || level > self.level {
+            return false;
+        }
+        if self.handler.is_some() {
+            return true;
+        }
+        cfg!(feature = "tracing")
+    }
+
+    pub fn log(&self, level: LogLevel, msg: &str) {
+        if !self.enabled(level) {
             return;
         }
-        if level <= self.log_level {
-            if let Some(handler) = &self.log_handler {
-                handler(level, msg);
-            }
+        if let Some(handler) = &self.handler {
+            handler(level, msg);
+            return;
         }
+        let _ = msg; // used only by the tracing bridge below
+        #[cfg(feature = "tracing")]
+        match level {
+            LogLevel::Error => tracing::error!(target: "ably", "{}", msg),
+            LogLevel::Major => tracing::info!(target: "ably", "{}", msg),
+            LogLevel::Minor => tracing::debug!(target: "ably", "{}", msg),
+            LogLevel::Micro => tracing::trace!(target: "ably", "{}", msg),
+            LogLevel::None => {}
+        }
+    }
+
+    /// Lazily formatted logging: the closure runs only when the level is
+    /// enabled — use for Micro/Minor hot paths.
+    pub fn lazy(&self, level: LogLevel, f: impl FnOnce() -> String) {
+        if self.enabled(level) {
+            self.log(level, &f());
+        }
+    }
+
+    pub fn error(&self, f: impl FnOnce() -> String) {
+        self.lazy(LogLevel::Error, f);
+    }
+    pub fn major(&self, f: impl FnOnce() -> String) {
+        self.lazy(LogLevel::Major, f);
+    }
+    pub fn minor(&self, f: impl FnOnce() -> String) {
+        self.lazy(LogLevel::Minor, f);
+    }
+    pub fn micro(&self, f: impl FnOnce() -> String) {
+        self.lazy(LogLevel::Micro, f);
     }
 }

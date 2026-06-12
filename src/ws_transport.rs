@@ -13,11 +13,12 @@ use crate::transport::{Transport, TransportConnection, TransportEvent};
 
 pub(crate) struct WsTransport {
     format: Format,
+    logger: crate::options::Logger,
 }
 
 impl WsTransport {
-    pub fn new(format: Format) -> Self {
-        Self { format }
+    pub fn new(format: Format, logger: crate::options::Logger) -> Self {
+        Self { format, logger }
     }
 }
 
@@ -34,6 +35,7 @@ impl Transport for WsTransport {
         Ok(Box::new(WsConnection {
             stream,
             format: self.format,
+            logger: self.logger.clone(),
         }))
     }
 }
@@ -43,6 +45,7 @@ struct WsConnection {
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
     format: Format,
+    logger: crate::options::Logger,
 }
 
 #[async_trait]
@@ -65,11 +68,29 @@ impl TransportConnection for WsConnection {
             match self.stream.next().await? {
                 Ok(WsMessage::Text(text)) => match serde_json::from_str(&text) {
                     Ok(pm) => return Some(TransportEvent::Message(pm)),
-                    Err(_) => continue, // unparseable frame: skip (RTN19-shaped tolerance)
+                    Err(e) => {
+                        // tolerated, but never silently (observability policy)
+                        self.logger.error(|| {
+                            format!(
+                                "Discarding undecodable JSON frame ({} bytes): {}",
+                                text.len(),
+                                e
+                            )
+                        });
+                        continue;
+                    }
                 },
                 Ok(WsMessage::Binary(bytes)) => match decode_msgpack_tolerant(&bytes) {
                     Some(pm) => return Some(TransportEvent::Message(pm)),
-                    None => continue,
+                    None => {
+                        self.logger.error(|| {
+                            format!(
+                                "Discarding undecodable msgpack frame ({} bytes) — failed even tolerant decode",
+                                bytes.len()
+                            )
+                        });
+                        continue;
+                    }
                 },
                 Ok(WsMessage::Close(_)) => return Some(TransportEvent::Disconnected),
                 Ok(_) => continue, // ping/pong/frame are transport-level

@@ -260,8 +260,7 @@ fn uts_coverage_matrix_is_complete() {
     }
 
     // CLAUDE.md policy 2: every spec area with Test IDs is dispositioned
-    let matrix_ids_all: BTreeSet<String> =
-        mapped.keys().chain(excluded.keys()).cloned().collect();
+    let matrix_ids_all: BTreeSet<String> = mapped.keys().chain(excluded.keys()).cloned().collect();
     for area in discover_areas(&spec) {
         if excluded_areas.contains_key(&area) {
             continue;

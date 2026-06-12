@@ -38,6 +38,11 @@ impl Channels {
     /// RTS3a: get-or-create a channel. Repeated gets return the same
     /// instance; a bare get never modifies an existing channel's options.
     pub fn get(&self, name: &str) -> Arc<RealtimeChannel> {
+        self.rest
+            .inner
+            .opts
+            .logger()
+            .micro(|| format!("API: channels.get('{}')", name));
         if let Some(existing) = self.registry.lock().unwrap().get(name) {
             return existing.clone();
         }
@@ -155,6 +160,11 @@ impl Channels {
 
     /// RTS4a: detach (if needed) and remove the channel.
     pub async fn release(&self, name: &str) {
+        self.rest
+            .inner
+            .opts
+            .logger()
+            .micro(|| format!("API: channels.release('{}')", name));
         let (reply, rx) = oneshot::channel();
         let _ = self.input_tx.send(LoopInput::Cmd(Command::ReleaseChannel {
             name: name.to_string(),
@@ -348,6 +358,11 @@ impl RealtimeChannel {
 
     /// RTL4: attach this channel; resolves when the server confirms.
     pub async fn attach(&self) -> Result<()> {
+        self.rest
+            .inner
+            .opts
+            .logger()
+            .micro(|| format!("API: channel('{}').attach", self.name));
         let (reply, rx) = oneshot::channel();
         self.input_tx
             .send(LoopInput::Cmd(Command::Attach {
@@ -360,6 +375,11 @@ impl RealtimeChannel {
 
     /// RTL5: detach this channel; resolves when the server confirms.
     pub async fn detach(&self) -> Result<()> {
+        self.rest
+            .inner
+            .opts
+            .logger()
+            .micro(|| format!("API: channel('{}').detach", self.name));
         let (reply, rx) = oneshot::channel();
         self.input_tx
             .send(LoopInput::Cmd(Command::Detach {
@@ -373,6 +393,11 @@ impl RealtimeChannel {
     /// RTL16: set/update the channel options; RTL16a: reattaches (and waits
     /// for the reattach) when the change requires it.
     pub async fn set_options(&self, options: RealtimeChannelOptions) -> Result<()> {
+        self.rest
+            .inner
+            .opts
+            .logger()
+            .micro(|| format!("API: channel('{}').set_options", self.name));
         let (reply, rx) = oneshot::channel();
         self.input_tx
             .send(LoopInput::Cmd(Command::SetOptions {
@@ -463,6 +488,11 @@ impl RealtimeChannel {
         messages: Vec<Message>,
         params: Option<serde_json::Value>,
     ) -> Result<crate::rest::PublishResult> {
+        self.rest
+            .inner
+            .opts
+            .logger()
+            .micro(|| format!("API: channel('{}').publish x{}", self.name, messages.len()));
         let (reply, rx) = oneshot::channel();
         self.input_tx
             .send(LoopInput::Cmd(Command::Publish {
@@ -532,6 +562,11 @@ impl RealtimeChannel {
         &self,
         filter: crate::connection::SubscriberFilter,
     ) -> (SubscriptionId, mpsc::UnboundedReceiver<Message>) {
+        self.rest
+            .inner
+            .opts
+            .logger()
+            .micro(|| format!("API: channel('{}').subscribe", self.name));
         let id: u64 = rand::random();
         let (sender, receiver) = mpsc::unbounded_channel();
         let _ = self.input_tx.send(LoopInput::Cmd(Command::Subscribe {
@@ -777,6 +812,12 @@ impl RealtimePresence {
         &self,
         options: &PresenceGetOptions,
     ) -> Result<Vec<PresenceMessage>> {
+        self.rest.inner.opts.logger().micro(|| {
+            format!(
+                "API: channel('{}').presence.get (waitForSync={})",
+                self.name, options.wait_for_sync
+            )
+        });
         // RTP11b: get implicitly attaches
         self.maybe_implicit_attach();
         let (reply, rx) = oneshot::channel();
@@ -808,6 +849,11 @@ impl RealtimePresence {
         actions: Option<Vec<PresenceAction>>,
         callback: impl Fn(PresenceMessage) + Send + Sync + 'static,
     ) -> PresenceSubscriptionId {
+        self.rest
+            .inner
+            .opts
+            .logger()
+            .micro(|| format!("API: channel('{}').presence.subscribe", self.name));
         let id: u64 = rand::random();
         let (sender, mut receiver) = mpsc::unbounded_channel();
         let _ = self
@@ -928,6 +974,11 @@ impl RealtimePresence {
         client_id: Option<&str>,
         data: Option<serde_json::Value>,
     ) -> Result<()> {
+        self.rest
+            .inner
+            .opts
+            .logger()
+            .micro(|| format!("API: channel('{}').presence.{:?}", self.name, action));
         let explicit = client_id.is_some();
         let resolved = self.op_client_id(client_id)?;
         let message = PresenceMessage {
@@ -1030,6 +1081,12 @@ impl<'a> RealtimeAnnotations<'a> {
     }
 
     async fn op(&self, annotation: Annotation) -> Result<()> {
+        self.channel.rest.inner.opts.logger().micro(|| {
+            format!(
+                "API: channel('{}').annotations.{:?}",
+                self.channel.name, annotation.action
+            )
+        });
         let (reply, rx) = oneshot::channel();
         self.channel
             .input_tx

@@ -3,9 +3,10 @@ id: TASK-13
 title: >-
   Systematic logging pass: level policy, loop instrumentation, no silent
   discards
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-12 13:47'
+updated_date: '2026-06-12 15:32'
 labels:
   - feature
   - observability
@@ -27,3 +28,9 @@ The library has the machinery (5 levels, handler, gating) but only 6 call sites,
 - [ ] #3 Connection + channel state transitions logged; API entries traced at Micro
 - [ ] #4 Optional tracing-crate bridge behind a feature flag
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Logger handle + tracing feature bridge; ~35 instrumentation sites per the DESIGN.md policy; all discard paths log at Error with 3 policy tests asserting it. Suite 1300/0/41, clippy clean both feature combos.
+<!-- SECTION:NOTES:END -->

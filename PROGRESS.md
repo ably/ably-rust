@@ -657,3 +657,25 @@ This pass added:
 - Next: Phase 6 final verification (clippy, fmt, ignored-test audit,
   protocol-variant matrix, serial integration + proxy runs).
 
+### TASK-13 Observability — DONE (2026-06-12)
+- Logger handle (level-gated, lazily formatted, cloneable) in options.rs;
+  ClientOptions::log delegates. Optional `tracing` cargo feature bridges
+  library logs to the tracing crate when no handler is installed
+  (Error->error!, Major->info!, Minor->debug!, Micro->trace!).
+- Instrumented per the DESIGN.md policy (6 call sites -> ~35):
+  Major: connection + channel state transitions (with reasons), UPDATE
+  events, presence re-entry failures. Minor: resume outcomes, connection and
+  channel retry scheduling, queued-publish flush + RTN19a resend counts,
+  presence SYNC start/complete, NACK outcomes, RTL17 drops. Micro: every
+  realtime public API entry (connect/close/ping, channels.get/release,
+  attach/detach/publish/subscribe/set_options, presence ops/get/subscribe,
+  annotation ops) and the wire (-> / <- action+channel+serial).
+  Error (NO silent discards): undecodable JSON/msgpack frames (incl. the
+  tolerant-decode failure path that previously vanished), undecodable
+  message/presence/annotation entries, ACK/NACK for unknown serials,
+  transport write failures.
+- 3 policy tests assert the behavior: discards log at Error, transitions at
+  Major, API entries at Micro.
+- Suite: 1300 pass / 0 fail / 41 ignored; clippy clean (default + tracing
+  feature).
+

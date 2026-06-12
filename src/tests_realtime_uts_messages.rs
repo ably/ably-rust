@@ -1293,3 +1293,148 @@ async fn rtan1b_annotation_publish_state_conditions() {
         .expect_err("RTAN1b: closed connection");
     assert!(err.code.is_some());
 }
+
+// ============================================================================
+// Observability policy (DESIGN.md): discard paths and transitions LOG
+// ============================================================================
+
+/// Capture log lines at the given level through a fresh client.
+type CapturedLogs = Arc<StdMutex<Vec<(crate::options::LogLevel, String)>>>;
+
+fn logging_client(
+    mock: &MockWebSocket,
+    level: crate::options::LogLevel,
+) -> (Realtime, CapturedLogs) {
+    let lines: CapturedLogs = Arc::new(StdMutex::new(Vec::new()));
+    let lines_c = lines.clone();
+    let transport = Arc::new(MockTransport::new(mock.inner()));
+    let client = Realtime::with_mock(
+        &ClientOptions::new("appId.keyId:keySecret")
+            .auto_connect(false)
+            .log_level(level)
+            .log_handler(move |lvl, msg| {
+                lines_c.lock().unwrap().push((lvl, msg.to_string()));
+            }),
+        transport,
+    )
+    .unwrap();
+    (client, lines)
+}
+
+// Policy: an undecodable message entry logs at Error (never a silent discard)
+#[tokio::test]
+async fn observability_undecodable_message_entry_logs_error() {
+    let mock = serving_mock("conn-1");
+    let (client, lines) = logging_client(&mock, crate::options::LogLevel::Error);
+    let server = spawn_channel_server(&mock);
+    connect(&client).await;
+    let ch = client.channels.get("noisy");
+    ch.attach().await.unwrap();
+    server.abort();
+
+    // A message entry that cannot deserialize (data must not be an integer
+    // map key holder — use a shape Message cannot accept: array for name)
+    let mut pm = ProtocolMessage::new(action::MESSAGE);
+    pm.channel = Some("noisy".to_string());
+    pm.messages = Some(vec![serde_json::json!({"name": ["not", "a", "string"]})]);
+    mock.active_connection().send_to_client(pm);
+
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
+    loop {
+        let found = lines.lock().unwrap().iter().any(|(lvl, msg)| {
+            *lvl == crate::options::LogLevel::Error
+                && msg.contains("undecodable message entry")
+                && msg.contains("noisy")
+        });
+        if found {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "discard must log at Error"
+        );
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+}
+
+// Policy: an ACK for an unknown serial logs at Error
+#[tokio::test]
+async fn observability_unknown_ack_logs_error() {
+    let mock = serving_mock("conn-1");
+    let (client, lines) = logging_client(&mock, crate::options::LogLevel::Error);
+    connect(&client).await;
+
+    let mut ack = ProtocolMessage::new(action::ACK);
+    ack.msg_serial = Some(42);
+    ack.count = Some(1);
+    mock.active_connection().send_to_client(ack);
+
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
+    loop {
+        if lines.lock().unwrap().iter().any(|(lvl, msg)| {
+            *lvl == crate::options::LogLevel::Error && msg.contains("ACK for unknown msgSerial")
+        }) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "unknown ACK must log at Error"
+        );
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+}
+
+// Policy: state transitions log at Major; API entries trace at Micro
+#[tokio::test]
+async fn observability_transitions_major_and_api_micro() {
+    let mock = serving_mock("conn-1");
+    let (client, lines) = logging_client(&mock, crate::options::LogLevel::Micro);
+    let server = spawn_channel_server(&mock);
+    connect(&client).await;
+    let ch = client.channels.get("observed");
+    ch.attach().await.unwrap();
+    server.abort();
+
+    let captured = lines.lock().unwrap();
+    let majors: Vec<&String> = captured
+        .iter()
+        .filter(|(l, _)| *l == crate::options::LogLevel::Major)
+        .map(|(_, m)| m)
+        .collect();
+    assert!(
+        majors
+            .iter()
+            .any(|m| m.contains("Connection: Connecting -> Connected")),
+        "connection transition logged at Major, got {:?}",
+        majors
+    );
+    assert!(
+        majors
+            .iter()
+            .any(|m| m.contains("Channel 'observed': Attaching -> Attached")),
+        "channel transition logged at Major"
+    );
+    let micros: Vec<&String> = captured
+        .iter()
+        .filter(|(l, _)| *l == crate::options::LogLevel::Micro)
+        .map(|(_, m)| m)
+        .collect();
+    assert!(
+        micros
+            .iter()
+            .any(|m| m.contains("API: channels.get('observed')")),
+        "API entry traced at Micro"
+    );
+    assert!(
+        micros
+            .iter()
+            .any(|m| m.contains("API: channel('observed').attach")),
+        "attach traced at Micro"
+    );
+    assert!(
+        micros
+            .iter()
+            .any(|m| m.starts_with("-> action=") || m.contains("-> action=")),
+        "outbound wire traced at Micro"
+    );
+}

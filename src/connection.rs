@@ -317,6 +317,7 @@ struct ChannelCtx {
     annotation_subscribers: Vec<AnnotationSubscriber>,
     snapshot_tx: watch::Sender<ChannelSnapshot>,
     events_tx: broadcast::Sender<ChannelStateChange>,
+    logger: crate::options::Logger,
 }
 
 /// One subscribe() registration.
@@ -376,6 +377,20 @@ impl ChannelCtx {
         has_backlog: bool,
     ) {
         let previous = self.state;
+        if previous != to {
+            self.logger.major(|| {
+                format!(
+                    "Channel '{}': {:?} -> {:?}{}",
+                    self.name,
+                    previous,
+                    to,
+                    reason
+                        .as_ref()
+                        .map(|e| format!(" (reason: {})", e))
+                        .unwrap_or_default()
+                )
+            });
+        }
         self.state = to;
         if let Some(err) = &reason {
             self.error_reason = Some(err.clone());
@@ -447,6 +462,16 @@ impl ChannelCtx {
 
     /// RTL2g: an UPDATE event for condition changes without a state change.
     fn emit_update(&mut self, reason: Option<ErrorInfo>, resumed: bool, has_backlog: bool) {
+        self.logger.major(|| {
+            format!(
+                "Channel '{}': UPDATE{}",
+                self.name,
+                reason
+                    .as_ref()
+                    .map(|e| format!(" (reason: {})", e))
+                    .unwrap_or_default()
+            )
+        });
         self.publish_snapshot();
         let _ = self.events_tx.send(ChannelStateChange {
             previous: self.state,
@@ -628,9 +653,26 @@ struct ConnectionCtx {
 }
 
 impl ConnectionCtx {
+    fn logger(&self) -> crate::options::Logger {
+        self.rest.inner.opts.logger()
+    }
+
     /// Transition the state machine: snapshot first, then the event.
     fn transition(&mut self, to: ConnectionState, reason: Option<ErrorInfo>) {
         let previous = self.state;
+        if previous != to {
+            self.logger().major(|| {
+                format!(
+                    "Connection: {:?} -> {:?}{}",
+                    previous,
+                    to,
+                    reason
+                        .as_ref()
+                        .map(|e| format!(" (reason: {})", e))
+                        .unwrap_or_default()
+                )
+            });
+        }
         self.state = to;
         if let Some(err) = &reason {
             // RTN25: errorReason is set when an error causes a transition
@@ -807,6 +849,14 @@ impl ConnectionCtx {
     /// Resend a pending publish verbatim (RTN19a) under its (possibly
     /// renumbered) serial.
     fn resend_pending_publishes(&mut self) {
+        if !self.pending_publishes.is_empty() {
+            self.logger().minor(|| {
+                format!(
+                    "RTN19a: resending {} pending publish(es) on the new transport",
+                    self.pending_publishes.len()
+                )
+            });
+        }
         let resends: Vec<(
             i64,
             String,
@@ -836,6 +886,14 @@ impl ConnectionCtx {
 
     /// RTL6c2: queued publishes go out in order once CONNECTED.
     fn flush_queued_publishes(&mut self) {
+        if !self.queued_publishes.is_empty() {
+            self.logger().minor(|| {
+                format!(
+                    "Flushing {} queued publish(es)",
+                    self.queued_publishes.len()
+                )
+            });
+        }
         for q in std::mem::take(&mut self.queued_publishes) {
             self.send_publish(q.channel, q.messages, q.params, q.reply);
         }
@@ -870,6 +928,15 @@ impl ConnectionCtx {
             }
             acked
         };
+        if acked.is_empty() {
+            self.logger().error(|| {
+                format!(
+                    "ACK for unknown msgSerial range [{}, {}) — no pending operation matches",
+                    first,
+                    first + count
+                )
+            });
+        }
         for p in acked {
             let idx = (p.msg_serial - first) as usize;
             let result = res
@@ -891,14 +958,27 @@ impl ConnectionCtx {
             ErrorInfo::with_status(ErrorCode::InternalError.code(), 500, "Publish rejected")
         });
         let mut i = 0;
+        let mut matched = false;
         while i < self.pending_publishes.len() {
             let serial = self.pending_publishes[i].msg_serial;
             if serial >= first && serial < first + count {
                 let p = self.pending_publishes.remove(i);
+                self.logger()
+                    .minor(|| format!("NACK for msgSerial {}: {}", serial, reason));
                 let _ = p.reply.send(Err(reason.clone()));
+                matched = true;
             } else {
                 i += 1;
             }
+        }
+        if !matched {
+            self.logger().error(|| {
+                format!(
+                    "NACK for unknown msgSerial range [{}, {}) — no pending operation matches",
+                    first,
+                    first + count
+                )
+            });
         }
     }
 
@@ -1143,6 +1223,12 @@ impl ConnectionCtx {
             .unwrap_or_default();
         for (index, value) in entries.into_iter().enumerate() {
             let Ok(mut ann) = serde_json::from_value::<crate::rest::Annotation>(value) else {
+                ch.logger.error(|| {
+                    format!(
+                        "Discarding undecodable annotation entry {} on channel '{}'",
+                        index, name
+                    )
+                });
                 continue;
             };
             if ann.id.is_none() {
@@ -1192,12 +1278,25 @@ impl ConnectionCtx {
         };
         // RTL17: messages are only delivered while ATTACHED
         if ch.state != ChannelState::Attached {
+            ch.logger.minor(|| {
+                format!(
+                    "RTL17: dropping MESSAGE for channel '{}' in state {:?}",
+                    name, ch.state
+                )
+            });
             return;
         }
         let wire = pm.messages.clone().unwrap_or_default();
         for (index, value) in wire.into_iter().enumerate() {
             let Ok(mut msg) = serde_json::from_value::<crate::rest::Message>(value) else {
-                continue; // RSF1: undecodable entries are skipped
+                // RSF1 tolerance, but never silently (observability policy)
+                ch.logger.error(|| {
+                    format!(
+                        "Discarding undecodable message entry {} on channel '{}'",
+                        index, name
+                    )
+                });
+                continue;
             };
             // TM2a: id defaults to protocolMessage.id + ":" + index
             if msg.id.is_none() {
@@ -1236,6 +1335,8 @@ impl ConnectionCtx {
 
         if is_sync && !ch.presence.map.sync_in_progress() {
             // RTP18a: a new sync page stream begins
+            ch.logger
+                .minor(|| format!("Channel '{}': presence SYNC started", name));
             ch.presence.map.start_sync();
             ch.presence.sync_complete = false;
             ch.publish_snapshot();
@@ -1244,6 +1345,12 @@ impl ConnectionCtx {
         let wire = pm.presence.clone().unwrap_or_default();
         for (index, value) in wire.into_iter().enumerate() {
             let Ok(mut msg) = serde_json::from_value::<crate::rest::PresenceMessage>(value) else {
+                ch.logger.error(|| {
+                    format!(
+                        "Discarding undecodable presence entry {} on channel '{}'",
+                        index, name
+                    )
+                });
                 continue;
             };
             // TM2-shaped inheritance
@@ -1271,6 +1378,8 @@ impl ConnectionCtx {
 
         // RTP18b/RTP18c: the sync completes when the cursor is exhausted
         if is_sync && !crate::presence::sync_continues(&pm.channel_serial) {
+            ch.logger
+                .minor(|| format!("Channel '{}': presence SYNC complete", name));
             let leaves = ch.presence.map.end_sync();
             for leave in &leaves {
                 deliver_presence(&mut ch.presence.subscribers, leave);
@@ -1349,6 +1458,15 @@ impl ConnectionCtx {
 
     /// RTN4h: an event that is not a state change (additional CONNECTED).
     fn emit_update(&mut self, reason: Option<ErrorInfo>) {
+        self.logger().major(|| {
+            format!(
+                "Connection: UPDATE{}",
+                reason
+                    .as_ref()
+                    .map(|e| format!(" (reason: {})", e))
+                    .unwrap_or_default()
+            )
+        });
         self.publish_snapshot();
         let _ = self.events_tx.send(ConnectionStateChange {
             previous: ConnectionState::Connected,
@@ -1461,6 +1579,14 @@ impl ConnectionCtx {
     }
 
     fn send_protocol(&mut self, msg: ProtocolMessage) {
+        self.logger().micro(|| {
+            format!(
+                "-> action={} channel={} serial={:?}",
+                msg.action,
+                msg.channel.as_deref().unwrap_or("-"),
+                msg.msg_serial
+            )
+        });
         if let Some(writer) = &self.writer {
             let _ = writer.send(msg);
         }
@@ -1484,6 +1610,12 @@ impl ConnectionCtx {
             self.transition(ConnectionState::Suspended, reason);
         } else {
             self.retry_count += 1;
+            self.logger().minor(|| {
+                format!(
+                    "Scheduling reconnect attempt {} (disconnectedRetryTimeout backoff)",
+                    self.retry_count
+                )
+            });
             // RTN14e: the TTL countdown starts at the first disconnection
             if self.suspend_at.is_none() {
                 self.suspend_at = Some(Instant::now() + self.connection_state_ttl());
@@ -1553,6 +1685,7 @@ impl ConnectionCtx {
                 snapshot_tx,
                 events_tx,
             } => {
+                let logger = self.rest.inner.opts.logger();
                 self.channels
                     .entry(name.clone())
                     .or_insert_with(|| ChannelCtx {
@@ -1580,6 +1713,7 @@ impl ConnectionCtx {
                         annotation_subscribers: Vec::new(),
                         snapshot_tx,
                         events_tx,
+                        logger,
                     });
             }
             Command::Attach { name, reply } => self.handle_attach(name, reply),
@@ -1644,6 +1778,12 @@ impl ConnectionCtx {
                 }
             }
             Command::PresenceReentryFailed { name, error } => {
+                self.logger().major(|| {
+                    format!(
+                        "Channel '{}': automatic presence re-entry failed: {}",
+                        name, error
+                    )
+                });
                 if let Some(ch) = self.channels.get_mut(&name) {
                     // RTP17e: 91004 wraps the underlying failure
                     let mut wrapped =
@@ -1814,7 +1954,12 @@ impl ConnectionCtx {
         }
         match result {
             Ok(conn) => {
-                let writer_tx = spawn_transport_tasks(conn, self.generation, self.input_tx.clone());
+                let writer_tx = spawn_transport_tasks(
+                    conn,
+                    self.generation,
+                    self.input_tx.clone(),
+                    self.logger(),
+                );
                 self.writer = Some(writer_tx);
                 // Remain CONNECTING until the server's CONNECTED arrives;
                 // connect_deadline still applies to that wait (RTN14c).
@@ -1869,6 +2014,14 @@ impl ConnectionCtx {
     }
 
     fn handle_protocol_message(&mut self, pm: ProtocolMessage) {
+        self.logger().micro(|| {
+            format!(
+                "<- action={} channel={} serial={:?}",
+                pm.action,
+                pm.channel.as_deref().unwrap_or("-"),
+                pm.msg_serial
+            )
+        });
         match pm.action {
             action::CONNECTED => self.handle_connected(pm),
             action::DISCONNECTED => self.handle_disconnected(pm),
@@ -1967,6 +2120,24 @@ impl ConnectionCtx {
                 let resume_succeeded = self.last_connected_id.is_some()
                     && new_id == self.last_connected_id
                     && reason.is_none();
+                if self.last_connected_id.is_some() {
+                    self.logger().minor(|| {
+                        format!(
+                            "Resume {}: connection id {:?} (was {:?}){}",
+                            if resume_succeeded {
+                                "succeeded"
+                            } else {
+                                "failed"
+                            },
+                            new_id,
+                            self.last_connected_id,
+                            reason
+                                .as_ref()
+                                .map(|e| format!(", server error: {}", e))
+                                .unwrap_or_default()
+                        )
+                    });
+                }
 
                 self.id = new_id.clone();
                 self.key = new_key.clone();
@@ -2534,6 +2705,12 @@ impl ConnectionCtx {
             ch.retry_count += 1;
             ch.retry_at = Some(Instant::now() + delay);
             ch.next_retry_in = Some(delay);
+            ch.logger.minor(|| {
+                format!(
+                    "Channel '{}': scheduling reattach retry {} in {:?} (RTL13b)",
+                    name, ch.retry_count, delay
+                )
+            });
         }
         ch.transition(ChannelState::Suspended, reason, false, false);
     }
@@ -2918,6 +3095,7 @@ fn spawn_transport_tasks(
     conn: Box<dyn TransportConnection>,
     generation: Generation,
     input_tx: mpsc::UnboundedSender<LoopInput>,
+    logger: crate::options::Logger,
 ) -> mpsc::UnboundedSender<ProtocolMessage> {
     let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<ProtocolMessage>();
     tokio::spawn(async move {
@@ -2927,6 +3105,9 @@ fn spawn_transport_tasks(
                 outbound = writer_rx.recv() => match outbound {
                     Some(pm) => {
                         if conn.send(pm).await.is_err() {
+                            logger.error(|| {
+                                "Transport write failed; dropping the transport".to_string()
+                            });
                             let _ = input_tx.send(LoopInput::Transport {
                                 generation,
                                 event: TransportInput::Closed,

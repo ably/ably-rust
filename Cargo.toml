@@ -41,6 +41,8 @@ cbc = "0.1.2"
 num-traits = "0.2.15"
 num-derive = "0.4"
 
+tracing = { version = "0.1", optional = true }
+
 [dev-dependencies]
 futures = "0.3.21"
 tokio = { version = "1.18.2", features = ["full", "test-util"] }
@@ -48,6 +50,8 @@ http = "0.2"
 jsonwebtoken = "9"
 
 [features]
+# Route library logs to the `tracing` crate when no log_handler is installed.
+tracing = ["dep:tracing"]
 native-tls-alpn = ["reqwest/native-tls-alpn"]
 rustls = ["reqwest/rustls"]
 default = ["reqwest/native-tls-alpn"]
