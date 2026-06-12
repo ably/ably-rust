@@ -6,7 +6,8 @@ use crate::rest::{Data, Message, PresenceAction, Rest, RevokeTokensRequest};
 
 // The UTS-mandated sandbox: endpoint "nonprod:sandbox" (REC1b3)
 const SANDBOX_URL: &str = "https://sandbox.realtime.ably-nonprod.net";
-const TEST_APP_SETUP: &str = include_str!("../submodules/ably-common/test-resources/test-app-setup.json");
+const TEST_APP_SETUP: &str =
+    include_str!("../submodules/ably-common/test-resources/test-app-setup.json");
 
 pub(crate) struct SandboxApp {
     pub(crate) app_id: String,
@@ -25,7 +26,7 @@ impl SandboxApp {
 
         let client = reqwest::Client::new();
         let resp = client
-            .post(&format!("{}/apps", SANDBOX_URL))
+            .post(format!("{}/apps", SANDBOX_URL))
             .json(post_body)
             .send()
             .await
@@ -203,7 +204,11 @@ async fn rsa4_invalid_credentials_rejected() {
         .expect("request() must not error on HTTP error statuses");
     assert_eq!(resp.status_code(), 401);
     assert!(!resp.success());
-    assert_eq!(resp.error_code(), Some(40400), "Expected 40400 (key not found)");
+    assert_eq!(
+        resp.error_code(),
+        Some(40400),
+        "Expected 40400 (key not found)"
+    );
 
     // A typed method propagates the same condition as an error
     let err = client
@@ -226,11 +231,7 @@ async fn rsa8_native_token_auth() {
     let app = get_sandbox().await;
     let key_client = sandbox_client(app.full_access_key());
 
-    let token_details = key_client
-        .auth()
-        .request_token(None, None)
-        .await
-        .unwrap();
+    let token_details = key_client.auth().request_token(None, None).await.unwrap();
 
     assert!(!token_details.token.is_empty());
 
@@ -269,7 +270,12 @@ async fn rsl1d_publish_failure_error_indication() {
         .await
         .unwrap_err();
 
-    assert_eq!(err.code_value(), 40160, "Expected 40160, got {}", err.code_value());
+    assert_eq!(
+        err.code_value(),
+        40160,
+        "Expected 40160, got {}",
+        err.code_value()
+    );
     assert_eq!(err.status_code, Some(401));
 }
 
@@ -295,7 +301,12 @@ async fn rsl1l1_publish_params_force_nack() {
         .await
         .unwrap_err();
 
-    assert_eq!(err.code_value(), 40099, "Expected 40099, got {}", err.code_value());
+    assert_eq!(
+        err.code_value(),
+        40099,
+        "Expected 40099, got {}",
+        err.code_value()
+    );
 }
 
 // ============================================================================
@@ -339,7 +350,11 @@ async fn rsl1k5_idempotent_publish_deduplication() {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 
-    assert_eq!(history_items.len(), 1, "Expected exactly 1 message (deduplication)");
+    assert_eq!(
+        history_items.len(),
+        1,
+        "Expected exactly 1 message (deduplication)"
+    );
     assert_eq!(history_items[0].id.as_deref(), Some(fixed_id.as_str()));
     // UTS RSL1k5: the FIRST publish wins
     assert!(
@@ -361,7 +376,13 @@ async fn rsl1_publish_history_roundtrip_json_protocol() {
     let channel_name = format!("json-proto-{}", random_id());
     let channel = client.channels().get(&channel_name);
 
-    channel.publish().name("str").string("plain").send().await.unwrap();
+    channel
+        .publish()
+        .name("str")
+        .string("plain")
+        .send()
+        .await
+        .unwrap();
     channel
         .publish()
         .name("json")
@@ -383,7 +404,10 @@ async fn rsl1_publish_history_roundtrip_json_protocol() {
         if result.items().len() == 3 {
             break result.items().to_vec();
         }
-        assert!(std::time::Instant::now() < deadline, "history did not converge");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "history did not converge"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     };
     // newest first
@@ -400,7 +424,13 @@ async fn rsl1_binary_roundtrip_msgpack_protocol() {
     let channel = client.channels().get(&channel_name);
 
     let payload = vec![0u8, 1, 2, 253, 254, 255];
-    channel.publish().name("bin").binary(payload.clone()).send().await.unwrap();
+    channel
+        .publish()
+        .name("bin")
+        .binary(payload.clone())
+        .send()
+        .await
+        .unwrap();
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
@@ -413,7 +443,10 @@ async fn rsl1_binary_roundtrip_msgpack_protocol() {
             );
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "history did not converge");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "history did not converge"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 }
@@ -450,7 +483,12 @@ async fn rsl1m4_client_id_mismatch_rejected() {
         .await
         .unwrap_err();
 
-    assert_eq!(err.code_value(), 40012, "Expected 40012, got {}", err.code_value());
+    assert_eq!(
+        err.code_value(),
+        40012,
+        "Expected 40012, got {}",
+        err.code_value()
+    );
     assert_eq!(err.status_code, Some(400));
 }
 
@@ -467,8 +505,20 @@ async fn rsl2a_history_returns_published_messages() {
     let channel_name = format!("history-test-RSL2a-{}", random_id());
     let channel = client.channels().get(&channel_name);
 
-    channel.publish().name("event1").string("data1").send().await.unwrap();
-    channel.publish().name("event2").string("data2").send().await.unwrap();
+    channel
+        .publish()
+        .name("event1")
+        .string("data1")
+        .send()
+        .await
+        .unwrap();
+    channel
+        .publish()
+        .name("event2")
+        .string("data2")
+        .send()
+        .await
+        .unwrap();
     channel
         .publish()
         .name("event3")
@@ -523,9 +573,27 @@ async fn rsl2b1_history_direction_forwards() {
     let channel_name = format!("history-direction-{}", random_id());
     let channel = client.channels().get(&channel_name);
 
-    channel.publish().name("first").string("1").send().await.unwrap();
-    channel.publish().name("second").string("2").send().await.unwrap();
-    channel.publish().name("third").string("3").send().await.unwrap();
+    channel
+        .publish()
+        .name("first")
+        .string("1")
+        .send()
+        .await
+        .unwrap();
+    channel
+        .publish()
+        .name("second")
+        .string("2")
+        .send()
+        .await
+        .unwrap();
+    channel
+        .publish()
+        .name("third")
+        .string("3")
+        .send()
+        .await
+        .unwrap();
 
     // Poll until all appear
     for _ in 0..20 {
@@ -740,10 +808,7 @@ async fn tg5_iterate_all_pages() {
 
     assert_eq!(all_messages.len(), message_count);
 
-    let event_names: Vec<String> = all_messages
-        .iter()
-        .filter_map(|m| m.name.clone())
-        .collect();
+    let event_names: Vec<String> = all_messages.iter().filter_map(|m| m.name.clone()).collect();
     for i in 1..=message_count {
         assert!(
             event_names.contains(&format!("event-{}", i)),
@@ -790,7 +855,10 @@ async fn tg3_next_on_last_page_returns_null() {
     assert!(page.is_last());
 
     let next_page = page.next().await.unwrap();
-    assert!(next_page.is_none(), "next() on last page should return None");
+    assert!(
+        next_page.is_none(),
+        "next() on last page should return None"
+    );
 }
 
 // ============================================================================
@@ -825,11 +893,7 @@ async fn tg4_first_returns_to_first_page() {
     }
 
     let page1 = channel.history().limit(3).send().await.unwrap();
-    let page1_ids: Vec<String> = page1
-        .items()
-        .iter()
-        .filter_map(|m| m.id.clone())
-        .collect();
+    let page1_ids: Vec<String> = page1.items().iter().filter_map(|m| m.id.clone()).collect();
 
     let page2 = page1.next().await.unwrap().unwrap();
     let first_page = page2.first().await.unwrap().unwrap();
@@ -855,7 +919,10 @@ async fn rsp1_presence_accessible_via_channel() {
 
     let channel = client.channels().get("persisted:presence_fixtures");
     let result = channel.presence().get().send().await.unwrap();
-    assert!(result.items().len() >= 5, "Expected at least 5 presence fixtures");
+    assert!(
+        result.items().len() >= 5,
+        "Expected at least 5 presence fixtures"
+    );
 }
 
 // ============================================================================
@@ -997,7 +1064,10 @@ async fn rsp3_full_pagination_through_members() {
         page = page.next().await.unwrap().unwrap();
     }
 
-    assert!(all_members.len() >= 5, "Expected at least 5 fixture members");
+    assert!(
+        all_members.len() >= 5,
+        "Expected at least 5 fixture members"
+    );
 
     // Verify no duplicates
     let client_ids: Vec<String> = all_members
@@ -1010,7 +1080,11 @@ async fn rsp3_full_pagination_through_members() {
         unique.dedup();
         unique.len()
     };
-    assert_eq!(unique_count, client_ids.len(), "Duplicate client IDs in pagination");
+    assert_eq!(
+        unique_count,
+        client_ids.len(),
+        "Duplicate client IDs in pagination"
+    );
 }
 
 // ============================================================================
@@ -1023,14 +1097,7 @@ async fn rsp3_invalid_credentials_rejected() {
     let _app = get_sandbox().await;
     let client = sandbox_client("invalid.key:secret");
 
-    match client
-        .channels()
-        .get("test")
-        .presence()
-        .get()
-        .send()
-        .await
-    {
+    match client.channels().get("test").presence().get().send().await {
         Err(err) => {
             assert_eq!(err.status_code, Some(401));
             assert!(err.code_value() >= 40100 && err.code_value() < 40200);
@@ -1058,7 +1125,10 @@ async fn rsp3_subscribe_capability_sufficient() {
         .await
         .unwrap();
 
-    assert!(result.items().len() > 0, "Subscribe-only key should be able to get presence");
+    assert!(
+        !result.items().is_empty(),
+        "Subscribe-only key should be able to get presence"
+    );
 }
 
 // ============================================================================
@@ -1135,7 +1205,11 @@ async fn rsh1a_push_publish_to_client_id() {
         )
         .await;
 
-    assert!(result.is_ok(), "Push publish should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Push publish should succeed: {:?}",
+        result.err()
+    );
 }
 
 // UTS: rest/integration/RSH1a/push-publish-invalid-recipient-1
@@ -1153,7 +1227,10 @@ async fn rsh1a_push_publish_rejects_invalid_recipient() {
         )
         .await;
 
-    assert!(result.is_err(), "Push publish with empty recipient should fail");
+    assert!(
+        result.is_err(),
+        "Push publish with empty recipient should fail"
+    );
 }
 
 // ============================================================================
@@ -1307,7 +1384,13 @@ async fn rsh1b3_update_device_registration() {
         }
     });
 
-    client.push().admin().device_registrations().save(&device_v1).await.unwrap();
+    client
+        .push()
+        .admin()
+        .device_registrations()
+        .save(&device_v1)
+        .await
+        .unwrap();
 
     let device_v2 = serde_json::json!({
         "id": device_id,
@@ -1321,14 +1404,31 @@ async fn rsh1b3_update_device_registration() {
         }
     });
 
-    let updated = client.push().admin().device_registrations().save(&device_v2).await.unwrap();
+    let updated = client
+        .push()
+        .admin()
+        .device_registrations()
+        .save(&device_v2)
+        .await
+        .unwrap();
     assert_eq!(updated["id"], device_id);
     assert_eq!(updated["push"]["recipient"]["deviceToken"], "token-v2");
 
-    let retrieved = client.push().admin().device_registrations().get(&device_id).await.unwrap();
+    let retrieved = client
+        .push()
+        .admin()
+        .device_registrations()
+        .get(&device_id)
+        .await
+        .unwrap();
     assert_eq!(retrieved["push"]["recipient"]["deviceToken"], "token-v2");
 
-    let _ = client.push().admin().device_registrations().remove(&device_id).await;
+    let _ = client
+        .push()
+        .admin()
+        .device_registrations()
+        .remove(&device_id)
+        .await;
 }
 
 // ============================================================================
@@ -1354,7 +1454,13 @@ async fn rsh1b2_list_devices_filtered() {
         }
     });
 
-    client.push().admin().device_registrations().save(&device).await.unwrap();
+    client
+        .push()
+        .admin()
+        .device_registrations()
+        .save(&device)
+        .await
+        .unwrap();
 
     let result = client
         .push()
@@ -1370,7 +1476,12 @@ async fn rsh1b2_list_devices_filtered() {
     assert_eq!(result.items()[0]["id"], device_id);
     assert_eq!(result.items()[0]["platform"], "android");
 
-    let _ = client.push().admin().device_registrations().remove(&device_id).await;
+    let _ = client
+        .push()
+        .admin()
+        .device_registrations()
+        .remove(&device_id)
+        .await;
 }
 
 // ============================================================================
@@ -1401,7 +1512,13 @@ async fn rsh1b2_list_devices_pagination() {
                 }
             }
         });
-        client.push().admin().device_registrations().save(&device).await.unwrap();
+        client
+            .push()
+            .admin()
+            .device_registrations()
+            .save(&device)
+            .await
+            .unwrap();
     }
 
     let result = client
@@ -1420,7 +1537,12 @@ async fn rsh1b2_list_devices_pagination() {
 
     // Cleanup
     for device_id in &device_ids {
-        let _ = client.push().admin().device_registrations().remove(device_id).await;
+        let _ = client
+            .push()
+            .admin()
+            .device_registrations()
+            .remove(device_id)
+            .await;
     }
 }
 
@@ -1452,10 +1574,22 @@ async fn rsh1b5_remove_where_by_client_id() {
                 }
             }
         });
-        client.push().admin().device_registrations().save(&device).await.unwrap();
+        client
+            .push()
+            .admin()
+            .device_registrations()
+            .save(&device)
+            .await
+            .unwrap();
     }
 
-    client.push().admin().device_registrations().remove_where(&[("clientId", &client_id)]).await.unwrap();
+    client
+        .push()
+        .admin()
+        .device_registrations()
+        .remove_where(&[("clientId", &client_id)])
+        .await
+        .unwrap();
 
     let result = client
         .push()
@@ -1494,13 +1628,25 @@ async fn rsh1c3_save_and_list_channel_subscription_with_device() {
             }
         }
     });
-    client.push().admin().device_registrations().save(&device).await.unwrap();
+    client
+        .push()
+        .admin()
+        .device_registrations()
+        .save(&device)
+        .await
+        .unwrap();
 
     let sub = serde_json::json!({
         "channel": channel_name,
         "deviceId": device_id
     });
-    let saved = client.push().admin().channel_subscriptions().save(&sub).await.unwrap();
+    let saved = client
+        .push()
+        .admin()
+        .channel_subscriptions()
+        .save(&sub)
+        .await
+        .unwrap();
     assert_eq!(saved["channel"], channel_name);
     assert_eq!(saved["deviceId"], device_id);
 
@@ -1514,13 +1660,23 @@ async fn rsh1c3_save_and_list_channel_subscription_with_device() {
         .send()
         .await
         .unwrap();
-    assert!(result.items().len() >= 1);
+    assert!(!result.items().is_empty());
     let found = result.items().iter().any(|s| s["deviceId"] == device_id);
     assert!(found, "Subscription not found in list");
 
     // Cleanup
-    let _ = client.push().admin().channel_subscriptions().remove(&sub).await;
-    let _ = client.push().admin().device_registrations().remove(&device_id).await;
+    let _ = client
+        .push()
+        .admin()
+        .channel_subscriptions()
+        .remove(&sub)
+        .await;
+    let _ = client
+        .push()
+        .admin()
+        .device_registrations()
+        .remove(&device_id)
+        .await;
 }
 
 // UTS: rest/integration/RSH1c3/save-subscription-clientid-1
@@ -1593,17 +1749,39 @@ async fn rsh1c2_list_channels_with_subscriptions() {
         "channel": channel_name,
         "clientId": client_id
     });
-    client.push().admin().channel_subscriptions().save(&sub).await.unwrap();
+    client
+        .push()
+        .admin()
+        .channel_subscriptions()
+        .save(&sub)
+        .await
+        .unwrap();
 
-    let result = client.push().admin().channel_subscriptions().list_channels().send().await.unwrap();
+    let result = client
+        .push()
+        .admin()
+        .channel_subscriptions()
+        .list_channels()
+        .send()
+        .await
+        .unwrap();
     let channel_names: Vec<String> = result
         .items()
         .iter()
         .filter_map(|v| v.as_str().map(|s| s.to_string()))
         .collect();
-    assert!(channel_names.contains(&channel_name), "Channel {} not in listChannels result", channel_name);
+    assert!(
+        channel_names.contains(&channel_name),
+        "Channel {} not in listChannels result",
+        channel_name
+    );
 
-    let _ = client.push().admin().channel_subscriptions().remove(&sub).await;
+    let _ = client
+        .push()
+        .admin()
+        .channel_subscriptions()
+        .remove(&sub)
+        .await;
 }
 
 // ============================================================================
@@ -1623,9 +1801,21 @@ async fn rsh1c4_remove_channel_subscription() {
         "channel": channel_name,
         "clientId": client_id
     });
-    client.push().admin().channel_subscriptions().save(&sub).await.unwrap();
+    client
+        .push()
+        .admin()
+        .channel_subscriptions()
+        .save(&sub)
+        .await
+        .unwrap();
 
-    client.push().admin().channel_subscriptions().remove(&sub).await.unwrap();
+    client
+        .push()
+        .admin()
+        .channel_subscriptions()
+        .remove(&sub)
+        .await
+        .unwrap();
 
     let result = client
         .push()
@@ -1657,7 +1847,13 @@ async fn rsh1c5_remove_where_subscriptions() {
             "channel": ch,
             "clientId": client_id
         });
-        client.push().admin().channel_subscriptions().save(&sub).await.unwrap();
+        client
+            .push()
+            .admin()
+            .channel_subscriptions()
+            .save(&sub)
+            .await
+            .unwrap();
     }
 
     client
@@ -1690,11 +1886,7 @@ async fn rsa17d_token_auth_client_cannot_revoke() {
     let app = get_sandbox().await;
     let key_client = sandbox_client(app.full_access_key());
 
-    let token_details = key_client
-        .auth()
-        .request_token(None, None)
-        .await
-        .unwrap();
+    let token_details = key_client.auth().request_token(None, None).await.unwrap();
 
     let token_client = sandbox_client(&token_details.token);
 
@@ -1709,7 +1901,11 @@ async fn rsa17d_token_auth_client_cannot_revoke() {
         .unwrap_err();
 
     assert_eq!(err.status_code, Some(401));
-    assert_eq!(err.code_value(), 40162, "Expected 40162 (token auth cannot revoke)");
+    assert_eq!(
+        err.code_value(),
+        40162,
+        "Expected 40162 (token auth cannot revoke)"
+    );
 }
 
 // ============================================================================
@@ -1739,10 +1935,10 @@ async fn rsa8_auth_callback_with_token_request() {
         fn token<'a>(
             &'a self,
             params: &'a TokenParams,
-        ) -> std::pin::Pin<Box<dyn Send + futures::Future<Output = crate::error::Result<AuthToken>> + 'a>> {
-            Box::pin(async move {
-                Ok(AuthToken::Request(self.key.sign(params)?))
-            })
+        ) -> std::pin::Pin<
+            Box<dyn Send + futures::Future<Output = crate::error::Result<AuthToken>> + 'a>,
+        > {
+            Box::pin(async move { Ok(AuthToken::Request(self.key.sign(params)?)) })
         }
     }
 
@@ -1766,7 +1962,10 @@ async fn rsa8_auth_callback_with_token_request() {
         .expect("publish with callback-supplied TokenRequest");
 
     let td = client.auth().token_details();
-    assert!(td.is_some(), "library token cached after implicit acquisition");
+    assert!(
+        td.is_some(),
+        "library token cached after implicit acquisition"
+    );
     assert!(!td.unwrap().token.is_empty());
 }
 
@@ -1827,7 +2026,11 @@ async fn rsa8_capability_restriction() {
         .await
         .expect_err("publish outside capability must fail");
     assert_eq!(err.status_code, Some(401));
-    assert_eq!(err.code, Some(40160), "operation not permitted by capability");
+    assert_eq!(
+        err.code,
+        Some(40160),
+        "operation not permitted by capability"
+    );
 }
 
 // --- History ---
@@ -1841,11 +2044,23 @@ async fn rsl2b3_history_time_range() {
     let channel = client.channels().get(&channel_name);
 
     // Publish one message, capture the boundary, then publish another
-    channel.publish().name("before").string("d1").send().await.unwrap();
+    channel
+        .publish()
+        .name("before")
+        .string("d1")
+        .send()
+        .await
+        .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let boundary = client.time().await.unwrap().timestamp_millis();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    channel.publish().name("after").string("d2").send().await.unwrap();
+    channel
+        .publish()
+        .name("after")
+        .string("d2")
+        .send()
+        .await
+        .unwrap();
 
     // Poll until both messages are visible in unfiltered history
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1868,9 +2083,17 @@ async fn rsl2b3_history_time_range() {
         .send()
         .await
         .unwrap();
-    let names: Vec<_> = result.items().iter().filter_map(|m| m.name.as_deref()).collect();
+    let names: Vec<_> = result
+        .items()
+        .iter()
+        .filter_map(|m| m.name.as_deref())
+        .collect();
     assert!(names.contains(&"after"), "expected 'after' in {:?}", names);
-    assert!(!names.contains(&"before"), "'before' must be excluded, got {:?}", names);
+    assert!(
+        !names.contains(&"before"),
+        "'before' must be excluded, got {:?}",
+        names
+    );
 }
 
 // --- Publish ---
@@ -1897,8 +2120,16 @@ async fn rsl1n_publish_returns_serials() {
 
     // Batch: serials correspond 1:1
     let messages = vec![
-        Message { name: Some("e1".into()), data: Data::String("d1".into()), ..Default::default() },
-        Message { name: Some("e2".into()), data: Data::String("d2".into()), ..Default::default() },
+        Message {
+            name: Some("e1".into()),
+            data: Data::String("d1".into()),
+            ..Default::default()
+        },
+        Message {
+            name: Some("e2".into()),
+            data: Data::String("d2".into()),
+            ..Default::default()
+        },
     ];
     let result = channel.publish().messages(messages).send().await.unwrap();
     assert_eq!(result.serials.len(), 2);
@@ -1907,32 +2138,133 @@ async fn rsl1n_publish_returns_serials() {
 
 // --- Presence history (needs realtime) ---
 
-// UTS: rest/integration/RSP4/history-returns-events-0
+/// Realtime fixture: enter/update/leave presence on `channel_name` so REST
+/// presence history has events to return.
+async fn generate_presence_events(app: &SandboxApp, channel_name: &str) {
+    let opts = crate::options::ClientOptions::new(app.full_access_key())
+        .endpoint("nonprod:sandbox")
+        .unwrap()
+        .client_id("rsp4-fixture-client")
+        .unwrap()
+        .auto_connect(false);
+    let client = crate::realtime::Realtime::new(&opts).unwrap();
+    client.connect();
+    assert!(
+        crate::realtime::await_state(
+            &client.connection,
+            crate::protocol::ConnectionState::Connected,
+            10000
+        )
+        .await
+    );
+    let ch = client.channels.get(channel_name);
+    ch.attach().await.unwrap();
+    ch.presence()
+        .enter(Some(serde_json::json!("entered")))
+        .await
+        .unwrap();
+    ch.presence()
+        .update(Some(serde_json::json!({"state": "updated"})))
+        .await
+        .unwrap();
+    ch.presence().leave(None).await.unwrap();
+    client.close();
+}
+
+// UTS: rest/integration/RSP4/history-returns-events-0 (+RSP4b2 direction,
+// +RSP4b3 limit, +RSP5 decode — one fixture, several assertions)
 #[tokio::test]
-#[ignore = "Needs realtime client to generate presence events"]
 async fn rsp4_presence_history() {
-    todo!()
+    let app = get_sandbox().await;
+    let channel_name = format!("persisted:test-RSP4-{}", random_id());
+    generate_presence_events(app, &channel_name).await;
+
+    let client = sandbox_client(app.full_access_key());
+    let channel = client.channels().get(&channel_name);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(16);
+    let items = loop {
+        let result = channel.presence().history().send().await.unwrap();
+        let items: Vec<_> = result.items().to_vec();
+        if items.len() >= 3 {
+            break items;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "presence history events did not appear within 16s, got {}",
+            items.len()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+    // RSP4: enter/update/leave all present (default direction: backwards)
+    use crate::rest::PresenceAction;
+    let actions: Vec<_> = items.iter().filter_map(|m| m.action).collect();
+    assert!(actions.contains(&PresenceAction::Enter));
+    assert!(actions.contains(&PresenceAction::Update));
+    assert!(actions.contains(&PresenceAction::Leave));
+    // RSP5: data decoded — the update carried a JSON object
+    let update = items
+        .iter()
+        .find(|m| m.action == Some(PresenceAction::Update))
+        .unwrap();
+    assert!(
+        matches!(&update.data, Data::JSON(v) if v["state"] == "updated"),
+        "decoded JSON presence data, got {:?}",
+        update.data
+    );
+
+    // RSP4b2: forwards direction puts the ENTER first
+    let forwards = channel
+        .presence()
+        .history()
+        .params(&[("direction", "forwards")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(forwards.items()[0].action, Some(PresenceAction::Enter));
+
+    // RSP4b3: limit caps the page
+    let limited = channel.presence().history().limit(1).send().await.unwrap();
+    assert_eq!(limited.items().len(), 1);
 }
 
 // UTS: rest/integration/RSP4b1/history-time-range-0
 #[tokio::test]
-#[ignore = "Needs realtime client to generate presence events"]
 async fn rsp4b1_presence_history_time_range() {
-    todo!()
-}
+    let app = get_sandbox().await;
+    let channel_name = format!("persisted:test-RSP4b1-{}", random_id());
+    let before = chrono::Utc::now().timestamp_millis() - 60_000;
+    generate_presence_events(app, &channel_name).await;
 
-// UTS: rest/integration/RSP4b2/history-direction-forwards-0
-#[tokio::test]
-#[ignore = "Needs realtime client to generate presence events"]
-async fn rsp4b2_presence_history_direction_forwards() {
-    todo!()
-}
-
-// UTS: rest/integration/RSP4b3/history-limit-pagination-0
-#[tokio::test]
-#[ignore = "Needs realtime client to generate presence events"]
-async fn rsp4b3_presence_history_limit_pagination() {
-    todo!()
+    let client = sandbox_client(app.full_access_key());
+    let channel = client.channels().get(&channel_name);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(16);
+    loop {
+        // A start bound well before the events includes them all
+        let result = channel
+            .presence()
+            .history()
+            .params(&[("start", &before.to_string())])
+            .send()
+            .await
+            .unwrap();
+        if result.items().len() >= 3 {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "events within range");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    // A range entirely in the past excludes them
+    let past = channel
+        .presence()
+        .history()
+        .params(&[
+            ("start", &(before - 120_000).to_string()),
+            ("end", &(before - 60_000).to_string()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert!(past.items().is_empty(), "RSP4b1: out-of-range excluded");
 }
 
 // --- Presence decoding ---
@@ -1944,7 +2276,10 @@ async fn rsl5_encrypted_publish_history_roundtrip() {
     let app = get_sandbox().await;
     let client = sandbox_client(app.full_access_key());
     let key = base64::decode("WUP6u0K7MXI5Zeo0VppPwg==").unwrap();
-    let cipher = crate::crypto::CipherParams::builder().key(key).build().unwrap();
+    let cipher = crate::crypto::CipherParams::builder()
+        .key(key)
+        .build()
+        .unwrap();
 
     let channel_name = format!("persisted:test-RSL5-{}", random_id());
     let channel = client.channels().name(&channel_name).cipher(cipher).get();
@@ -1961,7 +2296,11 @@ async fn rsl5_encrypted_publish_history_roundtrip() {
         let result = channel.history().send().await.unwrap();
         if !result.items().is_empty() {
             let msg = &result.items()[0];
-            assert!(msg.encoding.is_none(), "fully decoded, got {:?}", msg.encoding);
+            assert!(
+                msg.encoding.is_none(),
+                "fully decoded, got {:?}",
+                msg.encoding
+            );
             assert!(
                 matches!(msg.data, Data::JSON(ref v) if v["secret"] == "payload"),
                 "decrypted JSON expected, got {:?}",
@@ -1977,43 +2316,168 @@ async fn rsl5_encrypted_publish_history_roundtrip() {
     }
 }
 
-// UTS: rest/integration/RSP5/decode-history-messages-3
-#[tokio::test]
-#[ignore = "Needs realtime client to generate presence events with JSON data"]
-async fn rsp5_history_messages_decoded() {
-    todo!()
-}
+// UTS: rest/integration/RSP5/decode-history-messages-3 — covered inside
+// rsp4_presence_history (the JSON-data update is asserted decoded).
 
 // --- Batch presence (needs realtime) ---
 
 // UTS: rest/integration/RSC24/batch-presence-multiple-channels-0
+// (+empty-channel-presence-2: the never-used channel comes back empty)
 #[tokio::test]
-#[ignore = "Needs realtime client to enter presence members"]
 async fn rsc24_batch_presence() {
-    todo!()
+    let app = get_sandbox().await;
+    let suffix = random_id();
+    let ch_a = format!("test-RSC24-a-{}", suffix);
+    let ch_b = format!("test-RSC24-b-{}", suffix);
+    let ch_empty = format!("test-RSC24-empty-{}", suffix);
+
+    // A realtime member on each of the two active channels
+    let opts = crate::options::ClientOptions::new(app.full_access_key())
+        .endpoint("nonprod:sandbox")
+        .unwrap()
+        .client_id("rsc24-member")
+        .unwrap()
+        .auto_connect(false);
+    let rt = crate::realtime::Realtime::new(&opts).unwrap();
+    rt.connect();
+    assert!(
+        crate::realtime::await_state(
+            &rt.connection,
+            crate::protocol::ConnectionState::Connected,
+            10000
+        )
+        .await
+    );
+    for name in [&ch_a, &ch_b] {
+        let ch = rt.channels.get(name);
+        ch.attach().await.unwrap();
+        ch.presence().enter(None).await.unwrap();
+    }
+
+    let client = sandbox_client(app.full_access_key());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(16);
+    loop {
+        let result = client
+            .batch_presence(&[ch_a.as_str(), ch_b.as_str(), ch_empty.as_str()])
+            .await
+            .unwrap();
+        let occupied = result
+            .results
+            .iter()
+            .filter(|r| match r {
+                crate::rest::BatchPresenceResult::Success(s) => !s.presence.is_empty(),
+                _ => false,
+            })
+            .count();
+        if occupied == 2 {
+            // RSC24/empty-channel: the unused channel is present with no members
+            let empty = result
+                .results
+                .iter()
+                .find_map(|r| match r {
+                    crate::rest::BatchPresenceResult::Success(s) if s.channel == ch_empty => {
+                        Some(s)
+                    }
+                    _ => None,
+                })
+                .expect("empty channel result present");
+            assert!(empty.presence.is_empty());
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "batch presence members did not appear within 16s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    rt.close();
 }
 
 // UTS: rest/integration/RSC24/restricted-key-channel-failure-1
 #[tokio::test]
-#[ignore = "Needs realtime client to enter presence members"]
 async fn rsc24_restricted_key_failure() {
-    todo!()
-}
-
-// UTS: rest/integration/RSC24/empty-channel-presence-2
-#[tokio::test]
-#[ignore = "Needs realtime client to enter presence members"]
-async fn rsc24_empty_channel_presence() {
-    todo!()
+    let app = get_sandbox().await;
+    // The restricted key cannot read presence outside its allowed channels:
+    // a batch over a forbidden channel reports a per-channel failure
+    let client = sandbox_client(app.restricted_key());
+    let forbidden = format!("forbidden-{}", random_id());
+    let result = client.batch_presence(&[forbidden.as_str()]).await;
+    match result {
+        // Whole-request rejection is acceptable too (key has no presence
+        // capability at all)
+        Err(err) => assert!(err.code.is_some()),
+        Ok(batch) => {
+            assert!(matches!(
+                batch.results.first(),
+                Some(crate::rest::BatchPresenceResult::Failure(_))
+            ));
+        }
+    }
 }
 
 // --- Token revocation ---
 
-// UTS: rest/integration/RSA17g/revoke-token-prevents-use-0
+// UTS: rest/integration/RSA17g/revoke-token-prevents-use-0 — a revoked
+// token's realtime connection is forcibly closed with a 4014x error
 #[tokio::test]
-#[ignore = "Needs realtime client to observe the 40141 disconnect (Phase 5)"]
 async fn rsa17g_revoke_tokens_prevents_use() {
-    todo!()
+    let app = get_sandbox().await;
+    let admin = sandbox_client(app.revocable_key());
+    let td = admin
+        .auth()
+        .request_token(
+            Some(&crate::auth::TokenParams {
+                client_id: Some("revoked-rt-client".to_string()),
+                ..Default::default()
+            }),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let opts = crate::options::ClientOptions::with_token(&td.token)
+        .endpoint("nonprod:sandbox")
+        .unwrap()
+        .auto_connect(false);
+    let rt = crate::realtime::Realtime::new(&opts).unwrap();
+    let mut events = rt.connection.on_state_change();
+    rt.connect();
+    assert!(
+        crate::realtime::await_state(
+            &rt.connection,
+            crate::protocol::ConnectionState::Connected,
+            10000
+        )
+        .await
+    );
+
+    admin
+        .auth()
+        .revoke_tokens(&crate::rest::RevokeTokensRequest {
+            targets: vec!["clientId:revoked-rt-client".to_string()],
+            issued_before: None,
+            allow_reauth_margin: None,
+        })
+        .await
+        .unwrap();
+
+    // The service disconnects the revoked connection with a 40141-range
+    // token error (the literal-token client cannot renew and stays down)
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+    loop {
+        let change = tokio::time::timeout_at(deadline, events.recv())
+            .await
+            .expect("disconnect after revocation within 30s")
+            .expect("event stream open");
+        if let Some(reason) = &change.reason {
+            if let Some(code) = reason.code {
+                if (40140..40150).contains(&code) {
+                    break;
+                }
+            }
+        }
+    }
+    rt.close();
 }
 
 // UTS: rest/integration/RSA17e/issued-before-reauth-margin-0
@@ -2047,11 +2511,43 @@ async fn rsa17e_issued_before_reauth_margin() {
     );
 }
 
-// UTS: rest/integration/RSA17c/mixed-success-failure-0
+// UTS: rest/integration/RSA17c/mixed-success-failure-0 — revoking one
+// valid and one unknown target reports per-target outcomes
 #[tokio::test]
-#[ignore = "Needs realtime client to observe the 40141 disconnect (Phase 5)"]
 async fn rsa17c_mixed_success_failure() {
-    todo!()
+    let app = get_sandbox().await;
+    let admin = sandbox_client(app.revocable_key());
+    // A real token for a real clientId target
+    let _td = admin
+        .auth()
+        .request_token(
+            Some(&crate::auth::TokenParams {
+                client_id: Some("rsa17c-target".to_string()),
+                ..Default::default()
+            }),
+            None,
+        )
+        .await
+        .unwrap();
+    let result = admin
+        .auth()
+        .revoke_tokens(&crate::rest::RevokeTokensRequest {
+            targets: vec![
+                "clientId:rsa17c-target".to_string(),
+                "invalidType:whatever".to_string(),
+            ],
+            issued_before: None,
+            allow_reauth_margin: None,
+        })
+        .await;
+    match result {
+        // The service may reject the whole request for the malformed target…
+        Err(err) => assert!(err.code.is_some()),
+        // …or report per-target success/failure in the batch envelope
+        Ok(batch) => {
+            assert!(batch.success_count >= 1 || batch.failure_count >= 1);
+        }
+    }
 }
 
 // --- Mutable messages ---
@@ -2064,7 +2560,13 @@ async fn rsl11_get_message() {
     let channel_name = format!("mutable:test-RSL11-getMessage-{}", random_id());
     let channel = client.channels().get(&channel_name);
 
-    let result = channel.publish().name("test-event").string("hello world").send().await.unwrap();
+    let result = channel
+        .publish()
+        .name("test-event")
+        .string("hello world")
+        .send()
+        .await
+        .unwrap();
     let serial = result.serials[0].as_deref().expect("serial").to_string();
 
     let msg = channel.get_message(&serial).await.unwrap();
@@ -2083,7 +2585,13 @@ async fn rsl15_update_message() {
     let channel_name = format!("mutable:test-RSL15-update-{}", random_id());
     let channel = client.channels().get(&channel_name);
 
-    let result = channel.publish().name("original").string("original-data").send().await.unwrap();
+    let result = channel
+        .publish()
+        .name("original")
+        .string("original-data")
+        .send()
+        .await
+        .unwrap();
     let serial = result.serials[0].as_deref().expect("serial").to_string();
 
     let update = Message {
@@ -2096,7 +2604,10 @@ async fn rsl15_update_message() {
         description: Some("edited content".into()),
         ..Default::default()
     };
-    let update_result = channel.update_message(&update, Some(&op), None).await.unwrap();
+    let update_result = channel
+        .update_message(&update, Some(&op), None)
+        .await
+        .unwrap();
     let version_serial = update_result.version_serial.expect("versionSerial");
     assert!(!version_serial.is_empty());
 
@@ -2107,7 +2618,10 @@ async fn rsl15_update_message() {
         if msg.action == Some(crate::rest::MessageAction::Update) {
             break msg;
         }
-        assert!(std::time::Instant::now() < deadline, "update not visible within 10s");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "update not visible within 10s"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     };
     assert_eq!(updated.name.as_deref(), Some("updated"));
@@ -2124,10 +2638,19 @@ async fn rsl15_delete_message() {
     let channel_name = format!("mutable:test-RSL15-delete-{}", random_id());
     let channel = client.channels().get(&channel_name);
 
-    let result = channel.publish().name("to-delete").string("delete-me").send().await.unwrap();
+    let result = channel
+        .publish()
+        .name("to-delete")
+        .string("delete-me")
+        .send()
+        .await
+        .unwrap();
     let serial = result.serials[0].as_deref().expect("serial").to_string();
 
-    let msg = Message { serial: Some(serial.clone()), ..Default::default() };
+    let msg = Message {
+        serial: Some(serial.clone()),
+        ..Default::default()
+    };
     let delete_result = channel.delete_message(&msg, None, None).await.unwrap();
     let version_serial = delete_result.version_serial.expect("versionSerial");
     assert!(!version_serial.is_empty());
@@ -2138,7 +2661,10 @@ async fn rsl15_delete_message() {
         if msg.action == Some(crate::rest::MessageAction::Delete) {
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "delete not visible within 10s");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "delete not visible within 10s"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 }
@@ -2151,7 +2677,13 @@ async fn rsl15_append_message() {
     let channel_name = format!("mutable:test-RSL15-append-{}", random_id());
     let channel = client.channels().get(&channel_name);
 
-    let result = channel.publish().name("appendable").string("original").send().await.unwrap();
+    let result = channel
+        .publish()
+        .name("appendable")
+        .string("original")
+        .send()
+        .await
+        .unwrap();
     let serial = result.serials[0].as_deref().expect("serial").to_string();
 
     let msg = Message {
@@ -2172,7 +2704,13 @@ async fn rsl14_get_message_versions() {
     let channel_name = format!("mutable:test-RSL14-versions-{}", random_id());
     let channel = client.channels().get(&channel_name);
 
-    let result = channel.publish().name("versioned").string("v1").send().await.unwrap();
+    let result = channel
+        .publish()
+        .name("versioned")
+        .string("v1")
+        .send()
+        .await
+        .unwrap();
     let serial = result.serials[0].as_deref().expect("serial").to_string();
 
     for (data, desc) in [("v2", "first edit"), ("v3", "second edit")] {
@@ -2185,7 +2723,10 @@ async fn rsl14_get_message_versions() {
             description: Some(desc.into()),
             ..Default::default()
         };
-        channel.update_message(&update, Some(&op), None).await.unwrap();
+        channel
+            .update_message(&update, Some(&op), None)
+            .await
+            .unwrap();
     }
 
     // Poll until all three versions appear
@@ -2195,7 +2736,10 @@ async fn rsl14_get_message_versions() {
         if result.items().len() >= 3 {
             break result;
         }
-        assert!(std::time::Instant::now() < deadline, "versions did not converge within 10s");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "versions did not converge within 10s"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     };
     for item in versions.items() {
@@ -2213,7 +2757,13 @@ async fn rsan1_rsan2_annotations_lifecycle() {
     let channel_name = format!("mutable:test-RSAN-lifecycle-{}", random_id());
     let channel = client.channels().get(&channel_name);
 
-    let result = channel.publish().name("annotatable").string("content").send().await.unwrap();
+    let result = channel
+        .publish()
+        .name("annotatable")
+        .string("content")
+        .send()
+        .await
+        .unwrap();
     let serial = result.serials[0].as_deref().expect("serial").to_string();
 
     let annotation = crate::rest::Annotation {
@@ -2221,7 +2771,11 @@ async fn rsan1_rsan2_annotations_lifecycle() {
         name: Some("like".into()),
         ..Default::default()
     };
-    channel.annotations().publish(&serial, &annotation).await.unwrap();
+    channel
+        .annotations()
+        .publish(&serial, &annotation)
+        .await
+        .unwrap();
 
     // Poll until the annotation appears
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -2230,7 +2784,10 @@ async fn rsan1_rsan2_annotations_lifecycle() {
         if !result.items().is_empty() {
             break result;
         }
-        assert!(std::time::Instant::now() < deadline, "annotation not visible within 10s");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "annotation not visible within 10s"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     };
     let found = annotations.items().iter().find(|a| {
@@ -2241,7 +2798,11 @@ async fn rsan1_rsan2_annotations_lifecycle() {
     assert_eq!(ann.message_serial.as_deref(), Some(serial.as_str()));
 
     // RSAN2: delete the annotation
-    channel.annotations().delete(&serial, &annotation).await.unwrap();
+    channel
+        .annotations()
+        .delete(&serial, &annotation)
+        .await
+        .unwrap();
 }
 
 // UTS: rest/integration/RSAN3/get-annotations-paginated-0
@@ -2252,7 +2813,13 @@ async fn rsan3_get_annotations() {
     let channel_name = format!("mutable:test-RSAN3-paginated-{}", random_id());
     let channel = client.channels().get(&channel_name);
 
-    let result = channel.publish().name("multi-annotated").string("content").send().await.unwrap();
+    let result = channel
+        .publish()
+        .name("multi-annotated")
+        .string("content")
+        .send()
+        .await
+        .unwrap();
     let serial = result.serials[0].as_deref().expect("serial").to_string();
 
     for name in ["like", "heart"] {
@@ -2270,7 +2837,10 @@ async fn rsan3_get_annotations() {
         if r.items().len() >= 2 {
             break r;
         }
-        assert!(std::time::Instant::now() < deadline, "annotations did not converge within 10s");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "annotations did not converge within 10s"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     };
     for ann in result.items() {

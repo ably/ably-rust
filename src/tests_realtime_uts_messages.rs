@@ -69,7 +69,10 @@ fn spawn_channel_server(mock: &MockWebSocket) -> tokio::task::JoinHandle<()> {
 }
 
 /// Spawn a server that also ACKs every MESSAGE with the given serials.
-fn spawn_acking_server(mock: &MockWebSocket, ack_serial: &'static str) -> tokio::task::JoinHandle<()> {
+fn spawn_acking_server(
+    mock: &MockWebSocket,
+    ack_serial: &'static str,
+) -> tokio::task::JoinHandle<()> {
     let mock2 = mock.clone();
     tokio::spawn(async move {
         let mut served = 0usize;
@@ -93,7 +96,9 @@ fn spawn_acking_server(mock: &MockWebSocket, ack_serial: &'static str) -> tokio:
                         ack.msg_serial = m.message.msg_serial;
                         ack.count = Some(1);
                         ack.res = Some(vec![crate::protocol::PublishResult {
-                            serials: (0..n).map(|i| Some(format!("{}-{}", ack_serial, i))).collect(),
+                            serials: (0..n)
+                                .map(|i| Some(format!("{}-{}", ack_serial, i)))
+                                .collect(),
                         }]);
                         mock2.active_connection().send_to_client(ack);
                     }
@@ -164,7 +169,11 @@ async fn rtl6i1_rtl6j_publish_name_data_with_ack_serials() {
         .expect("publish resolves on ACK");
 
     let sent = await_nth_action(&mock, action::MESSAGE, 1, 2000).await;
-    assert_eq!(sent.message.msg_serial, Some(0), "RTN7b: serials start at 0");
+    assert_eq!(
+        sent.message.msg_serial,
+        Some(0),
+        "RTN7b: serials start at 0"
+    );
     let wire = sent.message.messages.as_ref().unwrap();
     assert_eq!(wire.len(), 1);
     assert_eq!(wire[0]["name"], "greeting");
@@ -185,9 +194,21 @@ async fn rtl6i2_publish_array_of_messages() {
     ch.attach().await.unwrap();
 
     let msgs = vec![
-        Message { name: Some("event1".into()), data: crate::rest::Data::String("d1".into()), ..Default::default() },
-        Message { name: Some("event2".into()), data: crate::rest::Data::String("d2".into()), ..Default::default() },
-        Message { name: Some("event3".into()), data: crate::rest::Data::String("d3".into()), ..Default::default() },
+        Message {
+            name: Some("event1".into()),
+            data: crate::rest::Data::String("d1".into()),
+            ..Default::default()
+        },
+        Message {
+            name: Some("event2".into()),
+            data: crate::rest::Data::String("d2".into()),
+            ..Default::default()
+        },
+        Message {
+            name: Some("event3".into()),
+            data: crate::rest::Data::String("d3".into()),
+            ..Default::default()
+        },
     ];
     let result = ch.publish().messages(msgs).send().await.expect("publish");
 
@@ -210,7 +231,11 @@ async fn rtl6i3_null_fields_omitted() {
     let ch = client.channels.get("sparse");
     ch.attach().await.unwrap();
 
-    ch.publish().name("only-name").send().await.expect("publish");
+    ch.publish()
+        .name("only-name")
+        .send()
+        .await
+        .expect("publish");
     let sent = await_nth_action(&mock, action::MESSAGE, 1, 2000).await;
     let wire = &sent.message.messages.as_ref().unwrap()[0];
     let obj = wire.as_object().unwrap();
@@ -294,9 +319,15 @@ async fn rtl6c2_publish_queued_while_connecting_in_order() {
     ack.msg_serial = Some(0);
     ack.count = Some(3);
     ack.res = Some(vec![
-        crate::protocol::PublishResult { serials: vec![Some("a".into())] },
-        crate::protocol::PublishResult { serials: vec![Some("b".into())] },
-        crate::protocol::PublishResult { serials: vec![Some("c".into())] },
+        crate::protocol::PublishResult {
+            serials: vec![Some("a".into())],
+        },
+        crate::protocol::PublishResult {
+            serials: vec![Some("b".into())],
+        },
+        crate::protocol::PublishResult {
+            serials: vec![Some("c".into())],
+        },
     ]);
     conn.send_to_client(ack);
     for f in futures {
@@ -307,7 +338,7 @@ async fn rtl6c2_publish_queued_while_connecting_in_order() {
 // UTS: RTL6c2 queueMessages=false fails immediately when not connected
 #[tokio::test]
 async fn rtl6c2_no_queue_fails_when_not_connected() {
-    let mock = MockWebSocket::with_handler(|conn| std::mem::forget(conn));
+    let mock = MockWebSocket::with_handler(std::mem::forget);
     let transport = Arc::new(MockTransport::new(mock.inner()));
     let client = Realtime::with_mock(
         &ClientOptions::new("appId.keyId:keySecret")
@@ -347,15 +378,22 @@ async fn rtl6c4_publish_fails_in_terminal_states() {
     mock.active_connection().send_to_client(err_msg);
     let _ = attach.await.unwrap();
     assert_eq!(ch.state(), ChannelState::Failed);
-    let err = ch.publish_message(Some("e"), None).await.expect_err("RTL6c4");
+    let err = ch
+        .publish_message(Some("e"), None)
+        .await
+        .expect_err("RTL6c4");
     assert_eq!(err.code, Some(40160), "channel error reason surfaces");
 
     // Connection CLOSED
     client.close();
-    mock.active_connection().send_to_client(ProtocolMessage::new(action::CLOSED));
+    mock.active_connection()
+        .send_to_client(ProtocolMessage::new(action::CLOSED));
     assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
     let healthy = client.channels.get("healthy");
-    let err = healthy.publish_message(Some("e"), None).await.expect_err("RTL6c4");
+    let err = healthy
+        .publish_message(Some("e"), None)
+        .await
+        .expect_err("RTL6c4");
     assert!(err.code.is_some());
 }
 
@@ -631,13 +669,16 @@ async fn rtl7h_no_attach_when_disabled() {
     let mock = serving_mock("conn-1");
     let client = client_for(&mock);
     connect(&client).await;
-    let ch = client.channels.get_with_options(
-        "passive",
-        crate::channel::RealtimeChannelOptions {
-            attach_on_subscribe: Some(false),
-            ..Default::default()
-        },
-    ).unwrap();
+    let ch = client
+        .channels
+        .get_with_options(
+            "passive",
+            crate::channel::RealtimeChannelOptions {
+                attach_on_subscribe: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     let (_id, _rx) = ch.subscribe();
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     assert_eq!(ch.state(), ChannelState::Initialized, "RTL7h");
@@ -659,9 +700,7 @@ async fn rtl7g_listener_registered_when_attach_fails() {
     err_msg.channel = Some("flaky".to_string());
     err_msg.error = Some(ErrorInfo::with_status(40160, 401, "denied"));
     mock.active_connection().send_to_client(err_msg);
-    assert!(
-        crate::realtime::await_channel_state(&ch, ChannelState::Failed, 5000).await
-    );
+    assert!(crate::realtime::await_channel_state(&ch, ChannelState::Failed, 5000).await);
 
     // Explicit re-attach succeeds; the original listener still delivers
     let ch2 = ch.clone();
@@ -672,7 +711,11 @@ async fn rtl7g_listener_registered_when_attach_fails() {
     mock.active_connection().send_to_client(reply);
     attach.await.unwrap().unwrap();
 
-    send_channel_message(&mock, "flaky", serde_json::json!([{"name": "t", "data": "after"}]));
+    send_channel_message(
+        &mock,
+        "flaky",
+        serde_json::json!([{"name": "t", "data": "after"}]),
+    );
     let m = rx.recv().await.expect("RTL7g: the listener survived");
     assert_eq!(m.name.as_deref(), Some("t"));
 }
@@ -683,20 +726,30 @@ async fn rtl17_no_delivery_when_not_attached() {
     let mock = serving_mock("conn-1");
     let client = client_for(&mock);
     connect(&client).await;
-    let ch = client.channels.get_with_options(
-        "gated",
-        crate::channel::RealtimeChannelOptions {
-            attach_on_subscribe: Some(false),
-            ..Default::default()
-        },
-    ).unwrap();
+    let ch = client
+        .channels
+        .get_with_options(
+            "gated",
+            crate::channel::RealtimeChannelOptions {
+                attach_on_subscribe: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     let (_id, mut rx) = ch.subscribe();
     tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
 
     // The channel is INITIALIZED: a stray MESSAGE must not be delivered
-    send_channel_message(&mock, "gated", serde_json::json!([{"name": "x", "data": "y"}]));
+    send_channel_message(
+        &mock,
+        "gated",
+        serde_json::json!([{"name": "x", "data": "y"}]),
+    );
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    assert!(rx.try_recv().is_err(), "RTL17: not delivered when not attached");
+    assert!(
+        rx.try_recv().is_err(),
+        "RTL17: not delivered when not attached"
+    );
 }
 
 // UTS: RTL8a/RTL8b/RTL8c unsubscribe semantics
@@ -718,7 +771,11 @@ async fn rtl8_unsubscribe_semantics() {
     // RTL8a: removing the all-listener stops its delivery, the named one stays
     ch.unsubscribe(id_all);
     tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
-    send_channel_message(&mock, "unsub", serde_json::json!([{"name": "ev", "data": "1"}]));
+    send_channel_message(
+        &mock,
+        "unsub",
+        serde_json::json!([{"name": "ev", "data": "1"}]),
+    );
     assert_eq!(rx_named.recv().await.unwrap().name.as_deref(), Some("ev"));
     tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
     assert!(rx_all.try_recv().is_err(), "RTL8a");
@@ -726,7 +783,11 @@ async fn rtl8_unsubscribe_semantics() {
     // RTL8b: removing by name+id stops the named listener
     ch.unsubscribe_with_name("ev", id_named);
     tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
-    send_channel_message(&mock, "unsub", serde_json::json!([{"name": "ev", "data": "2"}]));
+    send_channel_message(
+        &mock,
+        "unsub",
+        serde_json::json!([{"name": "ev", "data": "2"}]),
+    );
     tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
     assert!(rx_named.try_recv().is_err(), "RTL8b");
 
@@ -735,7 +796,11 @@ async fn rtl8_unsubscribe_semantics() {
     tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
     ch.unsubscribe_all();
     tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
-    send_channel_message(&mock, "unsub", serde_json::json!([{"name": "ev", "data": "3"}]));
+    send_channel_message(
+        &mock,
+        "unsub",
+        serde_json::json!([{"name": "ev", "data": "3"}]),
+    );
     tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
     assert!(rx3.try_recv().is_err(), "RTL8c");
     server.abort();
@@ -834,7 +899,11 @@ async fn tm2_field_population() {
 
     let preset = rx.recv().await.unwrap();
     assert_eq!(preset.id.as_deref(), Some("explicit-id"), "TM2a: kept");
-    assert_eq!(preset.connection_id.as_deref(), Some("their-conn"), "TM2c: kept");
+    assert_eq!(
+        preset.connection_id.as_deref(),
+        Some("their-conn"),
+        "TM2c: kept"
+    );
     assert_eq!(preset.timestamp, Some(1_600_000_000_000), "TM2f: kept");
     server.abort();
 }
@@ -856,7 +925,10 @@ async fn rtl15b_serial_updates_from_message_and_presence() {
     mock.active_connection().send_to_client(pm);
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
     while ch.channel_serial().as_deref() != Some("msg-serial-7") {
-        assert!(tokio::time::Instant::now() < deadline, "RTL15b from MESSAGE");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "RTL15b from MESSAGE"
+        );
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
     }
 
@@ -866,7 +938,10 @@ async fn rtl15b_serial_updates_from_message_and_presence() {
     mock.active_connection().send_to_client(pp);
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
     while ch.channel_serial().as_deref() != Some("pres-serial-8") {
-        assert!(tokio::time::Instant::now() < deadline, "RTL15b from PRESENCE");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "RTL15b from PRESENCE"
+        );
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
     }
     server.abort();
@@ -885,7 +960,10 @@ async fn rtl10b_until_attach() {
     let ch = client.channels.get("hist");
 
     // Not attached: untilAttach errors
-    let err = ch.history(true).await.expect_err("RTL10b: requires attached");
+    let err = ch
+        .history(true)
+        .await
+        .expect_err("RTL10b: requires attached");
     assert!(err.code.is_some());
 
     // Attach with a serial; the REST query carries fromSerial
@@ -918,7 +996,10 @@ async fn rtl6c2_publish_queued_when_initialized() {
 
     let server = spawn_acking_server(&mock, "s");
     connect(&client).await;
-    publish.await.unwrap().expect("flushed and ACKed after connect");
+    publish
+        .await
+        .unwrap()
+        .expect("flushed and ACKed after connect");
     server.abort();
 }
 
@@ -950,7 +1031,10 @@ async fn live_publish_subscribe_roundtrip_against_sandbox() {
         .send()
         .await
         .expect("live publish ACKed");
-    assert!(!result.serials.is_empty(), "RTL6j: serial from the live ACK");
+    assert!(
+        !result.serials.is_empty(),
+        "RTL6j: serial from the live ACK"
+    );
 
     // The published message echoes back to our own subscriber
     let echoed = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
@@ -1026,17 +1110,28 @@ async fn rtan1a_rtan1d_annotation_publish_wire_and_ack() {
     let publish = {
         let ch2 = ch.clone();
         tokio::spawn(async move {
-            ch2.annotations().publish("msg-serial-1", &crate::rest::Annotation {
-                annotation_type: Some("reaction".into()),
-                data: crate::rest::Data::JSON(serde_json::json!({"emoji": "+1"})),
-                ..Default::default()
-            }).await
+            ch2.annotations()
+                .publish(
+                    "msg-serial-1",
+                    &crate::rest::Annotation {
+                        annotation_type: Some("reaction".into()),
+                        data: crate::rest::Data::JSON(serde_json::json!({"emoji": "+1"})),
+                        ..Default::default()
+                    },
+                )
+                .await
         })
     };
     let _ = (&annotations, &ann);
 
     let sent = await_nth_action(&mock, action::ANNOTATION, 1, 2000).await;
-    let entries = sent.message.annotations.as_ref().unwrap().as_array().unwrap();
+    let entries = sent
+        .message
+        .annotations
+        .as_ref()
+        .unwrap()
+        .as_array()
+        .unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["type"], "reaction", "RTAN1a");
     assert_eq!(entries[0]["action"], 0, "RTAN1c: ANNOTATION_CREATE");
@@ -1065,20 +1160,35 @@ async fn rtan2a_rtan1d_annotation_delete_and_nack() {
     let delete = {
         let ch2 = ch.clone();
         tokio::spawn(async move {
-            ch2.annotations().delete("msg-serial-2", &crate::rest::Annotation {
-                annotation_type: Some("reaction".into()),
-                ..Default::default()
-            }).await
+            ch2.annotations()
+                .delete(
+                    "msg-serial-2",
+                    &crate::rest::Annotation {
+                        annotation_type: Some("reaction".into()),
+                        ..Default::default()
+                    },
+                )
+                .await
         })
     };
     let sent = await_nth_action(&mock, action::ANNOTATION, 1, 2000).await;
-    let entries = sent.message.annotations.as_ref().unwrap().as_array().unwrap();
+    let entries = sent
+        .message
+        .annotations
+        .as_ref()
+        .unwrap()
+        .as_array()
+        .unwrap();
     assert_eq!(entries[0]["action"], 1, "RTAN2a: ANNOTATION_DELETE");
 
     let mut nack = ProtocolMessage::new(action::NACK);
     nack.msg_serial = sent.message.msg_serial;
     nack.count = Some(1);
-    nack.error = Some(ErrorInfo::with_status(40160, 401, "no annotation permission"));
+    nack.error = Some(ErrorInfo::with_status(
+        40160,
+        401,
+        "no annotation permission",
+    ));
     mock.active_connection().send_to_client(nack);
     let err = delete.await.unwrap().expect_err("RTAN1d: NACK errors");
     assert_eq!(err.code, Some(40160));
@@ -1120,7 +1230,10 @@ async fn rtan4a_rtan4c_annotation_subscribers() {
 
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
     while all.lock().unwrap().len() < 2 {
-        assert!(tokio::time::Instant::now() < deadline, "RTAN4a: both delivered");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "RTAN4a: both delivered"
+        );
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
     }
     tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
@@ -1150,25 +1263,32 @@ async fn rtan1b_annotation_publish_state_conditions() {
     assert_eq!(ch.state(), ChannelState::Failed);
     let err = ch
         .annotations()
-        .publish("m1", &crate::rest::Annotation {
-            annotation_type: Some("reaction".into()),
-            ..Default::default()
-        })
+        .publish(
+            "m1",
+            &crate::rest::Annotation {
+                annotation_type: Some("reaction".into()),
+                ..Default::default()
+            },
+        )
         .await
         .expect_err("RTAN1b: failed channel");
     assert_eq!(err.code, Some(40160));
 
     // Connection CLOSED → error
     client.close();
-    mock.active_connection().send_to_client(ProtocolMessage::new(action::CLOSED));
+    mock.active_connection()
+        .send_to_client(ProtocolMessage::new(action::CLOSED));
     assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
     let healthy = client.channels.get("ann-healthy");
     let err = healthy
         .annotations()
-        .publish("m1", &crate::rest::Annotation {
-            annotation_type: Some("reaction".into()),
-            ..Default::default()
-        })
+        .publish(
+            "m1",
+            &crate::rest::Annotation {
+                annotation_type: Some("reaction".into()),
+                ..Default::default()
+            },
+        )
         .await
         .expect_err("RTAN1b: closed connection");
     assert!(err.code.is_some());

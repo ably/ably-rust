@@ -23,9 +23,8 @@ use tokio::time::Instant;
 use crate::auth::Credential;
 use crate::error::{ErrorCode, ErrorInfo, Result};
 use crate::protocol::{
-    action, flags, ChannelEvent, ChannelMode, ChannelState, ChannelStateChange,
-    ConnectionDetails, ConnectionEvent, ConnectionState, ConnectionStateChange,
-    ProtocolMessage,
+    action, flags, ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionDetails,
+    ConnectionEvent, ConnectionState, ConnectionStateChange, ProtocolMessage,
 };
 use crate::rest::{AuthHeader, Format, Rest};
 use crate::transport::{Transport, TransportConnection, TransportEvent};
@@ -110,7 +109,10 @@ pub(crate) enum Command {
         sender: mpsc::UnboundedSender<crate::rest::Message>,
     },
     /// RTL8: remove message subscriber(s).
-    Unsubscribe { name: String, spec: UnsubscribeSpec },
+    Unsubscribe {
+        name: String,
+        spec: UnsubscribeSpec,
+    },
     /// RTL16: set/update channel options; reattaches when needed (RTL16a).
     SetOptions {
         name: String,
@@ -146,7 +148,10 @@ pub(crate) enum Command {
     },
     /// RTP17e (internal): a failed automatic re-entry becomes a channel
     /// UPDATE event carrying the error.
-    PresenceReentryFailed { name: String, error: ErrorInfo },
+    PresenceReentryFailed {
+        name: String,
+        error: ErrorInfo,
+    },
     /// RTAN1/RTAN2: an annotation publish or delete; resolves via ACK/NACK.
     AnnotationOp {
         name: String,
@@ -161,7 +166,10 @@ pub(crate) enum Command {
         sender: mpsc::UnboundedSender<crate::rest::Annotation>,
     },
     /// RTAN5: remove annotation subscriber(s).
-    AnnotationUnsubscribe { name: String, id: Option<u64> },
+    AnnotationUnsubscribe {
+        name: String,
+        id: Option<u64>,
+    },
 }
 
 /// RTL7/RTL22: what a subscriber wants delivered.
@@ -360,7 +368,13 @@ struct QueuedPresenceOp {
 impl ChannelCtx {
     /// Transition the channel state machine: snapshot first, then the event
     /// (DESIGN.md §4 contract). RTL2g: no event when the state is unchanged.
-    fn transition(&mut self, to: ChannelState, reason: Option<ErrorInfo>, resumed: bool, has_backlog: bool) {
+    fn transition(
+        &mut self,
+        to: ChannelState,
+        reason: Option<ErrorInfo>,
+        resumed: bool,
+        has_backlog: bool,
+    ) {
         let previous = self.state;
         self.state = to;
         if let Some(err) = &reason {
@@ -505,10 +519,7 @@ fn deliver_presence(
     subscribers.retain(|sub| {
         let matches = match &sub.actions {
             None => true,
-            Some(actions) => event
-                .action
-                .map(|a| actions.contains(&a))
-                .unwrap_or(false),
+            Some(actions) => event.action.map(|a| actions.contains(&a)).unwrap_or(false),
         };
         if !matches {
             return true;
@@ -661,7 +672,9 @@ impl ConnectionCtx {
             }
             // RTN7e: terminal states fail everything with the state-change
             // reason
-            ConnectionState::Suspended | ConnectionState::Closed | ConnectionState::Failed
+            ConnectionState::Suspended
+            | ConnectionState::Closed
+            | ConnectionState::Failed
             | ConnectionState::Closing => {
                 let err = reason.clone().unwrap_or_else(|| {
                     ErrorInfo::new(
@@ -711,7 +724,12 @@ impl ConnectionCtx {
             | ConnectionState::Connecting
             | ConnectionState::Disconnected => {
                 if self.rest.inner.opts.queue_messages {
-                    self.queued_publishes.push(QueuedPublish { channel: name, messages, params, reply });
+                    self.queued_publishes.push(QueuedPublish {
+                        channel: name,
+                        messages,
+                        params,
+                        reply,
+                    });
                 } else {
                     let _ = reply.send(Err(ErrorInfo::new(
                         ErrorCode::Disconnected.code(),
@@ -789,10 +807,22 @@ impl ConnectionCtx {
     /// Resend a pending publish verbatim (RTN19a) under its (possibly
     /// renumbered) serial.
     fn resend_pending_publishes(&mut self) {
-        let resends: Vec<(i64, String, Vec<serde_json::Value>, Option<serde_json::Value>)> = self
+        let resends: Vec<(
+            i64,
+            String,
+            Vec<serde_json::Value>,
+            Option<serde_json::Value>,
+        )> = self
             .pending_publishes
             .iter()
-            .map(|p| (p.msg_serial, p.channel.clone(), p.wire_messages.clone(), p.params.clone()))
+            .map(|p| {
+                (
+                    p.msg_serial,
+                    p.channel.clone(),
+                    p.wire_messages.clone(),
+                    p.params.clone(),
+                )
+            })
             .collect();
         for (serial, channel, wire_messages, params) in resends {
             let mut pm = ProtocolMessage::new(action::MESSAGE);
@@ -882,7 +912,7 @@ impl ConnectionCtx {
         reply: oneshot::Sender<Result<()>>,
     ) {
         let connected = self.state == ConnectionState::Connected;
-        let rtt = self.rest.inner.opts.realtime_request_timeout;
+        let _rtt = self.rest.inner.opts.realtime_request_timeout;
         let Some(ch) = self.channels.get_mut(&name) else {
             let _ = reply.send(Err(ErrorInfo::new(
                 ErrorCode::BadRequest.code(),
@@ -900,7 +930,9 @@ impl ConnectionCtx {
                         ConnectionState::Connecting | ConnectionState::Disconnected
                     )
                 {
-                    ch.presence.queued_ops.push(QueuedPresenceOp { message, reply });
+                    ch.presence
+                        .queued_ops
+                        .push(QueuedPresenceOp { message, reply });
                 } else {
                     let _ = reply.send(Err(ErrorInfo::new(
                         ErrorCode::Disconnected.code(),
@@ -910,11 +942,15 @@ impl ConnectionCtx {
             }
             // RTP16b: queued until the attach completes
             ChannelState::Attaching => {
-                ch.presence.queued_ops.push(QueuedPresenceOp { message, reply });
+                ch.presence
+                    .queued_ops
+                    .push(QueuedPresenceOp { message, reply });
             }
             // RTP8d: an INITIALIZED channel is implicitly attached
             ChannelState::Initialized => {
-                ch.presence.queued_ops.push(QueuedPresenceOp { message, reply });
+                ch.presence
+                    .queued_ops
+                    .push(QueuedPresenceOp { message, reply });
                 let (attach_reply, _rx) = oneshot::channel();
                 self.handle_attach(name, attach_reply);
             }
@@ -995,12 +1031,20 @@ impl ConnectionCtx {
                     "Presence state is out of sync (channel suspended)",
                 )));
             } else {
-                let _ = reply.send(Ok(presence_members(&ch.presence, &client_id, &connection_id)));
+                let _ = reply.send(Ok(presence_members(
+                    &ch.presence,
+                    &client_id,
+                    &connection_id,
+                )));
             }
             return;
         }
         if !wait_for_sync || ch.presence.sync_complete {
-            let _ = reply.send(Ok(presence_members(&ch.presence, &client_id, &connection_id)));
+            let _ = reply.send(Ok(presence_members(
+                &ch.presence,
+                &client_id,
+                &connection_id,
+            )));
             return;
         }
         // RTP11a/RTP11b: defer until the sync completes (the implicit attach
@@ -1036,7 +1080,10 @@ impl ConnectionCtx {
         if self.state != ConnectionState::Connected {
             let _ = reply.send(Err(ErrorInfo::new(
                 ErrorCode::Disconnected.code(),
-                format!("Cannot publish an annotation in connection state {:?}", self.state),
+                format!(
+                    "Cannot publish an annotation in connection state {:?}",
+                    self.state
+                ),
             )));
             return;
         }
@@ -1079,8 +1126,12 @@ impl ConnectionCtx {
     /// subscribers (RTAN4c type filters).
     fn handle_annotation_action(&mut self, pm: ProtocolMessage) {
         self.update_channel_serial(&pm);
-        let Some(name) = pm.channel.clone() else { return };
-        let Some(ch) = self.channels.get_mut(&name) else { return };
+        let Some(name) = pm.channel.clone() else {
+            return;
+        };
+        let Some(ch) = self.channels.get_mut(&name) else {
+            return;
+        };
         if ch.state != ChannelState::Attached {
             return;
         }
@@ -1120,7 +1171,9 @@ impl ConnectionCtx {
     /// channel's serial.
     fn update_channel_serial(&mut self, pm: &ProtocolMessage) {
         let Some(name) = &pm.channel else { return };
-        let Some(serial) = &pm.channel_serial else { return };
+        let Some(serial) = &pm.channel_serial else {
+            return;
+        };
         if let Some(ch) = self.channels.get_mut(name) {
             ch.channel_serial = Some(serial.clone());
             ch.publish_snapshot();
@@ -1131,8 +1184,12 @@ impl ConnectionCtx {
     /// channel cipher, RTL17 attached-only delivery, subscriber dispatch (§8).
     fn handle_message_action(&mut self, pm: ProtocolMessage) {
         self.update_channel_serial(&pm);
-        let Some(name) = pm.channel.clone() else { return };
-        let Some(ch) = self.channels.get_mut(&name) else { return };
+        let Some(name) = pm.channel.clone() else {
+            return;
+        };
+        let Some(ch) = self.channels.get_mut(&name) else {
+            return;
+        };
         // RTL17: messages are only delivered while ATTACHED
         if ch.state != ChannelState::Attached {
             return;
@@ -1169,9 +1226,13 @@ impl ConnectionCtx {
     /// follows TM2 conventions; events are dispatched per RTP2 newness.
     fn handle_presence_action(&mut self, pm: ProtocolMessage, is_sync: bool) {
         self.update_channel_serial(&pm);
-        let Some(name) = pm.channel.clone() else { return };
+        let Some(name) = pm.channel.clone() else {
+            return;
+        };
         let own_connection = self.id.clone();
-        let Some(ch) = self.channels.get_mut(&name) else { return };
+        let Some(ch) = self.channels.get_mut(&name) else {
+            return;
+        };
 
         if is_sync && !ch.presence.map.sync_in_progress() {
             // RTP18a: a new sync page stream begins
@@ -1182,8 +1243,7 @@ impl ConnectionCtx {
 
         let wire = pm.presence.clone().unwrap_or_default();
         for (index, value) in wire.into_iter().enumerate() {
-            let Ok(mut msg) = serde_json::from_value::<crate::rest::PresenceMessage>(value)
-            else {
+            let Ok(mut msg) = serde_json::from_value::<crate::rest::PresenceMessage>(value) else {
                 continue;
             };
             // TM2-shaped inheritance
@@ -1485,55 +1545,88 @@ impl ConnectionCtx {
                     self.suspend_at = None;
                     self.transition(ConnectionState::Closed, None);
                 }
-                ConnectionState::Closing
-                | ConnectionState::Closed
-                | ConnectionState::Failed => {}
+                ConnectionState::Closing | ConnectionState::Closed | ConnectionState::Failed => {}
             },
-            Command::EnsureChannel { name, options, snapshot_tx, events_tx } => {
-                self.channels.entry(name.clone()).or_insert_with(|| ChannelCtx {
-                    name,
-                    state: ChannelState::Initialized,
-                    error_reason: None,
-                    channel_serial: None,
-                    attach_serial: None,
-                    options,
-                    attached_modes: None,
-                    has_been_attached: false,
-                    attach_pending: false,
-                    detach_pending: false,
-                    release_on_detach: false,
-                    release_reply: None,
-                    pending_attach: Vec::new(),
-                    pending_detach: Vec::new(),
-                    op_deadline: None,
-                    retry_at: None,
-                    retry_count: 0,
-                    next_retry_in: None,
-                    op_revert_state: ChannelState::Initialized,
-                    subscribers: Vec::new(),
-                    presence: PresenceCtx::default(),
-                    annotation_subscribers: Vec::new(),
-                    snapshot_tx,
-                    events_tx,
-                });
+            Command::EnsureChannel {
+                name,
+                options,
+                snapshot_tx,
+                events_tx,
+            } => {
+                self.channels
+                    .entry(name.clone())
+                    .or_insert_with(|| ChannelCtx {
+                        name,
+                        state: ChannelState::Initialized,
+                        error_reason: None,
+                        channel_serial: None,
+                        attach_serial: None,
+                        options,
+                        attached_modes: None,
+                        has_been_attached: false,
+                        attach_pending: false,
+                        detach_pending: false,
+                        release_on_detach: false,
+                        release_reply: None,
+                        pending_attach: Vec::new(),
+                        pending_detach: Vec::new(),
+                        op_deadline: None,
+                        retry_at: None,
+                        retry_count: 0,
+                        next_retry_in: None,
+                        op_revert_state: ChannelState::Initialized,
+                        subscribers: Vec::new(),
+                        presence: PresenceCtx::default(),
+                        annotation_subscribers: Vec::new(),
+                        snapshot_tx,
+                        events_tx,
+                    });
             }
             Command::Attach { name, reply } => self.handle_attach(name, reply),
-            Command::PresenceOp { name, message, reply } => {
+            Command::PresenceOp {
+                name,
+                message,
+                reply,
+            } => {
                 self.handle_presence_op(name, message, reply);
             }
-            Command::PresenceGet { name, wait_for_sync, client_id, connection_id, reply } => {
+            Command::PresenceGet {
+                name,
+                wait_for_sync,
+                client_id,
+                connection_id,
+                reply,
+            } => {
                 self.handle_presence_get(name, wait_for_sync, client_id, connection_id, reply);
             }
-            Command::PresenceSubscribe { name, id, actions, sender } => {
+            Command::PresenceSubscribe {
+                name,
+                id,
+                actions,
+                sender,
+            } => {
                 // RTP6: registration only; implicit attach happens handle-side
                 if let Some(ch) = self.channels.get_mut(&name) {
-                    ch.presence.subscribers.push(PresenceSubscriber { id, actions, sender });
+                    ch.presence.subscribers.push(PresenceSubscriber {
+                        id,
+                        actions,
+                        sender,
+                    });
                 }
             }
-            Command::AnnotationOp { name, annotation, reply } => {
+            Command::AnnotationOp {
+                name,
+                annotation,
+                reply,
+            } => {
                 self.handle_annotation_op(name, annotation, reply);
             }
-            Command::AnnotationSubscribe { name, id, type_filter, sender } => {
+            Command::AnnotationSubscribe {
+                name,
+                id,
+                type_filter,
+                sender,
+            } => {
                 if let Some(ch) = self.channels.get_mut(&name) {
                     ch.annotation_subscribers.push(AnnotationSubscriber {
                         id,
@@ -1553,11 +1646,8 @@ impl ConnectionCtx {
             Command::PresenceReentryFailed { name, error } => {
                 if let Some(ch) = self.channels.get_mut(&name) {
                     // RTP17e: 91004 wraps the underlying failure
-                    let mut wrapped = ErrorInfo::with_cause(
-                        91004,
-                        "Automatic presence re-entry failed",
-                        error,
-                    );
+                    let mut wrapped =
+                        ErrorInfo::with_cause(91004, "Automatic presence re-entry failed", error);
                     wrapped.status_code = Some(400);
                     // RTP17e: resumed=true — the channel itself was continuous
                     ch.emit_update(Some(wrapped), true, false);
@@ -1577,8 +1667,7 @@ impl ConnectionCtx {
                                 }
                             }
                             ch.presence.subscribers.retain(|s| {
-                                !(s.id == id
-                                    && s.actions.as_ref().is_some_and(|a| a.is_empty()))
+                                !(s.id == id && s.actions.as_ref().is_some_and(|a| a.is_empty()))
                             });
                         }
                         // RTP7a: this listener everywhere
@@ -1613,7 +1702,10 @@ impl ConnectionCtx {
                     }
                 }
             }
-            Command::Authorize { access_token, reply } => match self.state {
+            Command::Authorize {
+                access_token,
+                reply,
+            } => match self.state {
                 // RTC8a: alter the live connection via an AUTH message; the
                 // reply resolves on the server's CONNECTED/ERROR (RTC8a3)
                 ConnectionState::Connected => {
@@ -1635,10 +1727,20 @@ impl ConnectionCtx {
                     self.start_connect();
                 }
             },
-            Command::Publish { name, messages, params, reply } => {
+            Command::Publish {
+                name,
+                messages,
+                params,
+                reply,
+            } => {
                 self.handle_publish(name, messages, params, reply);
             }
-            Command::Subscribe { name, id, filter, sender } => {
+            Command::Subscribe {
+                name,
+                id,
+                filter,
+                sender,
+            } => {
                 if let Some(ch) = self.channels.get_mut(&name) {
                     ch.subscribers.push(Subscriber { id, filter, sender });
                 }
@@ -1660,7 +1762,11 @@ impl ConnectionCtx {
                     }
                 }
             }
-            Command::SetOptions { name, options, reply } => {
+            Command::SetOptions {
+                name,
+                options,
+                reply,
+            } => {
                 let connected = self.state == ConnectionState::Connected;
                 let rtt = self.rest.inner.opts.realtime_request_timeout;
                 let Some(ch) = self.channels.get_mut(&name) else {
@@ -1971,17 +2077,19 @@ impl ConnectionCtx {
             .and_then(|e| e.code)
             .map(|c| (40140..=40149).contains(&c))
             .unwrap_or(false);
-        if self.state == ConnectionState::Connecting && is_token_error {
-            if self.can_renew_token() && !self.renewed_this_cycle {
-                // RTN14b: renew once and retry the connection
-                self.renewed_this_cycle = true;
-                self.force_renewal_on_next_connect = true;
-                self.drop_transport();
-                self.start_connect();
-                return;
-            }
-            // RSA4a: token error with no way to renew is FAILED
+        if self.state == ConnectionState::Connecting
+            && is_token_error
+            && self.can_renew_token()
+            && !self.renewed_this_cycle
+        {
+            // RTN14b: renew once and retry the connection
+            self.renewed_this_cycle = true;
+            self.force_renewal_on_next_connect = true;
+            self.drop_transport();
+            self.start_connect();
+            return;
         }
+        // RSA4a: token error with no way to renew is FAILED
         // RTN14g/RTN15i: a connection-level ERROR is otherwise fatal
         self.drop_transport();
         self.transition(ConnectionState::Failed, pm.error);
@@ -2119,11 +2227,18 @@ impl ConnectionCtx {
 
     /// ATTACHED received from the server.
     fn handle_attached(&mut self, pm: ProtocolMessage) {
-        let Some(name) = pm.channel.clone() else { return };
+        let Some(name) = pm.channel.clone() else {
+            return;
+        };
         let rtt = self.rest.inner.opts.realtime_request_timeout;
-        let Some(ch) = self.channels.get_mut(&name) else { return };
+        let Some(ch) = self.channels.get_mut(&name) else {
+            return;
+        };
         let resumed = pm.flags.map(|f| f & flags::RESUMED != 0).unwrap_or(false);
-        let has_backlog = pm.flags.map(|f| f & flags::HAS_BACKLOG != 0).unwrap_or(false);
+        let has_backlog = pm
+            .flags
+            .map(|f| f & flags::HAS_BACKLOG != 0)
+            .unwrap_or(false);
         match ch.state {
             ChannelState::Attaching => {
                 ch.attach_serial = pm.channel_serial.clone();
@@ -2249,9 +2364,11 @@ impl ConnectionCtx {
                         let chan = name.clone();
                         tokio::spawn(async move {
                             if let Ok(Err(err)) = rx.await {
-                                let _ = input_tx.send(LoopInput::Cmd(
-                                    Command::PresenceReentryFailed { name: chan, error: err },
-                                ));
+                                let _ =
+                                    input_tx.send(LoopInput::Cmd(Command::PresenceReentryFailed {
+                                        name: chan,
+                                        error: err,
+                                    }));
                             }
                         });
                     }
@@ -2270,8 +2387,12 @@ impl ConnectionCtx {
 
     /// DETACHED received from the server.
     fn handle_detached(&mut self, pm: ProtocolMessage) {
-        let Some(name) = pm.channel.clone() else { return };
-        let Some(ch) = self.channels.get_mut(&name) else { return };
+        let Some(name) = pm.channel.clone() else {
+            return;
+        };
+        let Some(ch) = self.channels.get_mut(&name) else {
+            return;
+        };
         match ch.state {
             ChannelState::Detaching => {
                 ch.op_deadline = None;
@@ -2285,7 +2406,8 @@ impl ConnectionCtx {
                     return;
                 }
                 // RTL4h: a queued attach proceeds now
-                let attach_now = std::mem::take(&mut self.channels.get_mut(&name).unwrap().attach_pending);
+                let attach_now =
+                    std::mem::take(&mut self.channels.get_mut(&name).unwrap().attach_pending);
                 if attach_now {
                     let (tx, _rx) = oneshot::channel();
                     self.handle_attach(name, tx);
@@ -2295,7 +2417,9 @@ impl ConnectionCtx {
             // channel triggers an immediate reattach
             ChannelState::Attached | ChannelState::Suspended => {
                 let rtt = self.rest.inner.opts.realtime_request_timeout;
-                let Some(ch) = self.channels.get_mut(&name) else { return };
+                let Some(ch) = self.channels.get_mut(&name) else {
+                    return;
+                };
                 ch.transition(ChannelState::Attaching, pm.error, false, false);
                 ch.op_deadline = Some(Instant::now() + rtt);
                 let msg = attach_message(ch);
@@ -2322,8 +2446,12 @@ impl ConnectionCtx {
 
     /// ERROR with a channel set: the attach/detach failed (RTL4e/RTL5e-shaped).
     fn handle_channel_error(&mut self, pm: ProtocolMessage) {
-        let Some(name) = pm.channel.clone() else { return };
-        let Some(ch) = self.channels.get_mut(&name) else { return };
+        let Some(name) = pm.channel.clone() else {
+            return;
+        };
+        let Some(ch) = self.channels.get_mut(&name) else {
+            return;
+        };
         ch.op_deadline = None;
         let err = pm.error.clone().unwrap_or_else(|| {
             ErrorInfo::new(ErrorCode::ChannelOperationFailed.code(), "Channel error")
@@ -2335,7 +2463,11 @@ impl ConnectionCtx {
 
     /// RTL3: connection-state side effects on channels — applied atomically
     /// with the connection transition (DESIGN.md §7).
-    fn apply_connection_effects_to_channels(&mut self, conn_state: ConnectionState, reason: &Option<ErrorInfo>) {
+    fn apply_connection_effects_to_channels(
+        &mut self,
+        conn_state: ConnectionState,
+        reason: &Option<ErrorInfo>,
+    ) {
         match conn_state {
             // RTL3a: FAILED fails attached/attaching channels
             ConnectionState::Failed => {
@@ -2368,7 +2500,10 @@ impl ConnectionCtx {
                     if matches!(ch.state, ChannelState::Attached | ChannelState::Attaching) {
                         ch.op_deadline = None;
                         ch.resolve_attach(Err(reason.clone().unwrap_or_else(|| {
-                            ErrorInfo::new(ErrorCode::ConnectionSuspended.code(), "Connection suspended")
+                            ErrorInfo::new(
+                                ErrorCode::ConnectionSuspended.code(),
+                                "Connection suspended",
+                            )
                         })));
                         ch.transition(ChannelState::Suspended, reason.clone(), false, false);
                     }
@@ -2391,7 +2526,9 @@ impl ConnectionCtx {
     fn suspend_channel_with_retry(&mut self, name: &str, reason: Option<ErrorInfo>) {
         let connected = self.state == ConnectionState::Connected;
         let base = self.rest.inner.opts.channel_retry_timeout;
-        let Some(ch) = self.channels.get_mut(name) else { return };
+        let Some(ch) = self.channels.get_mut(name) else {
+            return;
+        };
         if connected {
             let delay = retry_delay(base, ch.retry_count);
             ch.retry_count += 1;
@@ -2501,8 +2638,7 @@ impl ConnectionCtx {
                     400,
                     "Connection suspended: connectionStateTtl exceeded",
                 );
-                self.retry_at =
-                    Some(now + self.rest.inner.opts.suspended_retry_timeout);
+                self.retry_at = Some(now + self.rest.inner.opts.suspended_retry_timeout);
                 self.transition(ConnectionState::Suspended, Some(err));
             }
             // If currently CONNECTING, the next failure lands on SUSPENDED
@@ -2589,7 +2725,9 @@ impl ConnectionCtx {
                 }
                 continue;
             }
-            let Some(ch) = self.channels.get_mut(&name) else { continue };
+            let Some(ch) = self.channels.get_mut(&name) else {
+                continue;
+            };
             ch.retry_at = None;
             if ch.state != ChannelState::Suspended {
                 continue;

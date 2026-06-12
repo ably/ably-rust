@@ -66,6 +66,7 @@ pub(crate) struct PresenceMap {
     residuals: HashSet<String>,
 }
 
+#[allow(dead_code)] // complete map API; subsets used per build target
 impl PresenceMap {
     pub fn new() -> Self {
         Self {
@@ -189,6 +190,7 @@ pub(crate) struct LocalPresenceMap {
     members: HashMap<String, PresenceMessage>,
 }
 
+#[allow(dead_code)] // complete map API; subsets used per build target
 impl LocalPresenceMap {
     pub fn new() -> Self {
         Self {

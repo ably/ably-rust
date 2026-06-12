@@ -13,7 +13,9 @@ use crate::channel::{DeriveOptions, MessageFilter, RealtimeChannelOptions};
 use crate::error::ErrorInfo;
 use crate::mock_ws::{MockTransport, MockWebSocket};
 use crate::options::ClientOptions;
-use crate::protocol::{action, ChannelEvent, ChannelMode, ChannelState, ConnectionState, ProtocolMessage};
+use crate::protocol::{
+    action, ChannelEvent, ChannelMode, ChannelState, ConnectionState, ProtocolMessage,
+};
 use crate::realtime::{await_channel_state, await_state, Realtime};
 
 fn connected_msg(id: &str, key: &str) -> ProtocolMessage {
@@ -119,7 +121,10 @@ async fn rtl12_additional_attached_update_semantics() {
     resumed.flags = Some(crate::protocol::flags::RESUMED);
     mock.active_connection().send_to_client(resumed);
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    assert!(events.try_recv().is_err(), "RTL12: RESUMED suppresses UPDATE");
+    assert!(
+        events.try_recv().is_err(),
+        "RTL12: RESUMED suppresses UPDATE"
+    );
 
     // resumed=false without error → UPDATE with null reason
     let mut plain = ProtocolMessage::new(action::ATTACHED);
@@ -146,7 +151,8 @@ async fn rtl13a_server_detached_triggers_reattach() {
     let ch = attach_channel(&mock, &client, "kicked").await;
     let mut events = ch.on_state_change();
 
-    mock.active_connection().send_to_client(server_detached("kicked", 90198));
+    mock.active_connection()
+        .send_to_client(server_detached("kicked", 90198));
     // The channel goes ATTACHING (with the server's reason) and re-sends ATTACH
     await_nth_attach(&mock, 2, 2000).await;
     let change = events.recv().await.unwrap();
@@ -170,9 +176,11 @@ async fn rtl13b_failed_reattach_suspends_and_retries() {
     let mut events = ch.on_state_change();
 
     // Server detaches; the reattach is rejected once (DETACHED while ATTACHING)
-    mock.active_connection().send_to_client(server_detached("retrier", 90198));
+    mock.active_connection()
+        .send_to_client(server_detached("retrier", 90198));
     await_nth_attach(&mock, 2, 5000).await;
-    mock.active_connection().send_to_client(server_detached("retrier", 90198));
+    mock.active_connection()
+        .send_to_client(server_detached("retrier", 90198));
 
     // SUSPENDED with a retryIn hint
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
@@ -227,14 +235,16 @@ async fn rtl13c_retry_cancelled_when_not_connected() {
     let ch = attach_channel(&mock, &client, "stranded").await;
 
     // Server detach → reattach rejected → SUSPENDED with a scheduled retry
-    mock.active_connection().send_to_client(server_detached("stranded", 90198));
+    mock.active_connection()
+        .send_to_client(server_detached("stranded", 90198));
     await_nth_attach(&mock, 2, 5000).await;
     let attaches_before = mock
         .client_messages()
         .iter()
         .filter(|m| m.action == action::ATTACH)
         .count();
-    mock.active_connection().send_to_client(server_detached("stranded", 90198));
+    mock.active_connection()
+        .send_to_client(server_detached("stranded", 90198));
     assert!(await_channel_state(&ch, ChannelState::Suspended, 5000).await);
 
     // The transport drops before the retry fires; the connection stays
@@ -306,8 +316,14 @@ async fn rtl16a_set_options_triggers_reattach() {
         .filter(|m| m.action == action::ATTACH)
         .nth(1)
         .unwrap();
-    assert_eq!(second_attach.message.params.as_ref().unwrap()["rewind"], "1");
-    assert!(!set.is_finished(), "RTL16a: resolves only after re-ATTACHED");
+    assert_eq!(
+        second_attach.message.params.as_ref().unwrap()["rewind"],
+        "1"
+    );
+    assert!(
+        !set.is_finished(),
+        "RTL16a: resolves only after re-ATTACHED"
+    );
 
     let mut reply = ProtocolMessage::new(action::ATTACHED);
     reply.channel = Some("rewinder".to_string());

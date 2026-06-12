@@ -135,9 +135,13 @@ pub(crate) struct PublishResult {
 
 impl ProtocolMessage {
     pub fn new(action: u8) -> Self {
-        Self { action, ..Default::default() }
+        Self {
+            action,
+            ..Default::default()
+        }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // test-facing constructor
     pub fn connected(connection_id: &str, connection_key: &str) -> Self {
         Self {
             action: action::CONNECTED,
@@ -177,6 +181,7 @@ pub(crate) mod flags {
     pub const HAS_PRESENCE: u64 = 1 << 0;
     pub const HAS_BACKLOG: u64 = 1 << 1;
     pub const RESUMED: u64 = 1 << 2;
+    #[allow(dead_code)] // documented protocol flag, unused so far
     pub const TRANSIENT: u64 = 1 << 4;
     pub const ATTACH_RESUME: u64 = 1 << 5;
     pub const PRESENCE: u64 = 1 << 16;

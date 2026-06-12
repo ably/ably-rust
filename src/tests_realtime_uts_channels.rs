@@ -15,9 +15,7 @@ use crate::channel::RealtimeChannelOptions;
 use crate::error::ErrorInfo;
 use crate::mock_ws::{MockTransport, MockWebSocket};
 use crate::options::ClientOptions;
-use crate::protocol::{
-    action, flags, ChannelMode, ChannelState, ConnectionState, ProtocolMessage,
-};
+use crate::protocol::{action, flags, ChannelMode, ChannelState, ConnectionState, ProtocolMessage};
 use crate::realtime::{await_state, Realtime};
 
 fn connected_msg(id: &str, key: &str) -> ProtocolMessage {
@@ -63,7 +61,8 @@ fn spawn_channel_server(mock: &MockWebSocket) -> tokio::task::JoinHandle<()> {
                 match m.action {
                     a if a == action::ATTACH => {
                         let mut reply = attached_msg(m.channel.as_deref().unwrap());
-                        reply.channel_serial = Some(format!("serial-{}", m.channel.as_deref().unwrap()));
+                        reply.channel_serial =
+                            Some(format!("serial-{}", m.channel.as_deref().unwrap()));
                         mock2.active_connection().send_to_client(reply);
                     }
                     a if a == action::DETACH => {
@@ -88,7 +87,11 @@ async fn await_client_action(
 ) -> crate::mock_ws::CapturedMessage {
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
     loop {
-        if let Some(m) = mock.client_messages().into_iter().find(|m| m.action == wanted) {
+        if let Some(m) = mock
+            .client_messages()
+            .into_iter()
+            .find(|m| m.action == wanted)
+        {
             return m;
         }
         assert!(
@@ -185,7 +188,10 @@ async fn rtl2a_rtl2d_state_change_events() {
     let mut events = ch.on_state_change();
     tokio::spawn(async move {
         while let Ok(change) = events.recv().await {
-            changes_c.lock().unwrap().push((change.previous, change.current));
+            changes_c
+                .lock()
+                .unwrap()
+                .push((change.previous, change.current));
         }
     });
 
@@ -256,7 +262,8 @@ async fn rtl4h_attach_while_attaching_waits() {
     tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
 
     // One ATTACHED resolves both
-    mock.active_connection().send_to_client(attached_msg("inflight"));
+    mock.active_connection()
+        .send_to_client(attached_msg("inflight"));
     assert!(first.await.unwrap().is_ok());
     assert!(second.await.unwrap().is_ok());
     let attach_count = mock
@@ -276,10 +283,14 @@ async fn rtl4b_attach_fails_in_invalid_connection_states() {
 
     // Close the connection
     client.close();
-    mock.active_connection().send_to_client(ProtocolMessage::new(action::CLOSED));
+    mock.active_connection()
+        .send_to_client(ProtocolMessage::new(action::CLOSED));
     assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
 
-    let err = ch.attach().await.expect_err("attach while closed must fail");
+    let err = ch
+        .attach()
+        .await
+        .expect_err("attach while closed must fail");
     assert_eq!(err.code, Some(90001));
 }
 
@@ -363,7 +374,10 @@ async fn rtl4c1_rtl4j_reattach_serial_and_resume_flag() {
         if attaches.len() >= 2 {
             break attaches[1].clone();
         }
-        assert!(tokio::time::Instant::now() < deadline, "no reattach observed");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no reattach observed"
+        );
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     };
     assert_eq!(
@@ -449,7 +463,8 @@ async fn rtl4g_attach_from_failed_proceeds() {
         assert!(tokio::time::Instant::now() < deadline);
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
-    mock.active_connection().send_to_client(attached_msg("fail-then-attach"));
+    mock.active_connection()
+        .send_to_client(attached_msg("fail-then-attach"));
     assert!(attach2.await.unwrap().is_ok());
     assert_eq!(ch.state(), ChannelState::Attached);
     assert!(ch.error_reason().is_none(), "RTL4c: errorReason cleared");
@@ -498,14 +513,16 @@ async fn rtl5d_normal_detach_flow() {
     let ch2 = ch.clone();
     let attach = tokio::spawn(async move { ch2.attach().await });
     await_client_action(&mock, action::ATTACH, 2000).await;
-    mock.active_connection().send_to_client(attached_msg("detachable"));
+    mock.active_connection()
+        .send_to_client(attached_msg("detachable"));
     attach.await.unwrap().unwrap();
 
     let ch3 = ch.clone();
     let detach = tokio::spawn(async move { ch3.detach().await });
     await_client_action(&mock, action::DETACH, 2000).await;
     assert_eq!(ch.state(), ChannelState::Detaching);
-    mock.active_connection().send_to_client(detached_msg("detachable"));
+    mock.active_connection()
+        .send_to_client(detached_msg("detachable"));
     assert!(detach.await.unwrap().is_ok());
     assert_eq!(ch.state(), ChannelState::Detached);
 }
@@ -541,7 +558,8 @@ async fn rtl5f_detach_timeout_reverts() {
     let ch2 = ch.clone();
     let attach = tokio::spawn(async move { ch2.attach().await });
     await_client_action(&mock, action::ATTACH, 2000).await;
-    mock.active_connection().send_to_client(attached_msg("revert"));
+    mock.active_connection()
+        .send_to_client(attached_msg("revert"));
     attach.await.unwrap().unwrap();
 
     // DETACH is never answered: it times out and the channel reverts
@@ -560,7 +578,8 @@ async fn rtl5k_attached_while_detaching_sends_new_detach() {
     let ch2 = ch.clone();
     let attach = tokio::spawn(async move { ch2.attach().await });
     await_client_action(&mock, action::ATTACH, 2000).await;
-    mock.active_connection().send_to_client(attached_msg("sticky"));
+    mock.active_connection()
+        .send_to_client(attached_msg("sticky"));
     attach.await.unwrap().unwrap();
 
     let ch3 = ch.clone();
@@ -568,7 +587,8 @@ async fn rtl5k_attached_while_detaching_sends_new_detach() {
     await_client_action(&mock, action::DETACH, 2000).await;
 
     // The server sends ATTACHED instead (e.g. a crossed wire)
-    mock.active_connection().send_to_client(attached_msg("sticky"));
+    mock.active_connection()
+        .send_to_client(attached_msg("sticky"));
 
     // RTL5k: a second DETACH goes out
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
@@ -584,7 +604,8 @@ async fn rtl5k_attached_while_detaching_sends_new_detach() {
         assert!(tokio::time::Instant::now() < deadline, "no second DETACH");
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
-    mock.active_connection().send_to_client(detached_msg("sticky"));
+    mock.active_connection()
+        .send_to_client(detached_msg("sticky"));
     assert!(detach.await.unwrap().is_ok());
     assert_eq!(ch.state(), ChannelState::Detached);
 }
@@ -594,7 +615,7 @@ async fn rtl5k_attached_while_detaching_sends_new_detach() {
 #[tokio::test]
 async fn rtl5l_detach_while_connecting_is_immediate() {
     // Park every connection attempt: the connection never completes
-    let mock = MockWebSocket::with_handler(|conn| std::mem::forget(conn));
+    let mock = MockWebSocket::with_handler(std::mem::forget);
     let transport = Arc::new(MockTransport::new(mock.inner()));
     let client = Realtime::with_mock(
         &ClientOptions::new("appId.keyId:keySecret").auto_connect(false),
@@ -632,7 +653,8 @@ async fn rtl5l_detach_without_connection_is_immediate() {
     // Kill the connection (no reconnect succeeds: handler keeps connecting,
     // but we detach while DISCONNECTED/CONNECTING)
     client.close();
-    mock.active_connection().send_to_client(ProtocolMessage::new(action::CLOSED));
+    mock.active_connection()
+        .send_to_client(ProtocolMessage::new(action::CLOSED));
     assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
 
     // RTL3b already detached it on CLOSED; verify the no-op path
@@ -712,7 +734,8 @@ async fn rtl3b_connection_closed_detaches_channels() {
     assert_eq!(pending.state(), ChannelState::Attaching);
 
     client.close();
-    mock.active_connection().send_to_client(ProtocolMessage::new(action::CLOSED));
+    mock.active_connection()
+        .send_to_client(ProtocolMessage::new(action::CLOSED));
     assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
 
     assert_eq!(ch.state(), ChannelState::Detached);
@@ -784,8 +807,10 @@ async fn rtl3d_reattach_on_connected() {
         assert!(tokio::time::Instant::now() < deadline, "no reattach");
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
-    mock.active_connection().send_to_client(attached_msg("live"));
-    mock.active_connection().send_to_client(attached_msg("live2"));
+    mock.active_connection()
+        .send_to_client(attached_msg("live"));
+    mock.active_connection()
+        .send_to_client(attached_msg("live2"));
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
     while attached.state() != ChannelState::Attached
         || attached_second.state() != ChannelState::Attached
@@ -878,7 +903,8 @@ async fn rtl2g_update_event_and_no_duplicates() {
     });
 
     // Additional ATTACHED without RESUMED: loss of continuity → UPDATE
-    mock.active_connection().send_to_client(attached_msg("updates"));
+    mock.active_connection()
+        .send_to_client(attached_msg("updates"));
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     {
         let seen = events.lock().unwrap().clone();
@@ -989,7 +1015,8 @@ async fn rtl4h_attach_while_detaching_waits_then_attaches() {
     let attach = tokio::spawn(async move { ch3.attach().await });
     tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
 
-    mock.active_connection().send_to_client(detached_msg("flip"));
+    mock.active_connection()
+        .send_to_client(detached_msg("flip"));
     assert!(detach.await.unwrap().is_ok());
 
     // The queued attach goes out now (second ATTACH overall)
@@ -1006,7 +1033,8 @@ async fn rtl4h_attach_while_detaching_waits_then_attaches() {
         assert!(tokio::time::Instant::now() < deadline, "no queued ATTACH");
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
-    mock.active_connection().send_to_client(attached_msg("flip"));
+    mock.active_connection()
+        .send_to_client(attached_msg("flip"));
     assert!(attach.await.unwrap().is_ok());
     assert_eq!(ch.state(), ChannelState::Attached);
 }
@@ -1025,7 +1053,8 @@ async fn rtl5i_detach_while_detaching_waits() {
     let second = tokio::spawn(async move { ch3.detach().await });
     tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
 
-    mock.active_connection().send_to_client(detached_msg("shared-detach"));
+    mock.active_connection()
+        .send_to_client(detached_msg("shared-detach"));
     assert!(first.await.unwrap().is_ok());
     assert!(second.await.unwrap().is_ok());
     assert_eq!(ch.state(), ChannelState::Detached);
@@ -1052,10 +1081,12 @@ async fn rtl5i_detach_while_attaching_waits_then_detaches() {
     tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
 
     // Attach completes; the queued detach then proceeds
-    mock.active_connection().send_to_client(attached_msg("attach-then-detach"));
+    mock.active_connection()
+        .send_to_client(attached_msg("attach-then-detach"));
     assert!(attach.await.unwrap().is_ok());
     await_client_action(&mock, action::DETACH, 2000).await;
-    mock.active_connection().send_to_client(detached_msg("attach-then-detach"));
+    mock.active_connection()
+        .send_to_client(detached_msg("attach-then-detach"));
     assert!(detach.await.unwrap().is_ok());
     assert_eq!(ch.state(), ChannelState::Detached);
 
@@ -1122,7 +1153,11 @@ async fn rtl25b_when_state_waits_and_fires_once() {
         fired_c.fetch_add(1, Ordering::SeqCst);
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
-    assert_eq!(fired.load(Ordering::SeqCst), 0, "not fired before transition");
+    assert_eq!(
+        fired.load(Ordering::SeqCst),
+        0,
+        "not fired before transition"
+    );
 
     ch.attach().await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -1165,7 +1200,10 @@ async fn rtl15b1_channel_serial_cleared_on_detached() {
 
     ch.detach().await.unwrap();
     assert_eq!(ch.state(), ChannelState::Detached);
-    assert!(ch.channel_serial().is_none(), "RTL15b1: cleared on DETACHED");
+    assert!(
+        ch.channel_serial().is_none(),
+        "RTL15b1: cleared on DETACHED"
+    );
     server.abort();
 }
 

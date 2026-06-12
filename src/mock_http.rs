@@ -51,7 +51,10 @@ impl MockResponse {
     pub fn msgpack(status: u16, body: &impl serde::Serialize) -> Self {
         Self {
             status,
-            headers: vec![("content-type".to_string(), "application/x-msgpack".to_string())],
+            headers: vec![(
+                "content-type".to_string(),
+                "application/x-msgpack".to_string(),
+            )],
             body: rmp_serde::to_vec_named(body).unwrap_or_default(),
             network_error: false,
         }
@@ -78,7 +81,9 @@ pub(crate) struct MockHttpClient {
 
 impl Clone for MockHttpClient {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
@@ -119,6 +124,7 @@ impl MockHttpClient {
         self.inner.requests.lock().unwrap().len()
     }
 
+    #[allow(dead_code)] // UTS mock surface, not yet exercised
     pub fn reset(&self) {
         self.inner.requests.lock().unwrap().clear();
         self.inner.queue.lock().unwrap().clear();
@@ -135,16 +141,15 @@ impl HttpClient for MockHttpClient {
         &self,
         request: HttpRequest,
     ) -> std::result::Result<HttpResponse, Box<dyn std::error::Error + Send + Sync>> {
-        let delay = self.inner.response_delay.lock().unwrap().clone();
+        let delay = *self.inner.response_delay.lock().unwrap();
         if let Some(d) = delay {
             tokio::time::sleep(d).await;
         }
 
         let captured = CapturedRequest {
             method: request.method.clone(),
-            url: url::Url::parse(&request.url).unwrap_or_else(|_| {
-                url::Url::parse("http://invalid").unwrap()
-            }),
+            url: url::Url::parse(&request.url)
+                .unwrap_or_else(|_| url::Url::parse("http://invalid").unwrap()),
             headers: request.headers.clone(),
             body: request.body.clone(),
         };

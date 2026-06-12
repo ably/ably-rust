@@ -114,10 +114,12 @@ impl MockWebSocket {
             state.message_waiters.push(tx);
             rx
         };
-        rx.await.expect("mock dropped while awaiting client message")
+        rx.await
+            .expect("mock dropped while awaiting client message")
     }
 
     /// UTS: await the client closing the WebSocket (close() or orphaning).
+    #[allow(dead_code)] // UTS mock surface, not yet exercised
     pub async fn await_client_close(&self, timeout_ms: u64) -> bool {
         let deadline = tokio::time::Duration::from_millis(timeout_ms);
         tokio::time::timeout(deadline, async {
@@ -174,9 +176,7 @@ impl PendingConnection {
 
     fn establish(self) -> MockConnection {
         let (server_tx, server_rx) = mpsc::unbounded_channel::<TransportEvent>();
-        let conn = MockConnection {
-            server_tx,
-        };
+        let conn = MockConnection { server_tx };
         {
             let mut state = self.inner.state.lock().unwrap();
             state.connections.push(conn.clone());

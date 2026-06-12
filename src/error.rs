@@ -102,7 +102,10 @@ impl Display for ErrorInfo {
 
 impl From<url::ParseError> for ErrorInfo {
     fn from(err: url::ParseError) -> Self {
-        ErrorInfo::new(ErrorCode::BadRequest.code(), format!("invalid URL: {}", err))
+        ErrorInfo::new(
+            ErrorCode::BadRequest.code(),
+            format!("invalid URL: {}", err),
+        )
     }
 }
 
@@ -163,7 +166,17 @@ pub(crate) struct WrappedError {
 }
 
 #[derive(
-    Clone, Copy, Debug, Deserialize_repr, Serialize_repr, FromPrimitive, PartialEq, PartialOrd, Eq, Ord, Hash,
+    Clone,
+    Copy,
+    Debug,
+    Deserialize_repr,
+    Serialize_repr,
+    FromPrimitive,
+    PartialEq,
+    PartialOrd,
+    Eq,
+    Ord,
+    Hash,
 )]
 #[repr(u32)]
 pub enum ErrorCode {

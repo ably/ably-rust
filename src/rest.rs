@@ -8,21 +8,17 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 use crate::auth::{self, Auth, Credential, TokenDetails};
 use crate::crypto::CipherParams;
 use crate::error::{ErrorCode, ErrorInfo, Result, WrappedError};
-use crate::http::{Decodable, PaginatedRequestBuilder, RequestBuilder, PaginatedResult, Response};
+use crate::http::{Decodable, PaginatedRequestBuilder, PaginatedResult, RequestBuilder};
 use crate::http_client::{HttpClient, HttpRequest, HttpResponse};
 use crate::options::ClientOptions;
 use crate::stats::Stats;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[allow(clippy::upper_case_acronyms)] // Format::JSON matches the API's Data::JSON
 pub(crate) enum Format {
+    #[default]
     MessagePack,
     JSON,
-}
-
-impl Default for Format {
-    fn default() -> Self {
-        Format::MessagePack
-    }
 }
 
 pub struct Rest {
@@ -113,14 +109,19 @@ impl Rest {
     pub async fn time(&self) -> Result<DateTime<Utc>> {
         let ts = self.server_time_ms().await?;
         DateTime::from_timestamp_millis(ts).ok_or_else(|| {
-            ErrorInfo::new(ErrorCode::InternalError.code(), "Invalid timestamp from server")
+            ErrorInfo::new(
+                ErrorCode::InternalError.code(),
+                "Invalid timestamp from server",
+            )
         })
     }
 
     /// Fetch the server time in epoch milliseconds and cache the offset from
     /// the local clock (RSA10k).
     pub(crate) async fn server_time_ms(&self) -> Result<i64> {
-        let resp = self.do_request_internal("GET", "/time", &[], &[], None, None).await?;
+        let resp = self
+            .do_request_internal("GET", "/time", &[], &[], None, None)
+            .await?;
         let timestamps: Vec<i64> = self.deserialize_response(&resp)?;
         let ts = *timestamps.first().ok_or_else(|| {
             ErrorInfo::new(
@@ -135,7 +136,13 @@ impl Rest {
 
     /// The local clock adjusted by any cached server-time offset.
     pub(crate) fn adjusted_now_ms(&self) -> i64 {
-        let offset = self.inner.auth_state.lock().unwrap().time_offset_ms.unwrap_or(0);
+        let offset = self
+            .inner
+            .auth_state
+            .lock()
+            .unwrap()
+            .time_offset_ms
+            .unwrap_or(0);
         Utc::now().timestamp_millis() + offset
     }
 
@@ -200,7 +207,9 @@ impl Rest {
             })
             .collect();
         let body = self.serialize_body(&wire_specs)?;
-        let resp = self.do_request("POST", "/messages", &[], &[], Some(body)).await?;
+        let resp = self
+            .do_request("POST", "/messages", &[], &[], Some(body))
+            .await?;
         // The server returns a single result object for a single-channel spec,
         // or an array of per-channel results (RSC22c3/RSC22c4).
         let value: serde_json::Value = self.deserialize_response(&resp)?;
@@ -224,10 +233,12 @@ impl Rest {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // test-facing
     pub(crate) fn auth_options(&self) -> crate::auth::AuthOptions {
         crate::auth::AuthOptions::default()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn from_inner(inner: Arc<RestInner>) -> Self {
         Self { inner }
     }
@@ -252,9 +263,14 @@ impl Rest {
         }
     }
 
-    pub(crate) fn deserialize_response<T: DeserializeOwned>(&self, resp: &HttpResponse) -> Result<T> {
+    pub(crate) fn deserialize_response<T: DeserializeOwned>(
+        &self,
+        resp: &HttpResponse,
+    ) -> Result<T> {
         // Check response content-type to determine deserializer
-        let ct = resp.headers.iter()
+        let ct = resp
+            .headers
+            .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
             .map(|(_, v)| v.as_str())
             .unwrap_or("");
@@ -264,11 +280,17 @@ impl Rest {
         } else if ct.contains("application/json") {
             Ok(serde_json::from_slice(&resp.body)?)
         } else {
-            serde_json::from_slice(&resp.body)
-                .or_else(|_| rmp_serde::from_slice(&resp.body).map_err(|e| ErrorInfo::new(
-                    ErrorCode::InvalidMessageDataOrEncoding.code(),
-                    format!("Failed to deserialize response (content-type '{}'): {}", ct, e),
-                )))
+            serde_json::from_slice(&resp.body).or_else(|_| {
+                rmp_serde::from_slice(&resp.body).map_err(|e| {
+                    ErrorInfo::new(
+                        ErrorCode::InvalidMessageDataOrEncoding.code(),
+                        format!(
+                            "Failed to deserialize response (content-type '{}'): {}",
+                            ct, e
+                        ),
+                    )
+                })
+            })
         }
     }
 
@@ -299,7 +321,10 @@ impl Rest {
             url: None,
             token_request: None,
             static_token: None,
-            method: opts.auth_method.clone().unwrap_or_else(|| "GET".to_string()),
+            method: opts
+                .auth_method
+                .clone()
+                .unwrap_or_else(|| "GET".to_string()),
             headers: opts.auth_headers.clone(),
             params: opts.auth_params.clone(),
             query_time: opts.query_time,
@@ -329,7 +354,10 @@ impl Rest {
 
     /// Merge explicit token params with defaultTokenParams (RSA5c/RSA6c) and
     /// the client's clientId (RSA7d).
-    pub(crate) fn effective_token_params(&self, params: Option<&auth::TokenParams>) -> auth::TokenParams {
+    pub(crate) fn effective_token_params(
+        &self,
+        params: Option<&auth::TokenParams>,
+    ) -> auth::TokenParams {
         let defaults = self.inner.opts.default_token_params.as_ref();
         let p = params.cloned().unwrap_or_default();
         auth::TokenParams {
@@ -441,7 +469,9 @@ impl Rest {
     async fn exchange_token_request(&self, tr: &auth::TokenRequest) -> Result<TokenDetails> {
         let body = self.serialize_body(tr)?;
         let path = format!("/keys/{}/requestToken", tr.key_name);
-        let resp = self.do_request_internal("POST", &path, &[], &[], Some(body), None).await?;
+        let resp = self
+            .do_request_internal("POST", &path, &[], &[], Some(body), None)
+            .await?;
         self.deserialize_response(&resp)
     }
 
@@ -628,7 +658,13 @@ impl Rest {
 
         // Acquire a (new) library token using saved params (RSA10e) merged
         // with defaults.
-        let saved = self.inner.auth_state.lock().unwrap().saved_token_params.clone();
+        let saved = self
+            .inner
+            .auth_state
+            .lock()
+            .unwrap()
+            .saved_token_params
+            .clone();
         let params = self.effective_token_params(saved.as_ref());
         let td = self.acquire_token(&params, &cfg).await?;
         self.check_client_id_compat(&td)?; // RSA15
@@ -651,13 +687,18 @@ impl Rest {
             self.inner.opts.port
         };
 
-        let path = if path.starts_with('/') { path.to_string() } else { format!("/{}", path) };
-
-        let url_str = if (self.inner.opts.tls && port == 443) || (!self.inner.opts.tls && port == 80) {
-            format!("{}://{}{}", scheme, host, path)
+        let path = if path.starts_with('/') {
+            path.to_string()
         } else {
-            format!("{}://{}:{}{}", scheme, host, port, path)
+            format!("/{}", path)
         };
+
+        let url_str =
+            if (self.inner.opts.tls && port == 443) || (!self.inner.opts.tls && port == 80) {
+                format!("{}://{}{}", scheme, host, path)
+            } else {
+                format!("{}://{}:{}{}", scheme, host, port, path)
+            };
 
         let mut url = url::Url::parse(&url_str)?;
 
@@ -693,7 +734,14 @@ impl Rest {
     ) -> Result<HttpResponse> {
         let auth_header = self.get_auth_header().await?;
         let result = self
-            .do_request_internal(method, path, headers, params, body.clone(), Some(&auth_header))
+            .do_request_internal(
+                method,
+                path,
+                headers,
+                params,
+                body.clone(),
+                Some(&auth_header),
+            )
             .await;
 
         // RSA4b: on a token error (401 with 40140-40149), renew once and retry
@@ -729,8 +777,16 @@ impl Rest {
         body: Option<Vec<u8>>,
         auth_header: Option<&AuthHeader>,
     ) -> Result<HttpResponse> {
-        self.execute_request(method, path, extra_headers, params, body, auth_header, false)
-            .await
+        self.execute_request(
+            method,
+            path,
+            extra_headers,
+            params,
+            body,
+            auth_header,
+            false,
+        )
+        .await
     }
 
     /// As do_request, but returns non-2xx responses as Ok for inspection
@@ -746,10 +802,21 @@ impl Rest {
     ) -> Result<HttpResponse> {
         let auth_header = self.get_auth_header().await?;
         let resp = self
-            .execute_request(method, path, extra_headers, params, body.clone(), Some(&auth_header), true)
+            .execute_request(
+                method,
+                path,
+                extra_headers,
+                params,
+                body.clone(),
+                Some(&auth_header),
+                true,
+            )
             .await?;
         if resp.status == 401 {
-            let code = self.parse_error_body(&resp).and_then(|e| e.code).unwrap_or(0);
+            let code = self
+                .parse_error_body(&resp)
+                .and_then(|e| e.code)
+                .unwrap_or(0);
             let cfg = self.auth_config();
             let can_renew = cfg.callback.is_some() || cfg.url.is_some() || cfg.key.is_some();
             if (40140..=40149).contains(&code) && can_renew {
@@ -759,7 +826,15 @@ impl Rest {
                 }
                 let new_auth = self.get_auth_header().await?;
                 return self
-                    .execute_request(method, path, extra_headers, params, body, Some(&new_auth), true)
+                    .execute_request(
+                        method,
+                        path,
+                        extra_headers,
+                        params,
+                        body,
+                        Some(&new_auth),
+                        true,
+                    )
                     .await;
             }
         }
@@ -801,7 +876,10 @@ impl Rest {
         // ones (e.g. a per-request X-Ably-Version, RSC19f1)
         let mut all_headers: Vec<(String, String)> = vec![
             ("x-ably-version".to_string(), "6".to_string()),
-            ("ably-agent".to_string(), format!("ably-rust/{}", env!("CARGO_PKG_VERSION"))),
+            (
+                "ably-agent".to_string(),
+                format!("ably-rust/{}", env!("CARGO_PKG_VERSION")),
+            ),
             ("accept".to_string(), self.accept_type().to_string()),
         ];
 
@@ -861,7 +939,10 @@ impl Rest {
         let url = self.build_url(&first_host, path, params, request_id.as_deref())?;
         self.inner.opts.log(
             crate::options::LogLevel::Micro,
-            &format!("HTTP request: method={} host={} path={}", method, first_host, path),
+            &format!(
+                "HTTP request: method={} host={} path={}",
+                method, first_host, path
+            ),
         );
         let req = HttpRequest {
             method: method.to_string(),
@@ -871,7 +952,8 @@ impl Rest {
         };
 
         let mut last_error;
-        let result = tokio::time::timeout(timeout_duration, self.inner.http_client.execute(req)).await;
+        let result =
+            tokio::time::timeout(timeout_duration, self.inner.http_client.execute(req)).await;
         match result {
             Ok(Ok(resp)) => {
                 let retriable = Self::is_retriable_response(&resp);
@@ -942,7 +1024,10 @@ impl Rest {
 
             self.inner.opts.log(
                 crate::options::LogLevel::Minor,
-                &format!("Retrying against fallback host: method={} host={} path={}", method, host, path),
+                &format!(
+                    "Retrying against fallback host: method={} host={} path={}",
+                    method, host, path
+                ),
             );
             let url = self.build_url(host, path, params, request_id.as_deref())?;
             let req = HttpRequest {
@@ -999,7 +1084,10 @@ impl Rest {
 
         self.inner.opts.log(
             crate::options::LogLevel::Error,
-            &format!("HTTP request failed: method={} path={} error={}", method, path, last_error),
+            &format!(
+                "HTTP request failed: method={} path={} error={}",
+                method, path, last_error
+            ),
         );
         Err(attach_request_id(last_error))
     }
@@ -1008,11 +1096,14 @@ impl Rest {
     fn check_response(&self, resp: HttpResponse) -> Result<HttpResponse> {
         if resp.status >= 200 && resp.status < 300 {
             // Check for unsupported content type on success
-            let ct = resp.headers.iter()
+            let ct = resp
+                .headers
+                .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
                 .map(|(_, v)| v.as_str())
                 .unwrap_or("");
-            if !resp.body.is_empty() && !ct.is_empty()
+            if !resp.body.is_empty()
+                && !ct.is_empty()
                 && !ct.contains("application/json")
                 && !ct.contains("application/x-msgpack")
             {
@@ -1027,17 +1118,20 @@ impl Rest {
         }
 
         // Error response - try to parse error body
-        let ct = resp.headers.iter()
+        let ct = resp
+            .headers
+            .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
             .map(|(_, v)| v.as_str())
             .unwrap_or("");
 
         if ct.contains("application/json") || ct.contains("application/x-msgpack") {
-            let parsed: std::result::Result<WrappedError, _> = if ct.contains("application/x-msgpack") {
-                rmp_serde::from_slice(&resp.body).map_err(|e| e.to_string())
-            } else {
-                serde_json::from_slice(&resp.body).map_err(|e| e.to_string())
-            };
+            let parsed: std::result::Result<WrappedError, _> =
+                if ct.contains("application/x-msgpack") {
+                    rmp_serde::from_slice(&resp.body).map_err(|e| e.to_string())
+                } else {
+                    serde_json::from_slice(&resp.body).map_err(|e| e.to_string())
+                };
 
             if let Ok(wrapped) = parsed {
                 let mut err = wrapped.error;
@@ -1063,7 +1157,9 @@ impl Rest {
         }
         // RSC15l4: CloudFront errors (status >= 400 with Server: CloudFront) are retriable
         if resp.status >= 400 {
-            let is_cloudfront = resp.headers.iter()
+            let is_cloudfront = resp
+                .headers
+                .iter()
                 .any(|(k, v)| k.eq_ignore_ascii_case("server") && v.contains("CloudFront"));
             if is_cloudfront {
                 return true;
@@ -1084,7 +1180,9 @@ impl Rest {
 
 impl Clone for Rest {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone() }
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }
 
@@ -1167,9 +1265,16 @@ impl<'a> Channel<'a> {
 
     pub async fn get_message(&self, serial: &str) -> Result<Message> {
         if serial.is_empty() {
-            return Err(ErrorInfo::new(ErrorCode::BadRequest.code(), "Message serial is required"));
+            return Err(ErrorInfo::new(
+                ErrorCode::BadRequest.code(),
+                "Message serial is required",
+            ));
         }
-        let path = format!("/channels/{}/messages/{}", urlencoding::encode(&self.name), urlencoding::encode(serial));
+        let path = format!(
+            "/channels/{}/messages/{}",
+            urlencoding::encode(&self.name),
+            urlencoding::encode(serial)
+        );
         let resp = self.rest.do_request("GET", &path, &[], &[], None).await?;
         let mut msg: Message = self.rest.deserialize_response(&resp)?;
         msg.decode_with_cipher(self.cipher.as_ref());
@@ -1177,7 +1282,11 @@ impl<'a> Channel<'a> {
     }
 
     pub fn message_versions(&self, serial: &str) -> PaginatedRequestBuilder<'_, Message> {
-        let path = format!("/channels/{}/messages/{}/versions", urlencoding::encode(&self.name), urlencoding::encode(serial));
+        let path = format!(
+            "/channels/{}/messages/{}/versions",
+            urlencoding::encode(&self.name),
+            urlencoding::encode(serial)
+        );
         PaginatedRequestBuilder {
             rest: self.rest,
             path,
@@ -1193,7 +1302,8 @@ impl<'a> Channel<'a> {
         op: Option<&MessageOperation>,
         params: Option<&[(&str, &str)]>,
     ) -> Result<UpdateDeleteResult> {
-        self.send_message_patch(msg, MessageAction::Update, op, params).await
+        self.send_message_patch(msg, MessageAction::Update, op, params)
+            .await
     }
 
     pub async fn delete_message(
@@ -1202,7 +1312,8 @@ impl<'a> Channel<'a> {
         op: Option<&MessageOperation>,
         params: Option<&[(&str, &str)]>,
     ) -> Result<UpdateDeleteResult> {
-        self.send_message_patch(msg, MessageAction::Delete, op, params).await
+        self.send_message_patch(msg, MessageAction::Delete, op, params)
+            .await
     }
 
     pub async fn append_message(
@@ -1210,7 +1321,8 @@ impl<'a> Channel<'a> {
         msg: &Message,
         params: Option<&[(&str, &str)]>,
     ) -> Result<UpdateDeleteResult> {
-        self.send_message_patch(msg, MessageAction::Append, None, params).await
+        self.send_message_patch(msg, MessageAction::Append, None, params)
+            .await
     }
 
     /// RSL15: PATCH /channels/{name}/messages/{serial} with the message encoded
@@ -1244,7 +1356,10 @@ impl<'a> Channel<'a> {
         }
         let body = self.rest.serialize_body(&wire)?;
         let params: Vec<(&str, &str)> = params.unwrap_or(&[]).to_vec();
-        let resp = self.rest.do_request("PATCH", &path, &[], &params, Some(body)).await?;
+        let resp = self
+            .rest
+            .do_request("PATCH", &path, &[], &params, Some(body))
+            .await?;
         self.rest.deserialize_response(&resp)
     }
 
@@ -1340,7 +1455,10 @@ pub struct Presence<'a> {
 
 impl<'a> Presence<'a> {
     pub fn get(&self) -> PresenceRequestBuilder<'_> {
-        let path = format!("/channels/{}/presence", urlencoding::encode(&self.channel.name));
+        let path = format!(
+            "/channels/{}/presence",
+            urlencoding::encode(&self.channel.name)
+        );
         PresenceRequestBuilder {
             rest: self.channel.rest,
             path,
@@ -1350,7 +1468,10 @@ impl<'a> Presence<'a> {
     }
 
     pub fn history(&self) -> PaginatedRequestBuilder<'_, PresenceMessage> {
-        let path = format!("/channels/{}/presence/history", urlencoding::encode(&self.channel.name));
+        let path = format!(
+            "/channels/{}/presence/history",
+            urlencoding::encode(&self.channel.name)
+        );
         PaginatedRequestBuilder {
             rest: self.channel.rest,
             path,
@@ -1374,18 +1495,25 @@ impl<'a> PresenceRequestBuilder<'a> {
         self
     }
     pub fn client_id(mut self, client_id: &str) -> Self {
-        self.params.push(("clientId".to_string(), client_id.to_string()));
+        self.params
+            .push(("clientId".to_string(), client_id.to_string()));
         self
     }
     pub fn connection_id(mut self, connection_id: &str) -> Self {
-        self.params.push(("connectionId".to_string(), connection_id.to_string()));
+        self.params
+            .push(("connectionId".to_string(), connection_id.to_string()));
         self
     }
     pub async fn send(self) -> Result<PaginatedResult<PresenceMessage>> {
-        let params: Vec<(&str, &str)> = self.params.iter()
+        let params: Vec<(&str, &str)> = self
+            .params
+            .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-        let resp = self.rest.do_request("GET", &self.path, &[], &params, None).await?;
+        let resp = self
+            .rest
+            .do_request("GET", &self.path, &[], &params, None)
+            .await?;
         let (next_rel_url, first_rel_url) = crate::http::parse_link_headers(&resp.headers);
         let mut items: Vec<PresenceMessage> = self.rest.deserialize_response(&resp)?;
         for item in &mut items {
@@ -1431,7 +1559,10 @@ impl<'a> RestAnnotations<'a> {
             ann.id = Some(format!("{}:0", idempotent_id_base()));
         }
         let body = self.channel.rest.serialize_body(&vec![ann])?;
-        self.channel.rest.do_request("POST", &path, &[], &[], Some(body)).await?;
+        self.channel
+            .rest
+            .do_request("POST", &path, &[], &[], Some(body))
+            .await?;
         Ok(())
     }
 
@@ -1445,7 +1576,10 @@ impl<'a> RestAnnotations<'a> {
         ann.action = Some(AnnotationAction::Delete);
         ann.message_serial = Some(msg_serial.to_string());
         let body = self.channel.rest.serialize_body(&vec![ann])?;
-        self.channel.rest.do_request("POST", &path, &[], &[], Some(body)).await?;
+        self.channel
+            .rest
+            .do_request("POST", &path, &[], &[], Some(body))
+            .await?;
         Ok(())
     }
 
@@ -1516,7 +1650,12 @@ impl<'a> PublishBuilder<'a> {
     }
 
     pub fn params(mut self, params: &[(&str, &str)]) -> Self {
-        self.params = Some(params.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+        self.params = Some(
+            params
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        );
         self
     }
 
@@ -1536,7 +1675,10 @@ impl<'a> PublishBuilder<'a> {
 
     pub async fn send(self) -> Result<PublishResult> {
         let rest = self.channel.rest;
-        let path = format!("/channels/{}/messages", urlencoding::encode(&self.channel.name));
+        let path = format!(
+            "/channels/{}/messages",
+            urlencoding::encode(&self.channel.name)
+        );
 
         let single = self.messages.is_none();
         let mut messages = match self.messages {
@@ -1601,11 +1743,15 @@ impl<'a> PublishBuilder<'a> {
             rest.serialize_body(&wire)?
         };
 
-        let params: Vec<(&str, &str)> = self.params.as_ref()
+        let params: Vec<(&str, &str)> = self
+            .params
+            .as_ref()
             .map(|p| p.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect())
             .unwrap_or_default();
 
-        let resp = rest.do_request("POST", &path, &[], &params, Some(body)).await?;
+        let resp = rest
+            .do_request("POST", &path, &[], &params, Some(body))
+            .await?;
         // RSL1n: the response carries the serials of the published messages
         if resp.body.is_empty() {
             return Ok(PublishResult::default());
@@ -1709,7 +1855,9 @@ impl<'a> PushAdmin<'a> {
         }
 
         let body = self.rest.serialize_body(&payload)?;
-        self.rest.do_request("POST", "/push/publish", &[], &[], Some(body)).await?;
+        self.rest
+            .do_request("POST", "/push/publish", &[], &[], Some(body))
+            .await?;
         Ok(())
     }
 
@@ -1728,7 +1876,10 @@ pub struct PushDeviceRegistrations<'a> {
 
 impl<'a> PushDeviceRegistrations<'a> {
     pub async fn get(&self, device_id: &str) -> Result<serde_json::Value> {
-        let path = format!("/push/deviceRegistrations/{}", urlencoding::encode(device_id));
+        let path = format!(
+            "/push/deviceRegistrations/{}",
+            urlencoding::encode(device_id)
+        );
         let resp = self.rest.do_request("GET", &path, &[], &[], None).await?;
         self.rest.deserialize_response(&resp)
     }
@@ -1752,18 +1903,28 @@ impl<'a> PushDeviceRegistrations<'a> {
             urlencoding::encode(device_id)
         );
         let body = self.rest.serialize_body(device)?;
-        let resp = self.rest.do_request("PUT", &path, &[], &[], Some(body)).await?;
+        let resp = self
+            .rest
+            .do_request("PUT", &path, &[], &[], Some(body))
+            .await?;
         self.rest.deserialize_response(&resp)
     }
 
     pub async fn remove(&self, device_id: &str) -> Result<()> {
-        let path = format!("/push/deviceRegistrations/{}", urlencoding::encode(device_id));
-        self.rest.do_request("DELETE", &path, &[], &[], None).await?;
+        let path = format!(
+            "/push/deviceRegistrations/{}",
+            urlencoding::encode(device_id)
+        );
+        self.rest
+            .do_request("DELETE", &path, &[], &[], None)
+            .await?;
         Ok(())
     }
 
     pub async fn remove_where(&self, filter: &[(&str, &str)]) -> Result<()> {
-        self.rest.do_request("DELETE", "/push/deviceRegistrations", &[], filter, None).await?;
+        self.rest
+            .do_request("DELETE", "/push/deviceRegistrations", &[], filter, None)
+            .await?;
         Ok(())
     }
 }
@@ -1795,7 +1956,10 @@ impl<'a> PushChannelSubscriptions<'a> {
 
     pub async fn save(&self, sub: &serde_json::Value) -> Result<serde_json::Value> {
         let body = self.rest.serialize_body(sub)?;
-        let resp = self.rest.do_request("POST", "/push/channelSubscriptions", &[], &[], Some(body)).await?;
+        let resp = self
+            .rest
+            .do_request("POST", "/push/channelSubscriptions", &[], &[], Some(body))
+            .await?;
         self.rest.deserialize_response(&resp)
     }
 
@@ -1813,12 +1977,16 @@ impl<'a> PushChannelSubscriptions<'a> {
         if !client_id.is_empty() {
             params.push(("clientId", client_id));
         }
-        self.rest.do_request("DELETE", "/push/channelSubscriptions", &[], &params, None).await?;
+        self.rest
+            .do_request("DELETE", "/push/channelSubscriptions", &[], &params, None)
+            .await?;
         Ok(())
     }
 
     pub async fn remove_where(&self, filter: &[(&str, &str)]) -> Result<()> {
-        self.rest.do_request("DELETE", "/push/channelSubscriptions", &[], filter, None).await?;
+        self.rest
+            .do_request("DELETE", "/push/channelSubscriptions", &[], filter, None)
+            .await?;
         Ok(())
     }
 }
@@ -1827,10 +1995,13 @@ impl<'a> PushChannelSubscriptions<'a> {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
+#[derive(Default)]
+#[allow(clippy::upper_case_acronyms)] // Data::JSON is the established API name
 pub enum Data {
     String(String),
     JSON(serde_json::Value),
     Binary(serde_bytes::ByteBuf),
+    #[default]
     None,
 }
 
@@ -1890,24 +2061,26 @@ impl<'de> serde::Deserialize<'de> for Data {
                 Ok(Data::JSON(serde_json::json!(v)))
             }
 
-            fn visit_map<A: de::MapAccess<'de>>(self, map: A) -> std::result::Result<Data, A::Error> {
-                let value = serde_json::Value::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            fn visit_map<A: de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> std::result::Result<Data, A::Error> {
+                let value =
+                    serde_json::Value::deserialize(de::value::MapAccessDeserializer::new(map))?;
                 Ok(Data::JSON(value))
             }
 
-            fn visit_seq<A: de::SeqAccess<'de>>(self, seq: A) -> std::result::Result<Data, A::Error> {
-                let value = serde_json::Value::deserialize(de::value::SeqAccessDeserializer::new(seq))?;
+            fn visit_seq<A: de::SeqAccess<'de>>(
+                self,
+                seq: A,
+            ) -> std::result::Result<Data, A::Error> {
+                let value =
+                    serde_json::Value::deserialize(de::value::SeqAccessDeserializer::new(seq))?;
                 Ok(Data::JSON(value))
             }
         }
 
         deserializer.deserialize_any(DataVisitor)
-    }
-}
-
-impl Default for Data {
-    fn default() -> Self {
-        Data::None
     }
 }
 
@@ -1960,7 +2133,11 @@ pub struct MessageOperation {
 pub struct UpdateDeleteResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serial: Option<String>,
-    #[serde(rename = "versionSerial", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "versionSerial",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub version_serial: Option<String>,
 }
 

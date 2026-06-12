@@ -63,7 +63,10 @@ async fn rtn3_auto_connect_false_does_not_connect() {
     let client = client_with(&mock, default_opts().auto_connect(false));
 
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-    assert!(!attempted.load(Ordering::SeqCst), "no connection attempt expected");
+    assert!(
+        !attempted.load(Ordering::SeqCst),
+        "no connection attempt expected"
+    );
     assert_eq!(client.connection.state(), ConnectionState::Initialized);
     client.close();
 }
@@ -120,7 +123,8 @@ async fn rtn8b_rtn9b_id_and_key_unique_per_connection() {
         ));
     });
     let transport = Arc::new(MockTransport::new(mock.inner()));
-    let client1 = Realtime::with_mock(&default_opts().auto_connect(false), transport.clone()).unwrap();
+    let client1 =
+        Realtime::with_mock(&default_opts().auto_connect(false), transport.clone()).unwrap();
     let client2 = Realtime::with_mock(&default_opts().auto_connect(false), transport).unwrap();
 
     client1.connect();
@@ -157,8 +161,14 @@ async fn rtn8c_rtn9c_id_and_key_null_after_closed() {
     conn.send_to_client(ProtocolMessage::new(action::CLOSED));
     assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
 
-    assert!(client.connection.id().is_none(), "RTN8c: id null after CLOSED");
-    assert!(client.connection.key().is_none(), "RTN9c: key null after CLOSED");
+    assert!(
+        client.connection.id().is_none(),
+        "RTN8c: id null after CLOSED"
+    );
+    assert!(
+        client.connection.key().is_none(),
+        "RTN9c: key null after CLOSED"
+    );
 }
 
 // UTS: realtime/unit/RTN8c/id-key-null-after-failed-1
@@ -223,10 +233,12 @@ async fn rtn26a_when_state_immediate_if_in_state() {
 
     let invoked = Arc::new(AtomicBool::new(false));
     let invoked_c = invoked.clone();
-    client.connection.when_state(ConnectionState::Connected, move |change| {
-        assert_eq!(change.current, ConnectionState::Connected);
-        invoked_c.store(true, Ordering::SeqCst);
-    });
+    client
+        .connection
+        .when_state(ConnectionState::Connected, move |change| {
+            assert_eq!(change.current, ConnectionState::Connected);
+            invoked_c.store(true, Ordering::SeqCst);
+        });
     // RTN26a: fires synchronously when already in the target state
     assert!(invoked.load(Ordering::SeqCst));
     client.close();
@@ -244,11 +256,16 @@ async fn rtn26b_when_state_deferred_until_transition() {
     let invoked = Arc::new(AtomicBool::new(false));
     let captured: Arc<StdMutex<Option<ConnectionStateChange>>> = Arc::new(StdMutex::new(None));
     let (invoked_c, captured_c) = (invoked.clone(), captured.clone());
-    client.connection.when_state(ConnectionState::Connected, move |change| {
-        *captured_c.lock().unwrap() = Some(change);
-        invoked_c.store(true, Ordering::SeqCst);
-    });
-    assert!(!invoked.load(Ordering::SeqCst), "must not fire before the transition");
+    client
+        .connection
+        .when_state(ConnectionState::Connected, move |change| {
+            *captured_c.lock().unwrap() = Some(change);
+            invoked_c.store(true, Ordering::SeqCst);
+        });
+    assert!(
+        !invoked.load(Ordering::SeqCst),
+        "must not fire before the transition"
+    );
 
     client.connect();
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
@@ -275,15 +292,18 @@ async fn rtn26b_when_state_fires_only_once() {
 
     let count = Arc::new(AtomicU32::new(0));
     let count_c = count.clone();
-    client.connection.when_state(ConnectionState::Connected, move |_| {
-        count_c.fetch_add(1, Ordering::SeqCst);
-    });
+    client
+        .connection
+        .when_state(ConnectionState::Connected, move |_| {
+            count_c.fetch_add(1, Ordering::SeqCst);
+        });
 
     // Connect → CONNECTED (fires), close → CLOSED, connect → CONNECTED again
     client.connect();
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
     client.close();
-    mock.active_connection().send_to_client(ProtocolMessage::new(action::CLOSED));
+    mock.active_connection()
+        .send_to_client(ProtocolMessage::new(action::CLOSED));
     assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
     client.connect();
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
@@ -304,9 +324,11 @@ async fn rtn26a_multiple_when_state_listeners_all_fire() {
     let count = Arc::new(AtomicU32::new(0));
     for _ in 0..3 {
         let count_c = count.clone();
-        client.connection.when_state(ConnectionState::Connected, move |_| {
-            count_c.fetch_add(1, Ordering::SeqCst);
-        });
+        client
+            .connection
+            .when_state(ConnectionState::Connected, move |_| {
+                count_c.fetch_add(1, Ordering::SeqCst);
+            });
     }
 
     client.connect();
@@ -330,9 +352,11 @@ async fn rtn26a_no_fire_for_state_passed_through_earlier() {
     // CONNECTING was passed through; a listener registered NOW must not fire
     let invoked = Arc::new(AtomicBool::new(false));
     let invoked_c = invoked.clone();
-    client.connection.when_state(ConnectionState::Connecting, move |_| {
-        invoked_c.store(true, Ordering::SeqCst);
-    });
+    client
+        .connection
+        .when_state(ConnectionState::Connecting, move |_| {
+            invoked_c.store(true, Ordering::SeqCst);
+        });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     assert!(!invoked.load(Ordering::SeqCst), "past states must not fire");
     client.close();
@@ -350,12 +374,16 @@ async fn rtn26_when_state_different_states() {
     let connected = Arc::new(AtomicBool::new(false));
     let closed = Arc::new(AtomicBool::new(false));
     let (connected_c, closed_c) = (connected.clone(), closed.clone());
-    client.connection.when_state(ConnectionState::Connected, move |_| {
-        connected_c.store(true, Ordering::SeqCst);
-    });
-    client.connection.when_state(ConnectionState::Closed, move |_| {
-        closed_c.store(true, Ordering::SeqCst);
-    });
+    client
+        .connection
+        .when_state(ConnectionState::Connected, move |_| {
+            connected_c.store(true, Ordering::SeqCst);
+        });
+    client
+        .connection
+        .when_state(ConnectionState::Closed, move |_| {
+            closed_c.store(true, Ordering::SeqCst);
+        });
 
     client.connect();
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
@@ -364,7 +392,8 @@ async fn rtn26_when_state_different_states() {
     assert!(!closed.load(Ordering::SeqCst));
 
     client.close();
-    mock.active_connection().send_to_client(ProtocolMessage::new(action::CLOSED));
+    mock.active_connection()
+        .send_to_client(ProtocolMessage::new(action::CLOSED));
     assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     assert!(closed.load(Ordering::SeqCst));
@@ -398,7 +427,8 @@ async fn rtn4_connect_lifecycle_event_sequence() {
     client.connect();
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
     client.close();
-    mock.active_connection().send_to_client(ProtocolMessage::new(action::CLOSED));
+    mock.active_connection()
+        .send_to_client(ProtocolMessage::new(action::CLOSED));
     assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
     let _ = tokio::time::timeout(tokio::time::Duration::from_secs(1), recorder).await;
 
@@ -433,14 +463,19 @@ async fn rtn12a_close_sends_close_protocol_message() {
     // The client sent CLOSE on the wire
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
-        if mock.client_messages().iter().any(|m| m.action == action::CLOSE) {
+        if mock
+            .client_messages()
+            .iter()
+            .any(|m| m.action == action::CLOSE)
+        {
             break;
         }
         assert!(std::time::Instant::now() < deadline, "CLOSE was never sent");
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
 
-    mock.active_connection().send_to_client(ProtocolMessage::new(action::CLOSED));
+    mock.active_connection()
+        .send_to_client(ProtocolMessage::new(action::CLOSED));
     assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
 }
 
@@ -455,7 +490,11 @@ async fn rtn12d_close_from_initialized_goes_to_closed() {
     assert_eq!(client.connection.state(), ConnectionState::Initialized);
     client.close();
     assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
-    assert_eq!(mock.connection_count(), 0, "no connection was ever attempted");
+    assert_eq!(
+        mock.connection_count(),
+        0,
+        "no connection was ever attempted"
+    );
 }
 
 // RTN11: connect() after CLOSED starts a fresh connection
@@ -465,7 +504,8 @@ async fn rtn11_reconnect_after_close() {
     let count_c = count.clone();
     let mock = MockWebSocket::with_handler(move |conn| {
         let n = count_c.fetch_add(1, Ordering::SeqCst) + 1;
-        let c = conn.respond_with_success(connected_msg(&format!("id-{}", n), &format!("key-{}", n)));
+        let c =
+            conn.respond_with_success(connected_msg(&format!("id-{}", n), &format!("key-{}", n)));
         std::mem::forget(c);
     });
     let client = client_with(&mock, default_opts().auto_connect(false));
@@ -473,7 +513,8 @@ async fn rtn11_reconnect_after_close() {
     client.connect();
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
     client.close();
-    mock.active_connection().send_to_client(ProtocolMessage::new(action::CLOSED));
+    mock.active_connection()
+        .send_to_client(ProtocolMessage::new(action::CLOSED));
     assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
 
     client.connect();
@@ -558,8 +599,14 @@ async fn live_connect_and_close_against_sandbox() {
         await_state(&client.connection, ConnectionState::Connected, 10000).await,
         "must reach CONNECTED against the live sandbox"
     );
-    assert!(client.connection.id().is_some(), "live connection id assigned");
-    assert!(client.connection.key().is_some(), "live connection key assigned");
+    assert!(
+        client.connection.id().is_some(),
+        "live connection id assigned"
+    );
+    assert!(
+        client.connection.key().is_some(),
+        "live connection key assigned"
+    );
 
     // RTN13 live: ping over the real connection
     let rtt = client.connection.ping().await.expect("live ping");
@@ -604,7 +651,8 @@ impl AuthCallback for SeqTokenCb {
 }
 
 fn token_client(mock: &MockWebSocket, count: Arc<AtomicUsize>) -> Realtime {
-    let opts = ClientOptions::with_auth_callback(Arc::new(SeqTokenCb { count })).auto_connect(false);
+    let opts =
+        ClientOptions::with_auth_callback(Arc::new(SeqTokenCb { count })).auto_connect(false);
     client_with(mock, opts)
 }
 
@@ -666,7 +714,10 @@ async fn rtn14a_fatal_error_during_connect_goes_failed() {
     let client = client_with(&mock, default_opts().auto_connect(false));
     client.connect();
     assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
-    assert_eq!(client.connection.error_reason().and_then(|e| e.code), Some(40400));
+    assert_eq!(
+        client.connection.error_reason().and_then(|e| e.code),
+        Some(40400)
+    );
     // FAILED is terminal: no retry
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     assert_eq!(mock.connection_count(), 1);
@@ -694,11 +745,22 @@ async fn rtn14b_token_error_during_connect_renews_and_retries() {
     client.connect();
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
 
-    assert_eq!(attempts.load(Ordering::SeqCst), 2, "renewed and retried once");
-    assert_eq!(tokens.load(Ordering::SeqCst), 2, "a fresh token was acquired");
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        2,
+        "renewed and retried once"
+    );
+    assert_eq!(
+        tokens.load(Ordering::SeqCst),
+        2,
+        "a fresh token was acquired"
+    );
     let urls = urls.lock().unwrap();
     assert!(urls[0].contains("accessToken=token-1"));
-    assert!(urls[1].contains("accessToken=token-2"), "retry uses the new token");
+    assert!(
+        urls[1].contains("accessToken=token-2"),
+        "retry uses the new token"
+    );
     client.close();
 }
 
@@ -713,7 +775,10 @@ async fn rsa4a_token_error_without_renewal_goes_failed() {
     let client = client_with(&mock, opts);
     client.connect();
     assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
-    assert_eq!(client.connection.error_reason().and_then(|e| e.code), Some(40142));
+    assert_eq!(
+        client.connection.error_reason().and_then(|e| e.code),
+        Some(40142)
+    );
 }
 
 // UTS: realtime/unit/RTN14c/connection-timeout-0
@@ -733,7 +798,10 @@ async fn rtn14c_connect_attempt_times_out() {
     // Paused clock auto-advances when idle: the timeout fires
     assert!(await_state(&client.connection, ConnectionState::Disconnected, 10000).await);
     let reason = client.connection.error_reason().expect("timeout reason");
-    assert_eq!(reason.code, Some(crate::error::ErrorCode::ConnectionTimedOut.code()));
+    assert_eq!(
+        reason.code,
+        Some(crate::error::ErrorCode::ConnectionTimedOut.code())
+    );
 }
 
 // UTS: realtime/unit/RTN14d/retry-recoverable-failure-0
@@ -849,7 +917,10 @@ async fn rtn15a_rtn15b_unexpected_disconnect_resumes_immediately() {
     assert_eq!(client.connection.id().as_deref(), Some("connection-1"));
 
     mock.active_connection().simulate_disconnect();
-    assert!(await_connection_count(&mock, 2, 5000).await, "reconnect attempt expected");
+    assert!(
+        await_connection_count(&mock, 2, 5000).await,
+        "reconnect attempt expected"
+    );
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
 
     // RTN15c6: resumed — same id; RTN15e: key updated
@@ -859,8 +930,15 @@ async fn rtn15a_rtn15b_unexpected_disconnect_resumes_immediately() {
 
     // RTN15b1: the second attempt carried resume=<old key>
     let urls = urls.lock().unwrap();
-    assert!(!urls[0].contains("resume="), "first attempt has no resume param");
-    assert!(urls[1].contains("resume=key-1"), "resume with previous key: {}", urls[1]);
+    assert!(
+        !urls[0].contains("resume="),
+        "first attempt has no resume param"
+    );
+    assert!(
+        urls[1].contains("resume=key-1"),
+        "resume with previous key: {}",
+        urls[1]
+    );
 
     // The state sequence passed through disconnected→connecting
     let seq = changes.lock().unwrap().clone();
@@ -896,7 +974,11 @@ async fn rtn15c7_failed_resume_gets_new_connection_id() {
         } else {
             // Resume failed: the server assigns a NEW connection id
             let mut msg = connected_msg("connection-2", "key-2");
-            msg.error = Some(ErrorInfo::with_status(80008, 400, "Unable to recover connection"));
+            msg.error = Some(ErrorInfo::with_status(
+                80008,
+                400,
+                "Unable to recover connection",
+            ));
             let c = conn.respond_with_success(msg);
             std::mem::forget(c);
         }
@@ -906,12 +988,18 @@ async fn rtn15c7_failed_resume_gets_new_connection_id() {
     client.connect();
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
     mock.active_connection().simulate_disconnect();
-    assert!(await_connection_count(&mock, 2, 5000).await, "reconnect attempt expected");
+    assert!(
+        await_connection_count(&mock, 2, 5000).await,
+        "reconnect attempt expected"
+    );
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
 
     // RTN15c7: connected with the new id; the failure reason is surfaced
     assert_eq!(client.connection.id().as_deref(), Some("connection-2"));
-    assert_eq!(client.connection.error_reason().and_then(|e| e.code), Some(80008));
+    assert_eq!(
+        client.connection.error_reason().and_then(|e| e.code),
+        Some(80008)
+    );
     client.close();
 }
 
@@ -932,7 +1020,10 @@ async fn rtn15h1_disconnected_token_error_without_renewal_fails() {
     mock.active_connection().send_to_client_and_close(msg);
 
     assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
-    assert_eq!(client.connection.error_reason().and_then(|e| e.code), Some(40142));
+    assert_eq!(
+        client.connection.error_reason().and_then(|e| e.code),
+        Some(40142)
+    );
 }
 
 // UTS: realtime/unit/RTN15h2/token-error-renew-success-0
@@ -959,7 +1050,10 @@ async fn rtn15h2_disconnected_token_error_renews_and_reconnects() {
     msg.error = Some(ErrorInfo::with_status(40142, 401, "Token expired"));
     mock.active_connection().send_to_client_and_close(msg);
 
-    assert!(await_connection_count(&mock, 2, 5000).await, "reconnect attempt expected");
+    assert!(
+        await_connection_count(&mock, 2, 5000).await,
+        "reconnect attempt expected"
+    );
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
     assert_eq!(tokens.load(Ordering::SeqCst), 2, "the token was renewed");
@@ -989,7 +1083,10 @@ async fn rtn15h3_disconnected_non_token_error_resumes() {
     msg.error = Some(ErrorInfo::with_status(80003, 400, "Server going away"));
     mock.active_connection().send_to_client_and_close(msg);
 
-    assert!(await_connection_count(&mock, 2, 5000).await, "reconnect attempt expected");
+    assert!(
+        await_connection_count(&mock, 2, 5000).await,
+        "reconnect attempt expected"
+    );
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
     assert!(urls.lock().unwrap()[1].contains("resume=the-key"));
@@ -1071,7 +1168,11 @@ async fn rtn13a_ping_sends_heartbeat_and_resolves_roundtrip() {
         assert!(std::time::Instant::now() < deadline);
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     };
-    let id = sent.message.id.clone().expect("ping HEARTBEAT carries an id");
+    let id = sent
+        .message
+        .id
+        .clone()
+        .expect("ping HEARTBEAT carries an id");
     assert!(!id.is_empty());
 
     // The server echoes the HEARTBEAT with the same id
@@ -1103,7 +1204,8 @@ async fn rtn13c_rtn13e_idless_heartbeat_ignored_and_ping_times_out() {
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     // An id-less HEARTBEAT must NOT resolve the ping (RTN13e)
-    mock.active_connection().send_to_client(ProtocolMessage::new(action::HEARTBEAT));
+    mock.active_connection()
+        .send_to_client(ProtocolMessage::new(action::HEARTBEAT));
 
     // ...and with no matching response, the ping times out (RTN13c)
     let result = ping.await.unwrap();
@@ -1170,7 +1272,11 @@ async fn rtn13b_ping_in_non_connected_state_errors() {
     // ...and in CLOSED
     client.close();
     assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
-    let err = client.connection.ping().await.expect_err("ping must fail when closed");
+    let err = client
+        .connection
+        .ping()
+        .await
+        .expect_err("ping must fail when closed");
     assert!(err.message.unwrap_or_default().contains("Closed"));
 }
 
@@ -1215,12 +1321,21 @@ async fn rtn23a_idle_timeout_triggers_resume_reconnect() {
 
     // No traffic: after maxIdleInterval + realtimeRequestTimeout the client
     // declares the transport dead and reconnects (paused clock auto-advances)
-    assert!(await_state(&client.connection, ConnectionState::Disconnected, 60000).await
-        || client.connection.state() == ConnectionState::Connected);
-    assert!(await_state(&client.connection, ConnectionState::Connected, 60000).await);
-    assert!(attempts.load(Ordering::SeqCst) >= 2, "reconnected after idle timeout");
     assert!(
-        urls.lock().unwrap().last().unwrap().contains("resume=idle-key"),
+        await_state(&client.connection, ConnectionState::Disconnected, 60000).await
+            || client.connection.state() == ConnectionState::Connected
+    );
+    assert!(await_state(&client.connection, ConnectionState::Connected, 60000).await);
+    assert!(
+        attempts.load(Ordering::SeqCst) >= 2,
+        "reconnected after idle timeout"
+    );
+    assert!(
+        urls.lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .contains("resume=idle-key"),
         "idle reconnect uses resume"
     );
     client.close();
@@ -1248,7 +1363,8 @@ async fn rtn23a_heartbeat_traffic_keeps_connection_alive() {
     // Heartbeats every 100ms keep resetting the (500ms) idle deadline
     for _ in 0..10 {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        mock.active_connection().send_to_client(ProtocolMessage::new(action::HEARTBEAT));
+        mock.active_connection()
+            .send_to_client(ProtocolMessage::new(action::HEARTBEAT));
     }
     assert_eq!(
         client.connection.state(),
@@ -1302,8 +1418,16 @@ async fn rtn2b_echo_param() {
     assert!(await_state(&c2.connection, ConnectionState::Connected, 5000).await);
 
     let urls = urls.lock().unwrap();
-    assert!(urls[0].contains("echo=true"), "RTC1a: echo=true by default, got {}", urls[0]);
-    assert!(urls[1].contains("echo=false"), "echo=false when disabled, got {}", urls[1]);
+    assert!(
+        urls[0].contains("echo=true"),
+        "RTC1a: echo=true by default, got {}",
+        urls[0]
+    );
+    assert!(
+        urls[1].contains("echo=false"),
+        "echo=false when disabled, got {}",
+        urls[1]
+    );
     c1.close();
     c2.close();
 }
@@ -1338,7 +1462,8 @@ async fn rtn22_server_auth_triggers_reauth() {
     });
 
     // The server requests re-authentication
-    mock.active_connection().send_to_client(ProtocolMessage::new(action::AUTH));
+    mock.active_connection()
+        .send_to_client(ProtocolMessage::new(action::AUTH));
 
     // The client obtains a fresh token and sends AUTH back
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -1350,12 +1475,19 @@ async fn rtn22_server_auth_triggers_reauth() {
         {
             break m;
         }
-        assert!(std::time::Instant::now() < deadline, "client never sent AUTH");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "client never sent AUTH"
+        );
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     };
     let auth = auth_msg.message.auth.expect("AUTH carries an auth payload");
     assert_eq!(auth["accessToken"], "token-2", "fresh token used");
-    assert_eq!(tokens.load(Ordering::SeqCst), 2, "token source consulted again");
+    assert_eq!(
+        tokens.load(Ordering::SeqCst),
+        2,
+        "token source consulted again"
+    );
 
     // The server acknowledges with an updated CONNECTED → UPDATE event
     mock.active_connection()
@@ -1363,16 +1495,24 @@ async fn rtn22_server_auth_triggers_reauth() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
         let snapshot = changes.lock().unwrap().clone();
-        if snapshot.iter().any(|c| c.event == crate::protocol::ConnectionEvent::Update) {
+        if snapshot
+            .iter()
+            .any(|c| c.event == crate::protocol::ConnectionEvent::Update)
+        {
             // The connection never left CONNECTED
             assert!(
-                snapshot.iter().all(|c| c.current == ConnectionState::Connected),
+                snapshot
+                    .iter()
+                    .all(|c| c.current == ConnectionState::Connected),
                 "reauth must not change the connection state: {:?}",
                 snapshot.iter().map(|c| c.current).collect::<Vec<_>>()
             );
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "no UPDATE event observed");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no UPDATE event observed"
+        );
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
     assert_eq!(client.connection.key().as_deref(), Some("connection-key-2"));
@@ -1512,13 +1652,19 @@ async fn rtn13d_ping_deferred_while_disconnected_runs_on_reconnect() {
         {
             break m;
         }
-        assert!(tokio::time::Instant::now() < deadline, "no deferred HEARTBEAT");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no deferred HEARTBEAT"
+        );
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     };
     let mut reply = ProtocolMessage::new(crate::protocol::action::HEARTBEAT);
     reply.id = hb.message.id.clone();
     mock.active_connection().send_to_client(reply);
-    let rtt = ping.await.unwrap().expect("deferred ping resolves after reconnect");
+    let rtt = ping
+        .await
+        .unwrap()
+        .expect("deferred ping resolves after reconnect");
     assert!(rtt >= std::time::Duration::ZERO);
 }
 
@@ -1542,10 +1688,17 @@ async fn rtn13b_deferred_ping_fails_on_failed() {
     // The attempt resolves to a fatal ERROR instead of CONNECTED
     let mut err_msg = ProtocolMessage::new(crate::protocol::action::ERROR);
     err_msg.error = Some(ErrorInfo::with_status(40400, 404, "Fatal error"));
-    gate.lock().unwrap().take().unwrap().respond_with_error(err_msg);
+    gate.lock()
+        .unwrap()
+        .take()
+        .unwrap()
+        .respond_with_error(err_msg);
     assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
 
-    let err = ping.await.unwrap().expect_err("deferred ping fails on FAILED");
+    let err = ping
+        .await
+        .unwrap()
+        .expect_err("deferred ping fails on FAILED");
     assert_eq!(err.code, Some(40400));
 }
 
@@ -1569,8 +1722,15 @@ async fn rtn13b_deferred_ping_fails_on_suspended() {
     tokio::task::yield_now().await;
 
     assert!(await_state(&client.connection, ConnectionState::Suspended, 60000).await);
-    let err = ping.await.unwrap().expect_err("deferred ping fails on SUSPENDED");
-    assert!(err.message.unwrap_or_default().to_lowercase().contains("suspended"));
+    let err = ping
+        .await
+        .unwrap()
+        .expect_err("deferred ping fails on SUSPENDED");
+    assert!(err
+        .message
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains("suspended"));
 }
 
 // UTS: realtime/unit/RTN13c/deferred-ping-timeout-1 — the timeout runs from
@@ -1596,7 +1756,10 @@ async fn rtn13c_deferred_ping_times_out_after_send() {
     let _conn = pending.respond_with_success(connected_msg("id", "key"));
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
 
-    let err = ping.await.unwrap().expect_err("deferred ping must time out");
+    let err = ping
+        .await
+        .unwrap()
+        .expect_err("deferred ping must time out");
     assert!(err
         .message
         .unwrap_or_default()
@@ -1690,13 +1853,21 @@ async fn rtc8a1_successful_reauth_update_event() {
     // Exactly one UPDATE, no CONNECTED state event; details refreshed
     let mut updates = 0;
     while let Ok(change) = events.try_recv() {
-        assert_eq!(change.event, crate::protocol::ConnectionEvent::Update, "RTN4h: UPDATE only");
+        assert_eq!(
+            change.event,
+            crate::protocol::ConnectionEvent::Update,
+            "RTN4h: UPDATE only"
+        );
         assert_eq!(change.previous, ConnectionState::Connected);
         assert_eq!(change.current, ConnectionState::Connected);
         updates += 1;
     }
     assert_eq!(updates, 1);
-    assert_eq!(client.connection.key().as_deref(), Some("conn-key-2"), "RTN21");
+    assert_eq!(
+        client.connection.key().as_deref(),
+        Some("conn-key-2"),
+        "RTN21"
+    );
 }
 
 // UTS: realtime/unit/RTC8a1/capability-downgrade-channel-failed-1
@@ -1714,7 +1885,11 @@ async fn rtc8a1_capability_downgrade_channel_failed() {
     let attach = tokio::spawn(async move { ch2.attach().await });
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
     loop {
-        if mock.client_messages().iter().any(|m| m.action == action::ATTACH) {
+        if mock
+            .client_messages()
+            .iter()
+            .any(|m| m.action == action::ATTACH)
+        {
             break;
         }
         assert!(tokio::time::Instant::now() < deadline);
@@ -1738,12 +1913,8 @@ async fn rtc8a1_capability_downgrade_channel_failed() {
     mock.active_connection().send_to_client(chan_err);
 
     assert!(
-        crate::realtime::await_channel_state(
-            &ch,
-            crate::protocol::ChannelState::Failed,
-            5000
-        )
-        .await
+        crate::realtime::await_channel_state(&ch, crate::protocol::ChannelState::Failed, 5000)
+            .await
     );
     assert_eq!(ch.error_reason().and_then(|e| e.code), Some(40160));
     assert_eq!(
@@ -1767,7 +1938,11 @@ async fn rtc8a2_failed_reauth_connection_failed() {
     // The server refuses the new token: connection-level ERROR
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
     loop {
-        if mock.client_messages().iter().any(|m| m.action == action::AUTH) {
+        if mock
+            .client_messages()
+            .iter()
+            .any(|m| m.action == action::AUTH)
+        {
             break;
         }
         assert!(tokio::time::Instant::now() < deadline);
@@ -1796,16 +1971,24 @@ async fn rtc8a3_authorize_completes_after_response() {
     // The AUTH is on the wire but unanswered: authorize must not resolve
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
     loop {
-        if mock.client_messages().iter().any(|m| m.action == action::AUTH) {
+        if mock
+            .client_messages()
+            .iter()
+            .any(|m| m.action == action::AUTH)
+        {
             break;
         }
         assert!(tokio::time::Instant::now() < deadline);
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
     }
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-    assert!(!authorize.is_finished(), "RTC8a3: not before the server responds");
+    assert!(
+        !authorize.is_finished(),
+        "RTC8a3: not before the server responds"
+    );
 
-    mock.active_connection().send_to_client(connected_msg("conn-id", "conn-key-2"));
+    mock.active_connection()
+        .send_to_client(connected_msg("conn-id", "conn-key-2"));
     let td = authorize.await.unwrap().expect("resolves after CONNECTED");
     assert_eq!(td.token, "token-2");
 }
@@ -1835,7 +2018,11 @@ async fn rtc8b_authorize_connecting_halts_attempt() {
     assert_eq!(td.token, "token-2");
     assert_eq!(client.connection.state(), ConnectionState::Connected);
     assert_eq!(count.load(Ordering::SeqCst), 2, "two token acquisitions");
-    assert_eq!(mock.connection_count(), 2, "RTC8b: a fresh attempt was made");
+    assert_eq!(
+        mock.connection_count(),
+        2,
+        "RTC8b: a fresh attempt was made"
+    );
 }
 
 // UTS: realtime/unit/RTC8b1/authorize-connecting-fails-on-failed-0
@@ -1858,7 +2045,11 @@ async fn rtc8b1_authorize_connecting_fails_on_failed() {
     client.connect();
     tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
 
-    let err = client.auth().authorize().await.expect_err("authorize fails");
+    let err = client
+        .auth()
+        .authorize()
+        .await
+        .expect_err("authorize fails");
     assert_eq!(err.code, Some(40101));
     assert_eq!(client.connection.state(), ConnectionState::Failed);
 }
@@ -1925,10 +2116,15 @@ async fn rtc8c_authorize_from_closed_reconnects() {
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
 
     client.close();
-    mock.active_connection().send_to_client(ProtocolMessage::new(action::CLOSED));
+    mock.active_connection()
+        .send_to_client(ProtocolMessage::new(action::CLOSED));
     assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
 
-    let td = client.auth().authorize().await.expect("authorize reconnects");
+    let td = client
+        .auth()
+        .authorize()
+        .await
+        .expect("authorize reconnects");
     assert_eq!(td.token, "token-2");
     assert_eq!(client.connection.state(), ConnectionState::Connected);
 }
@@ -1955,7 +2151,8 @@ async fn rtf1_unknown_action_ignored() {
     unknown.channel = Some("whatever".to_string());
     mock.active_connection().send_to_client(unknown);
     // Liveness probe: a heartbeat still round-trips afterwards
-    mock.active_connection().send_to_client(ProtocolMessage::new(action::HEARTBEAT));
+    mock.active_connection()
+        .send_to_client(ProtocolMessage::new(action::HEARTBEAT));
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     assert_eq!(client.connection.state(), ConnectionState::Connected);
@@ -2063,7 +2260,9 @@ async fn rsa4a1_non_renewable_token_logs_warning() {
         *lines
     );
     assert!(
-        lines.iter().any(|l| l.contains("https://help.ably.io/error/40171")),
+        lines
+            .iter()
+            .any(|l| l.contains("https://help.ably.io/error/40171")),
         "RSA4a1: the help URL is included"
     );
 }

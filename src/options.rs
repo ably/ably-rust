@@ -8,6 +8,9 @@ use crate::rest;
 /// REC1a: the default primary domain.
 pub(crate) static DEFAULT_PRIMARY_DOMAIN: &str = "main.realtime.ably.net";
 
+/// RSC2: the installed log sink.
+pub type LogHandler = Arc<dyn Fn(LogLevel, &str) + Send + Sync>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     None = 0,
@@ -63,7 +66,7 @@ pub struct ClientOptions {
     pub(crate) http_client: Option<Box<dyn crate::http_client::HttpClient>>,
     /// RSC2: minimum severity that is emitted. Defaults to Error.
     pub(crate) log_level: LogLevel,
-    pub(crate) log_handler: Option<Arc<dyn Fn(LogLevel, &str) + Send + Sync>>,
+    pub(crate) log_handler: Option<LogHandler>,
 }
 
 /// How the REC1 primary domain was determined — drives REC2c fallback derivation.
@@ -318,11 +321,14 @@ impl ClientOptions {
         self.validate_for_rest()?;
 
         // Use the provided http_client if any, otherwise create a reqwest-based one
-        let client: Box<dyn crate::http_client::HttpClient> = if let Some(c) = self.http_client.take() {
-            c
-        } else {
-            Box::new(crate::http_client::ReqwestHttpClient::new(self.http_open_timeout))
-        };
+        let client: Box<dyn crate::http_client::HttpClient> =
+            if let Some(c) = self.http_client.take() {
+                c
+            } else {
+                Box::new(crate::http_client::ReqwestHttpClient::new(
+                    self.http_open_timeout,
+                ))
+            };
         self.build_rest(client)
     }
 
@@ -377,6 +383,7 @@ impl ClientOptions {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))] // test-injection path
     pub(crate) fn rest_with_http_client(
         mut self,
         client: Box<dyn crate::http_client::HttpClient>,
@@ -393,7 +400,9 @@ impl ClientOptions {
     ) -> Result<rest::Rest> {
         let handle = mock.clone();
         let mut rest = self.rest_with_http_client(Box::new(mock))?;
-        std::sync::Arc::get_mut(&mut rest.inner).unwrap().mock_handle = Some(handle);
+        std::sync::Arc::get_mut(&mut rest.inner)
+            .unwrap()
+            .mock_handle = Some(handle);
         Ok(rest)
     }
 

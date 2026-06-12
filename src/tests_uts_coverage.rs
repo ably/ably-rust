@@ -25,7 +25,9 @@ fn spec_dir() -> PathBuf {
 }
 
 fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -42,7 +44,9 @@ fn collect_spec_ids(spec: &Path) -> BTreeSet<String> {
         let mut files = Vec::new();
         collect_md_files(&spec.join(area), &mut files);
         for file in files {
-            let Ok(text) = std::fs::read_to_string(&file) else { continue };
+            let Ok(text) = std::fs::read_to_string(&file) else {
+                continue;
+            };
             let mut rest = text.as_str();
             while let Some(pos) = rest.find("**Test ID**:") {
                 rest = &rest[pos + 12..];
@@ -66,11 +70,20 @@ fn collect_test_fns() -> BTreeSet<String> {
     let mut files = Vec::new();
     collect_md_files(&src, &mut files); // (no .md in src — reuse walker below)
     let mut fns = BTreeSet::new();
-    let Ok(entries) = std::fs::read_dir(&src) else { return fns };
+    let Ok(entries) = std::fs::read_dir(&src) else {
+        return fns;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().is_some_and(|e| e == "rs") {
-            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            // Track brace depth: a runnable test fn lives at module level
+            // (depth 0 or 1, allowing one `mod tests {}`). An fn nested
+            // inside another fn (e.g. swallowed by an unbalanced edit)
+            // compiles but never runs — it must NOT count as coverage.
+            let mut depth: i32 = 0;
             for line in text.lines() {
                 let trimmed = line.trim_start();
                 let rest = trimmed
@@ -81,10 +94,14 @@ fn collect_test_fns() -> BTreeSet<String> {
                     .or_else(|| trimmed.strip_prefix("pub(crate) fn "))
                     .or_else(|| trimmed.strip_prefix("pub(crate) async fn "));
                 if let Some(rest) = rest {
-                    if let Some(paren) = rest.find(['(', '<']) {
-                        fns.insert(rest[..paren].trim().to_string());
+                    if depth <= 1 {
+                        if let Some(paren) = rest.find(['(', '<']) {
+                            fns.insert(rest[..paren].trim().to_string());
+                        }
                     }
                 }
+                depth += line.matches('{').count() as i32;
+                depth -= line.matches('}').count() as i32;
             }
         }
     }
@@ -107,10 +124,9 @@ fn uts_coverage_matrix_is_complete() {
         spec_ids.len()
     );
 
-    let matrix_text = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("uts_coverage.txt"),
-    )
-    .expect("uts_coverage.txt missing — run tools/uts_coverage_generate.py");
+    let matrix_text =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("uts_coverage.txt"))
+            .expect("uts_coverage.txt missing — run tools/uts_coverage_generate.py");
 
     let mut mapped: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut excluded: BTreeMap<String, String> = BTreeMap::new();
@@ -140,8 +156,7 @@ fn uts_coverage_matrix_is_complete() {
         }
     }
 
-    let matrix_ids: BTreeSet<String> =
-        mapped.keys().chain(excluded.keys()).cloned().collect();
+    let matrix_ids: BTreeSet<String> = mapped.keys().chain(excluded.keys()).cloned().collect();
 
     for id in spec_ids.difference(&matrix_ids) {
         problems.push(format!(

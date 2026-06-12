@@ -117,7 +117,10 @@ async fn rtp1_rtp13_has_presence_triggers_sync() {
     ));
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
     while !ch.presence().sync_complete() {
-        assert!(tokio::time::Instant::now() < deadline, "RTP13 sync completes");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "RTP13 sync completes"
+        );
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
     }
     let members = ch.presence().get().await.unwrap();
@@ -160,13 +163,15 @@ async fn rtp19a_no_has_presence_clears_members() {
         ]),
     ));
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
-    while ch.presence().get_with_options(&crate::channel::PresenceGetOptions {
-        wait_for_sync: false,
-        ..Default::default()
-    })
-    .await
-    .unwrap()
-    .len()
+    while ch
+        .presence()
+        .get_with_options(&crate::channel::PresenceGetOptions {
+            wait_for_sync: false,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .len()
         != 1
     {
         assert!(tokio::time::Instant::now() < deadline);
@@ -176,9 +181,10 @@ async fn rtp19a_no_has_presence_clears_members() {
     // Capture the synthesized LEAVE
     let leaves: Arc<StdMutex<Vec<PresenceMessage>>> = Arc::new(StdMutex::new(Vec::new()));
     let leaves_c = leaves.clone();
-    ch.presence().subscribe_action(PresenceAction::Leave, move |msg| {
-        leaves_c.lock().unwrap().push(msg);
-    });
+    ch.presence()
+        .subscribe_action(PresenceAction::Leave, move |msg| {
+            leaves_c.lock().unwrap().push(msg);
+        });
     tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
 
     // An additional ATTACHED without HAS_PRESENCE
@@ -206,7 +212,10 @@ async fn rtp19a_no_has_presence_clears_members() {
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     let seen = leaves.lock().unwrap();
     assert_eq!(seen.len(), 1, "synthesized LEAVE delivered");
-    assert!(seen[0].id.is_none(), "RTP19: synthesized leaves carry no id");
+    assert!(
+        seen[0].id.is_none(),
+        "RTP19: synthesized leaves carry no id"
+    );
 }
 
 // ============================================================================
@@ -234,7 +243,14 @@ async fn rtp5a_rtp5f_channel_state_effects() {
         ..Default::default()
     };
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
-    while ch.presence().get_with_options(&no_wait).await.unwrap().len() != 1 {
+    while ch
+        .presence()
+        .get_with_options(&no_wait)
+        .await
+        .unwrap()
+        .len()
+        != 1
+    {
         assert!(tokio::time::Instant::now() < deadline);
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
     }
@@ -275,7 +291,10 @@ async fn rtp8a_rtp8c_rtp8e_enter_wire_shape() {
     assert_eq!(sent.len(), 1);
     let entry = &sent[0].message.presence.as_ref().unwrap()[0];
     assert_eq!(entry["action"], 2, "RTP8a: ENTER");
-    assert!(entry.get("clientId").is_none(), "RTP8c: identity is implicit");
+    assert!(
+        entry.get("clientId").is_none(),
+        "RTP8c: identity is implicit"
+    );
     assert_eq!(entry["data"], "hello-data", "RTP8e");
 }
 
@@ -288,7 +307,10 @@ async fn rtp8d_enter_implicitly_attaches() {
     let ch = client.channels.get("implicit");
     assert_eq!(ch.state(), ChannelState::Initialized);
 
-    ch.presence().enter(None).await.expect("enter after implicit attach");
+    ch.presence()
+        .enter(None)
+        .await
+        .expect("enter after implicit attach");
     assert_eq!(ch.state(), ChannelState::Attached, "RTP8d");
 }
 
@@ -341,7 +363,11 @@ async fn rtp16b_rtp5b_ops_queued_while_attaching() {
     let ch2 = ch.clone();
     let attach = tokio::spawn(async move { ch2.attach().await });
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
-    while !mock.client_messages().iter().any(|m| m.action == action::ATTACH) {
+    while !mock
+        .client_messages()
+        .iter()
+        .any(|m| m.action == action::ATTACH)
+    {
         assert!(tokio::time::Instant::now() < deadline);
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
     }
@@ -520,7 +546,10 @@ async fn rtp12a_history_delegates_to_rest() {
     let client = client_for(&mock, None);
     let ch = client.channels.get("hist");
     let result = ch.presence().history().await;
-    assert!(result.is_err(), "no live REST endpoint behind the mock client");
+    assert!(
+        result.is_err(),
+        "no live REST endpoint behind the mock client"
+    );
 }
 
 // ============================================================================
@@ -568,7 +597,10 @@ async fn rtp17g1_reentry_omits_id_when_connection_changed() {
     connect(&client).await;
     let ch = client.channels.get("moving");
     ch.attach().await.unwrap();
-    ch.presence().enter(Some(serde_json::json!("d"))).await.unwrap();
+    ch.presence()
+        .enter(Some(serde_json::json!("d")))
+        .await
+        .unwrap();
 
     // The echo (conn-A identity) populates the internal map with a real id
     mock.active_connection().send_to_client(presence_pm(
@@ -601,7 +633,10 @@ async fn rtp17g1_reentry_omits_id_when_connection_changed() {
     assert_eq!(entry["action"], 2, "RTP17i: ENTER");
     assert_eq!(entry["clientId"], "me", "RTP17g: stored clientId");
     assert_eq!(entry["data"], "d", "RTP17g: stored data");
-    assert!(entry.get("id").is_none(), "RTP17g1: id omitted on conn change");
+    assert!(
+        entry.get("id").is_none(),
+        "RTP17g1: id omitted on conn change"
+    );
 }
 
 // ============================================================================
@@ -623,9 +658,10 @@ async fn live_presence_roundtrip_against_sandbox() {
     let ch = client.channels.get("uts-live-presence");
     let entered: Arc<StdMutex<Vec<PresenceMessage>>> = Arc::new(StdMutex::new(Vec::new()));
     let entered_c = entered.clone();
-    ch.presence().subscribe_action(PresenceAction::Enter, move |msg| {
-        entered_c.lock().unwrap().push(msg);
-    });
+    ch.presence()
+        .subscribe_action(PresenceAction::Enter, move |msg| {
+            entered_c.lock().unwrap().push(msg);
+        });
     assert!(await_channel_state(&ch, ChannelState::Attached, 10000).await);
 
     ch.presence()
@@ -685,7 +721,10 @@ async fn rtp6_presence_events_update_map() {
     ));
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
     while events.lock().unwrap().len() < 2 {
-        assert!(tokio::time::Instant::now() < deadline, "RTP6: both delivered");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "RTP6: both delivered"
+        );
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
     }
     let members = ch
@@ -718,9 +757,7 @@ async fn rtp11d_get_suspended_semantics() {
         loop {
             let msgs = mock2.client_messages();
             for m in msgs.iter().skip(served) {
-                if m.action == action::ATTACH
-                    && attaches_c.fetch_add(1, Ordering::SeqCst) == 0
-                {
+                if m.action == action::ATTACH && attaches_c.fetch_add(1, Ordering::SeqCst) == 0 {
                     let mut reply = ProtocolMessage::new(action::ATTACHED);
                     reply.channel = m.channel.clone();
                     reply.flags = Some(flags::HAS_PRESENCE);
@@ -758,7 +795,14 @@ async fn rtp11d_get_suspended_semantics() {
         ..Default::default()
     };
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
-    while ch.presence().get_with_options(&no_wait).await.unwrap().len() != 1 {
+    while ch
+        .presence()
+        .get_with_options(&no_wait)
+        .await
+        .unwrap()
+        .len()
+        != 1
+    {
         assert!(tokio::time::Instant::now() < deadline);
         tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
     }

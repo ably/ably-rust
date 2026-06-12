@@ -1,11 +1,11 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::error::{ErrorInfo, ErrorCode, Result};
+use crate::error::{ErrorCode, ErrorInfo, Result};
 use crate::http_client::HttpResponse;
 use crate::rest::Rest;
 
-pub(crate) trait Decodable {
+pub trait Decodable {
     fn decode_item(&mut self, _cipher: Option<&crate::crypto::CipherParams>) {}
 }
 
@@ -14,6 +14,7 @@ pub struct RequestBuilder<'a> {
     pub(crate) method: String,
     pub(crate) path: String,
     pub(crate) params: Vec<(String, String)>,
+    #[allow(dead_code)] // populated for future header access
     pub(crate) headers: Vec<(String, String)>,
     pub(crate) body: Option<Vec<u8>>,
     pub(crate) build_error: Option<ErrorInfo>,
@@ -57,20 +58,21 @@ impl<'a> RequestBuilder<'a> {
         if let Some(err) = self.build_error {
             return Err(err);
         }
-        let params: Vec<(&str, &str)> = self.params.iter()
+        let params: Vec<(&str, &str)> = self
+            .params
+            .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-        let headers: Vec<(&str, &str)> = self.headers.iter()
+        let headers: Vec<(&str, &str)> = self
+            .headers
+            .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
 
-        let resp = self.rest.do_request_raw(
-            &self.method,
-            &self.path,
-            &headers,
-            &params,
-            self.body,
-        ).await?;
+        let resp = self
+            .rest
+            .do_request_raw(&self.method, &self.path, &headers, &params, self.body)
+            .await?;
 
         HttpPaginatedResponse::from_http_response(resp, self.rest.clone(), self.path)
     }
@@ -198,7 +200,8 @@ impl HttpPaginatedResponse {
 
     async fn fetch_page(self, url: &str) -> Result<HttpPaginatedResponse> {
         let (path, params) = resolve_pagination_url(url, &self.base_path)?;
-        let param_refs: Vec<(&str, &str)> = params.iter()
+        let param_refs: Vec<(&str, &str)> = params
+            .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
         let resp = self
@@ -220,7 +223,8 @@ pub struct PaginatedRequestBuilder<'a, T> {
 
 impl<'a, T> PaginatedRequestBuilder<'a, T> {
     pub fn start(mut self, interval: &str) -> Self {
-        self.params.push(("start".to_string(), interval.to_string()));
+        self.params
+            .push(("start".to_string(), interval.to_string()));
         self
     }
 
@@ -230,12 +234,14 @@ impl<'a, T> PaginatedRequestBuilder<'a, T> {
     }
 
     pub fn forwards(mut self) -> Self {
-        self.params.push(("direction".to_string(), "forwards".to_string()));
+        self.params
+            .push(("direction".to_string(), "forwards".to_string()));
         self
     }
 
     pub fn backwards(mut self) -> Self {
-        self.params.push(("direction".to_string(), "backwards".to_string()));
+        self.params
+            .push(("direction".to_string(), "backwards".to_string()));
         self
     }
 
@@ -254,11 +260,16 @@ impl<'a, T> PaginatedRequestBuilder<'a, T> {
 
 impl<'a, T: DeserializeOwned + Decodable + 'a> PaginatedRequestBuilder<'a, T> {
     pub async fn send(self) -> Result<PaginatedResult<T>> {
-        let params: Vec<(&str, &str)> = self.params.iter()
+        let params: Vec<(&str, &str)> = self
+            .params
+            .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
 
-        let resp = self.rest.do_request("GET", &self.path, &[], &params, None).await?;
+        let resp = self
+            .rest
+            .do_request("GET", &self.path, &[], &params, None)
+            .await?;
 
         // Parse link headers for pagination
         let (next_rel_url, first_rel_url) = parse_link_headers(&resp.headers);
@@ -283,13 +294,17 @@ impl<'a, T: DeserializeOwned + Decodable + 'a> PaginatedRequestBuilder<'a, T> {
 pub struct Response {
     pub(crate) status: u16,
     pub(crate) content_type: Option<String>,
+    #[allow(dead_code)] // captured for completeness
     pub(crate) headers: Vec<(String, String)>,
     pub(crate) body: Vec<u8>,
 }
 
 impl Response {
+    #[allow(dead_code)]
     fn from_http_response(resp: HttpResponse) -> Self {
-        let content_type = resp.headers.iter()
+        let content_type = resp
+            .headers
+            .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
             .map(|(_, v)| v.clone());
 
@@ -319,9 +334,12 @@ impl Response {
     }
 
     pub async fn text(self) -> Result<String> {
-        Ok(String::from_utf8(self.body).map_err(|e| {
-            ErrorInfo::new(ErrorCode::InternalError.code(), format!("Invalid UTF-8: {}", e))
-        })?)
+        String::from_utf8(self.body).map_err(|e| {
+            ErrorInfo::new(
+                ErrorCode::InternalError.code(),
+                format!("Invalid UTF-8: {}", e),
+            )
+        })
     }
 }
 
@@ -376,12 +394,16 @@ impl<T: DeserializeOwned + Decodable> PaginatedResult<T> {
 
     async fn fetch_page(self, url: &str) -> Result<PaginatedResult<T>> {
         let (path, params) = resolve_pagination_url(url, &self.base_path)?;
-        let param_refs: Vec<(&str, &str)> = params.iter()
+        let param_refs: Vec<(&str, &str)> = params
+            .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
 
         let base_path = self.base_path.clone();
-        let resp = self.rest.do_request("GET", &path, &[], &param_refs, None).await?;
+        let resp = self
+            .rest
+            .do_request("GET", &path, &[], &param_refs, None)
+            .await?;
         let (next_rel_url, first_rel_url) = parse_link_headers(&resp.headers);
         let mut items: Vec<T> = self.rest.deserialize_response(&resp)?;
         for item in &mut items {
@@ -405,23 +427,29 @@ pub(crate) fn resolve_pagination_url(
     url: &str,
     base_path: &str,
 ) -> Result<(String, Vec<(String, String)>)> {
-    let parsed = url::Url::parse(url).or_else(|_| {
-        let base_dir = if base_path.ends_with('/') {
-            base_path.to_string()
-        } else {
-            match base_path.rfind('/') {
-                Some(idx) => base_path[..=idx].to_string(),
-                None => "/".to_string(),
-            }
-        };
-        let base_url = format!("https://placeholder.invalid{}", base_dir);
-        let base = url::Url::parse(&base_url).unwrap();
-        base.join(url)
-    }).map_err(|e| {
-        ErrorInfo::new(ErrorCode::InternalError.code(), format!("Invalid pagination URL: {}", e))
-    })?;
+    let parsed = url::Url::parse(url)
+        .or_else(|_| {
+            let base_dir = if base_path.ends_with('/') {
+                base_path.to_string()
+            } else {
+                match base_path.rfind('/') {
+                    Some(idx) => base_path[..=idx].to_string(),
+                    None => "/".to_string(),
+                }
+            };
+            let base_url = format!("https://placeholder.invalid{}", base_dir);
+            let base = url::Url::parse(&base_url).unwrap();
+            base.join(url)
+        })
+        .map_err(|e| {
+            ErrorInfo::new(
+                ErrorCode::InternalError.code(),
+                format!("Invalid pagination URL: {}", e),
+            )
+        })?;
     let path = parsed.path().to_string();
-    let params: Vec<(String, String)> = parsed.query_pairs()
+    let params: Vec<(String, String)> = parsed
+        .query_pairs()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
     Ok((path, params))

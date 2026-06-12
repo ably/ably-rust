@@ -32,7 +32,11 @@ impl Realtime {
     }
 
     /// Test injection: a realtime client over a mock transport.
-    pub fn with_mock(options: &ClientOptions, transport: Arc<dyn Transport>) -> Result<Self> {
+    #[cfg_attr(not(test), allow(dead_code))] // test injection
+    pub(crate) fn with_mock(
+        options: &ClientOptions,
+        transport: Arc<dyn Transport>,
+    ) -> Result<Self> {
         Self::with_transport(options, transport)
     }
 

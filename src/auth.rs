@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
-use sha2::Sha256;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 
 use crate::error::{ErrorCode, ErrorInfo, Result};
 
@@ -22,10 +22,7 @@ impl Key {
     pub fn new(s: &str) -> Result<Self> {
         let parts: Vec<&str> = s.splitn(2, ':').collect();
         if parts.len() != 2 {
-            return Err(ErrorInfo::new(
-                ErrorCode::BadRequest.code(),
-                "Invalid key",
-            ));
+            return Err(ErrorInfo::new(ErrorCode::BadRequest.code(), "Invalid key"));
         }
         Ok(Self {
             name: parts[0].to_string(),
@@ -53,7 +50,7 @@ impl Key {
             None => {
                 let mut nonce_bytes = [0u8; 16];
                 rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce_bytes);
-                base64::encode(&nonce_bytes)
+                base64::encode(nonce_bytes)
             }
         };
 
@@ -70,7 +67,11 @@ impl Key {
             key_name: self.name.clone(),
             ttl: params.ttl,
             capability: params.capability.clone(),
-            client_id: if client_id.is_empty() { None } else { Some(client_id.to_string()) },
+            client_id: if client_id.is_empty() {
+                None
+            } else {
+                Some(client_id.to_string())
+            },
             timestamp: Some(timestamp_ms),
             nonce,
             mac: mac_b64,
@@ -130,7 +131,10 @@ impl<'a> Auth<'a> {
             return Some(cid.clone());
         }
         let state = self.rest.inner.auth_state.lock().unwrap();
-        state.cached_token.as_ref().and_then(|td| td.client_id.clone())
+        state
+            .cached_token
+            .as_ref()
+            .and_then(|td| td.client_id.clone())
     }
 
     /// RSA9: create a signed TokenRequest. Async because `queryTime` may
@@ -188,7 +192,14 @@ impl<'a> Auth<'a> {
         let cfg = self.rest.auth_config();
         // Use the provided params (incl. any explicit timestamp) for this
         // authorization; fall back to previously-saved params (RSA10e).
-        let saved = self.rest.inner.auth_state.lock().unwrap().saved_token_params.clone();
+        let saved = self
+            .rest
+            .inner
+            .auth_state
+            .lock()
+            .unwrap()
+            .saved_token_params
+            .clone();
         let effective = self.rest.effective_token_params(params.or(saved.as_ref()));
         let td = self.rest.acquire_token(&effective, &cfg).await?;
         self.rest.check_client_id_compat(&td)?; // RSA15
@@ -218,7 +229,10 @@ impl<'a> Auth<'a> {
 
         let path = format!("/keys/{}/revokeTokens", key.name);
         let body = self.rest.serialize_body(request)?;
-        let resp = self.rest.do_request("POST", &path, &[], &[], Some(body)).await?;
+        let resp = self
+            .rest
+            .do_request("POST", &path, &[], &[], Some(body))
+            .await?;
         // With X-Ably-Version >= 3 the server returns a BatchResult envelope
         // {successCount, failureCount, results}; a plain array is the legacy
         // (no version header) format, still accepted for robustness.
@@ -355,7 +369,10 @@ impl<'de> serde::Deserialize<'de> for TokenDetails {
 
 impl TokenDetails {
     pub fn token(s: String) -> Self {
-        Self { token: s, ..Default::default() }
+        Self {
+            token: s,
+            ..Default::default()
+        }
     }
 
     /// Whether this token is known to have expired by `now_ms` (RSA4b1).
@@ -371,12 +388,14 @@ impl TokenDetails {
         }
         // Only populate if we have at least expires or issued
         if self.expires.is_some() || self.issued.is_some() {
-            let expires = self.expires
-                .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms))
-                .unwrap_or_else(|| chrono::Utc::now());
-            let issued = self.issued
-                .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms))
-                .unwrap_or_else(|| chrono::Utc::now());
+            let expires = self
+                .expires
+                .and_then(chrono::DateTime::from_timestamp_millis)
+                .unwrap_or_else(chrono::Utc::now);
+            let issued = self
+                .issued
+                .and_then(chrono::DateTime::from_timestamp_millis)
+                .unwrap_or_else(chrono::Utc::now);
             let capability = self.capability.clone().unwrap_or_default();
             let client_id = self.client_id.clone();
             self.metadata = Some(TokenMetadata {
@@ -453,7 +472,10 @@ impl std::fmt::Debug for AuthOptions {
             .field("key", &self.key.as_ref().map(|_| "[REDACTED]"))
             .field("token", &self.token)
             .field("token_details", &self.token_details)
-            .field("auth_callback", &self.auth_callback.as_ref().map(|_| "<callback>"))
+            .field(
+                "auth_callback",
+                &self.auth_callback.as_ref().map(|_| "<callback>"),
+            )
             .field("auth_url", &self.auth_url)
             .field("method", &self.method)
             .field("headers", &self.headers)

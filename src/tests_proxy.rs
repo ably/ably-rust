@@ -85,7 +85,10 @@ async fn count_time_requests(session: &ProxySession) -> usize {
     log.iter()
         .filter(|e| {
             e["type"] == "http_request"
-                && e["path"].as_str().map(|p| p.contains("/time")).unwrap_or(false)
+                && e["path"]
+                    .as_str()
+                    .map(|p| p.contains("/time"))
+                    .unwrap_or(false)
         })
         .count()
 }
@@ -118,7 +121,10 @@ async fn rsc15l2_timeout_triggers_fallback() {
     .unwrap();
 
     // Succeeds via fallback retry after the first attempt times out
-    let result = client.time().await.expect("time() should succeed via fallback");
+    let result = client
+        .time()
+        .await
+        .expect("time() should succeed via fallback");
     assert!(result.timestamp_millis() > 0);
 
     assert!(
@@ -148,7 +154,10 @@ async fn rsc15l4_cloudfront_header_triggers_fallback() {
     .await;
 
     let client = proxied_client(app.full_access_key(), port, true);
-    let result = client.time().await.expect("time() should succeed via fallback");
+    let result = client
+        .time()
+        .await
+        .expect("time() should succeed via fallback");
     assert!(result.timestamp_millis() > 0);
 
     assert!(count_time_requests(&session).await >= 2);
@@ -199,7 +208,10 @@ async fn rsc15l_connection_drop_retried_on_fallback() {
     .await;
 
     let client = proxied_client(app.full_access_key(), port, true);
-    let result = client.time().await.expect("time() should succeed via fallback");
+    let result = client
+        .time()
+        .await
+        .expect("time() should succeed via fallback");
     assert!(result.timestamp_millis() > 0);
 
     assert!(count_time_requests(&session).await >= 2);
@@ -226,7 +238,10 @@ async fn rsc15l_http_5xx_json_error_parsed() {
 
     // No fallback hosts: endpoint "localhost" disables fallback (REC2c2)
     let client = proxied_client(app.full_access_key(), port, false);
-    let err = client.time().await.expect_err("503 with no fallbacks must fail");
+    let err = client
+        .time()
+        .await
+        .expect_err("503 with no fallbacks must fail");
     assert_eq!(err.code, Some(50300));
     assert_eq!(err.status_code, Some(503));
     assert!(
@@ -255,7 +270,10 @@ async fn rsc15l_http_5xx_without_error_body_synthesized() {
     .await;
 
     let client = proxied_client(app.full_access_key(), port, false);
-    let err = client.time().await.expect_err("503 with no fallbacks must fail");
+    let err = client
+        .time()
+        .await
+        .expect_err("503 with no fallbacks must fail");
     assert_eq!(err.status_code, Some(503));
     let _ = session.close().await;
 }
@@ -365,9 +383,16 @@ async fn rsl1k4_idempotent_publish_retry_dedup() {
         .filter(|e| {
             e["type"] == "http_request"
                 && e["method"] == "POST"
-                && e["path"].as_str().map(|p| p.contains("/channels/")).unwrap_or(false)
+                && e["path"]
+                    .as_str()
+                    .map(|p| p.contains("/channels/"))
+                    .unwrap_or(false)
         })
         .count();
-    assert!(posts >= 2, "expected the publish to be retried, got {} POSTs", posts);
+    assert!(
+        posts >= 2,
+        "expected the publish to be retried, got {} POSTs",
+        posts
+    );
     let _ = session.close().await;
 }

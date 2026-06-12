@@ -30,17 +30,13 @@ pub struct Stats {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub enum Unit {
+    #[default]
     Minute,
     Hour,
     Day,
     Month,
-}
-
-impl Default for Unit {
-    fn default() -> Self {
-        Unit::Minute
-    }
 }
 
 #[derive(Debug, Default, Deserialize)]

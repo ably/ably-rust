@@ -8,7 +8,6 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -20,8 +19,7 @@ const DEFAULT_CONTROL_PORT: u16 = 9100;
 
 static NEXT_PORT: AtomicU16 = AtomicU16::new(19100);
 static PROXY_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
-static PROXY_ENSURED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static PROXY_ENSURED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// SHA256 checksums for each platform binary.
 fn checksum(asset: &str) -> Option<&'static str> {
@@ -148,7 +146,11 @@ async fn download_proxy() -> Result<(), Box<dyn std::error::Error>> {
     }
     let _ = std::fs::remove_file(&tarball_path);
 
-    eprintln!("uts-proxy {} ready at {}", PROXY_VERSION, bin_path.display());
+    eprintln!(
+        "uts-proxy {} ready at {}",
+        PROXY_VERSION,
+        bin_path.display()
+    );
     Ok(())
 }
 
@@ -237,7 +239,9 @@ pub struct Rule {
 /// A proxy session that mediates between the SDK and Ably sandbox.
 pub struct ProxySession {
     pub session_id: String,
+    #[allow(dead_code)]
     pub proxy_host: String,
+    #[allow(dead_code)]
     pub proxy_port: u16,
     proxy_url: String,
     http_client: reqwest::Client,
@@ -280,7 +284,7 @@ impl ProxySession {
         };
 
         let resp = http_client
-            .post(&format!("{}/sessions", proxy_url))
+            .post(format!("{}/sessions", proxy_url))
             .json(&body)
             .send()
             .await?;
@@ -303,6 +307,7 @@ impl ProxySession {
     }
 
     /// Add rules to the session.
+    #[allow(dead_code)] // uts-proxy API surface
     pub async fn add_rules(
         &self,
         rules: Vec<Rule>,
@@ -315,7 +320,7 @@ impl ProxySession {
 
         let resp = self
             .http_client
-            .post(&format!(
+            .post(format!(
                 "{}/sessions/{}/rules",
                 self.proxy_url, self.session_id
             ))
@@ -332,13 +337,14 @@ impl ProxySession {
     }
 
     /// Trigger an imperative action (disconnect, close, inject, etc.).
+    #[allow(dead_code)] // uts-proxy API surface
     pub async fn trigger_action(
         &self,
         action: serde_json::Value,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let resp = self
             .http_client
-            .post(&format!(
+            .post(format!(
                 "{}/sessions/{}/actions",
                 self.proxy_url, self.session_id
             ))
@@ -358,7 +364,7 @@ impl ProxySession {
     pub async fn get_log(&self) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
         let resp = self
             .http_client
-            .get(&format!(
+            .get(format!(
                 "{}/sessions/{}/log",
                 self.proxy_url, self.session_id
             ))
@@ -383,10 +389,7 @@ impl ProxySession {
     pub async fn close(&self) -> Result<(), Box<dyn std::error::Error>> {
         let resp = self
             .http_client
-            .delete(&format!(
-                "{}/sessions/{}",
-                self.proxy_url, self.session_id
-            ))
+            .delete(format!("{}/sessions/{}", self.proxy_url, self.session_id))
             .send()
             .await?;
 

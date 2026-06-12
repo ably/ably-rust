@@ -1,18 +1,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::crypto::CipherParams;
 use crate::error::{ErrorInfo, Result};
-use crate::http::{PaginatedRequestBuilder, PaginatedResult};
-use crate::protocol::{
-    ChannelEvent, ChannelMode, ChannelState, ChannelStateChange,
-};
+use crate::http::PaginatedResult;
+use crate::protocol::{ChannelEvent, ChannelMode, ChannelState, ChannelStateChange};
 use crate::rest::{
-    Annotation, Message, MessageOperation, PresenceAction, PresenceMessage,
-    UpdateDeleteResult,
+    Annotation, Message, MessageOperation, PresenceAction, PresenceMessage, UpdateDeleteResult,
 };
 
 // --- Channels collection ---
@@ -134,8 +131,10 @@ impl Channels {
             if !params.is_empty() {
                 let mut kv: Vec<_> = params.iter().collect();
                 kv.sort();
-                let query: Vec<String> =
-                    kv.into_iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+                let query: Vec<String> = kv
+                    .into_iter()
+                    .map(|(k, v)| format!("{}={}", k, v))
+                    .collect();
                 qualifier.push('?');
                 qualifier.push_str(&query.join("&"));
             }
@@ -217,10 +216,7 @@ pub struct MessageFilter {
 
 impl MessageFilter {
     pub(crate) fn matches(&self, msg: &Message) -> bool {
-        let msg_ref = msg
-            .extras
-            .as_ref()
-            .and_then(|e| e.get("ref"));
+        let msg_ref = msg.extras.as_ref().and_then(|e| e.get("ref"));
         if let Some(name) = &self.name {
             if msg.name.as_deref() != Some(name.as_str()) {
                 return false;
@@ -244,7 +240,9 @@ impl MessageFilter {
             }
         }
         if let Some(ts) = &self.ref_timeserial {
-            if msg_ref.and_then(|r| r.get("timeserial")).and_then(|v| v.as_str())
+            if msg_ref
+                .and_then(|r| r.get("timeserial"))
+                .and_then(|v| v.as_str())
                 != Some(ts.as_str())
             {
                 return false;
@@ -591,7 +589,9 @@ impl RealtimeChannel {
         }));
     }
 
-    pub fn annotations(&self) -> RealtimeAnnotations<'_> { RealtimeAnnotations { channel: self } }
+    pub fn annotations(&self) -> RealtimeAnnotations<'_> {
+        RealtimeAnnotations { channel: self }
+    }
 
     /// RTL9: the channel's presence operations.
     pub fn presence(&self) -> RealtimePresence {
@@ -810,12 +810,14 @@ impl RealtimePresence {
     ) -> PresenceSubscriptionId {
         let id: u64 = rand::random();
         let (sender, mut receiver) = mpsc::unbounded_channel();
-        let _ = self.input_tx.send(LoopInput::Cmd(Command::PresenceSubscribe {
-            name: self.name.clone(),
-            id,
-            actions,
-            sender,
-        }));
+        let _ = self
+            .input_tx
+            .send(LoopInput::Cmd(Command::PresenceSubscribe {
+                name: self.name.clone(),
+                id,
+                actions,
+                sender,
+            }));
         // RTP6d: subscribe implicitly attaches (RTP6e: unless disabled)
         self.maybe_implicit_attach();
         tokio::spawn(async move {
@@ -854,29 +856,35 @@ impl RealtimePresence {
 
     /// RTP7a: remove this listener.
     pub fn unsubscribe(&self, id: PresenceSubscriptionId) {
-        let _ = self.input_tx.send(LoopInput::Cmd(Command::PresenceUnsubscribe {
-            name: self.name.clone(),
-            id: Some(id.0),
-            action: None,
-        }));
+        let _ = self
+            .input_tx
+            .send(LoopInput::Cmd(Command::PresenceUnsubscribe {
+                name: self.name.clone(),
+                id: Some(id.0),
+                action: None,
+            }));
     }
 
     /// RTP7b: remove this listener's registration for one action.
     pub fn unsubscribe_action(&self, id: PresenceSubscriptionId, action: PresenceAction) {
-        let _ = self.input_tx.send(LoopInput::Cmd(Command::PresenceUnsubscribe {
-            name: self.name.clone(),
-            id: Some(id.0),
-            action: Some(action),
-        }));
+        let _ = self
+            .input_tx
+            .send(LoopInput::Cmd(Command::PresenceUnsubscribe {
+                name: self.name.clone(),
+                id: Some(id.0),
+                action: Some(action),
+            }));
     }
 
     /// RTP7c: remove every presence listener.
     pub fn unsubscribe_all(&self) {
-        let _ = self.input_tx.send(LoopInput::Cmd(Command::PresenceUnsubscribe {
-            name: self.name.clone(),
-            id: None,
-            action: None,
-        }));
+        let _ = self
+            .input_tx
+            .send(LoopInput::Cmd(Command::PresenceUnsubscribe {
+                name: self.name.clone(),
+                id: None,
+                action: None,
+            }));
     }
 
     /// RTP8j/RTP14/RTP15f: resolve and validate the clientId for an op.
@@ -1036,13 +1044,21 @@ impl<'a> RealtimeAnnotations<'a> {
 
     /// RTAN1: publish an annotation (ANNOTATION_CREATE) for a message.
     pub async fn publish(&self, msg_serial: &str, annotation: &Annotation) -> Result<()> {
-        let wire = self.validated(msg_serial, annotation, crate::rest::AnnotationAction::Create)?;
+        let wire = self.validated(
+            msg_serial,
+            annotation,
+            crate::rest::AnnotationAction::Create,
+        )?;
         self.op(wire).await
     }
 
     /// RTAN2: delete an annotation (ANNOTATION_DELETE).
     pub async fn delete(&self, msg_serial: &str, annotation: &Annotation) -> Result<()> {
-        let wire = self.validated(msg_serial, annotation, crate::rest::AnnotationAction::Delete)?;
+        let wire = self.validated(
+            msg_serial,
+            annotation,
+            crate::rest::AnnotationAction::Delete,
+        )?;
         self.op(wire).await
     }
 
@@ -1065,12 +1081,15 @@ impl<'a> RealtimeAnnotations<'a> {
     ) -> SubscriptionId {
         let id: u64 = rand::random();
         let (sender, mut receiver) = mpsc::unbounded_channel();
-        let _ = self.channel.input_tx.send(LoopInput::Cmd(Command::AnnotationSubscribe {
-            name: self.channel.name.clone(),
-            id,
-            type_filter,
-            sender,
-        }));
+        let _ = self
+            .channel
+            .input_tx
+            .send(LoopInput::Cmd(Command::AnnotationSubscribe {
+                name: self.channel.name.clone(),
+                id,
+                type_filter,
+                sender,
+            }));
         // RTAN4e: warn when subscribing on a channel attached without the
         // ANNOTATION_SUBSCRIBE mode; RTAN4e1: silent when not yet attached
         let snapshot = self.channel.snapshot();
@@ -1116,18 +1135,24 @@ impl<'a> RealtimeAnnotations<'a> {
 
     /// RTAN5a: remove this listener.
     pub fn unsubscribe(&self, id: SubscriptionId) {
-        let _ = self.channel.input_tx.send(LoopInput::Cmd(Command::AnnotationUnsubscribe {
-            name: self.channel.name.clone(),
-            id: Some(id.0),
-        }));
+        let _ = self
+            .channel
+            .input_tx
+            .send(LoopInput::Cmd(Command::AnnotationUnsubscribe {
+                name: self.channel.name.clone(),
+                id: Some(id.0),
+            }));
     }
 
     /// RTAN5: remove every annotation listener.
     pub fn unsubscribe_all(&self) {
-        let _ = self.channel.input_tx.send(LoopInput::Cmd(Command::AnnotationUnsubscribe {
-            name: self.channel.name.clone(),
-            id: None,
-        }));
+        let _ = self
+            .channel
+            .input_tx
+            .send(LoopInput::Cmd(Command::AnnotationUnsubscribe {
+                name: self.channel.name.clone(),
+                id: None,
+            }));
     }
 }
 
