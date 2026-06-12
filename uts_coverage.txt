@@ -28,19 +28,19 @@ realtime/unit/RSA4e/rest-callback-error-40170-0 => rsa4e_rest_callback_error_pro
 realtime/unit/RSA4f/callback-invalid-type-format-0 !! unrepresentable: the typed Rust AuthCallback cannot return a wrong-typed token
 realtime/unit/RSA4f/callback-oversized-token-format-1 => rsa4f_oversized_token_disconnects
 realtime/unit/RSF1/message-unrecognised-attrs-0 => rtf1_rsf1_unrecognised_attributes_ignored
-realtime/unit/RTAN1a/encodes-data-json-2 !! stage 5.8 (annotations)
-realtime/unit/RTAN1a/publish-sends-annotation-0 !! stage 5.8 (annotations)
-realtime/unit/RTAN1a/validates-type-required-1 !! stage 5.8 (annotations)
-realtime/unit/RTAN1b/publish-channel-state-0 !! stage 5.8 (annotations)
-realtime/unit/RTAN1d/publish-ack-nack-0 !! stage 5.8 (annotations)
-realtime/unit/RTAN2a/delete-sends-annotation-0 !! stage 5.8 (annotations)
-realtime/unit/RTAN4a/subscribe-delivers-annotations-0 !! stage 5.8 (annotations)
-realtime/unit/RTAN4c/subscribe-type-filter-0 !! stage 5.8 (annotations)
-realtime/unit/RTAN4d/subscribe-implicit-attach-0 !! stage 5.8 (annotations)
-realtime/unit/RTAN4e/subscribe-warns-no-mode-0 !! stage 5.8 (annotations)
-realtime/unit/RTAN4e1/no-warn-unattached-0 !! stage 5.8 (annotations)
-realtime/unit/RTAN5a/unsubscribe-removes-listeners-0 !! stage 5.8 (annotations)
-realtime/unit/RTAN5a/unsubscribe-type-filter-1 !! stage 5.8 (annotations)
+realtime/unit/RTAN1a/encodes-data-json-2 => rtan1a_publish_validates_type, rtan1a_rtan1d_annotation_publish_wire_and_ack
+realtime/unit/RTAN1a/publish-sends-annotation-0 => rtan1a_rtan1d_annotation_publish_wire_and_ack
+realtime/unit/RTAN1a/validates-type-required-1 => rtan1a_publish_validates_type
+realtime/unit/RTAN1b/publish-channel-state-0 => rtan1b_annotation_publish_state_conditions
+realtime/unit/RTAN1d/publish-ack-nack-0 => rtan1a_rtan1d_annotation_publish_wire_and_ack
+realtime/unit/RTAN2a/delete-sends-annotation-0 => rtan2a_rtan1d_annotation_delete_and_nack
+realtime/unit/RTAN4a/subscribe-delivers-annotations-0 => rtan4a_subscribe_delivers_annotations
+realtime/unit/RTAN4c/subscribe-type-filter-0 => rtan4c_subscribe_type_filter
+realtime/unit/RTAN4d/subscribe-implicit-attach-0 => rtan4d_subscribe_triggers_implicit_attach
+realtime/unit/RTAN4e/subscribe-warns-no-mode-0 => rtan4e_annotation_subscribe_without_mode_warning
+realtime/unit/RTAN4e1/no-warn-unattached-0 => rtan4e1_skip_warning_when_attach_on_subscribe_false
+realtime/unit/RTAN5a/unsubscribe-removes-listeners-0 => rtan5a_unsubscribe_removes_listener
+realtime/unit/RTAN5a/unsubscribe-type-filter-1 => rtan5a_unsubscribe_with_type_filter
 realtime/unit/RTB1/disconnected-retry-delay-0 => rtb1a_backoff_coefficient_sequence, rtb1b_jitter_coefficient_range, rtn14d_retries_after_recoverable_failure
 realtime/unit/RTB1/suspended-channel-retry-delay-1 => rtl13b_failed_reattach_suspends_and_retries, rtb1a_backoff_coefficient_sequence
 realtime/unit/RTB1a/backoff-coefficient-sequence-0 => rtb1a_backoff_coefficient_sequence
@@ -135,7 +135,7 @@ realtime/unit/RTL25a/past-state-does-not-resolve-1 => rtl25a_when_state_fires_im
 realtime/unit/RTL25a/resolves-immediately-current-0 => rtl25a_when_state_fires_immediately
 realtime/unit/RTL25b/fires-once-only-1 => rtl25b_when_state_fires_only_once
 realtime/unit/RTL25b/waits-for-state-change-0 => rtl25b_when_state_waits_for_transition
-realtime/unit/RTL26/annotations-attribute-type-0 !! stage 5.8 (annotations)
+realtime/unit/RTL26/annotations-attribute-type-0 => rtl26_channel_annotations_accessor
 realtime/unit/RTL28/identical-to-rest-0 => rtl28_get_message_delegates_to_rest
 realtime/unit/RTL2a/state-change-events-emitted-0 => rtl2a_state_change_events_emitted
 realtime/unit/RTL2b/channel-state-attribute-0 => rtl2b_channel_initial_state_depth

@@ -632,3 +632,28 @@ This pass added:
   hangs (~22s).
 - Next: 5.8 annotations, then Phase 6 final verification.
 
+### 5.8 Annotations — DONE (2026-06-12)
+- Realtime annotation ops over the wire: ANNOTATION ProtocolMessage with one
+  Annotation (action ANNOTATION_CREATE/DELETE per RTAN1c/RTAN2a, messageSerial
+  set TAN2j), resolved via the shared ACK/NACK pipeline (RTAN1d), gated by
+  the message-publish state table (RTAN1b); annotation type required
+  (RTAN1a, 40003 — implementation-defined per RSAN1a3). Inbound ANNOTATION
+  dispatching to (type-filtered) subscribers with TM2-style id/timestamp
+  inheritance (RTAN4a/c); RTAN4d implicit attach; RTAN4e missing-mode
+  warning at Major level (RTAN4e1 silent when unattached). get via REST.
+  New ChannelMode variants AnnotationPublish/AnnotationSubscribe with their
+  RTL4l/RTL4m flag mappings (1<<20 / 1<<21).
+- Tests: 4 UTS-derived (wire shape + encode, delete + NACK, subscribers +
+  filters + implicit attach, state conditions). Ported sweep: 10 adopted
+  (rtan1a code adapted to 40003 per UTS "implementation-defined"; rtan4e
+  given the Major log level), 7 superseded/deleted (5 compile-shells that
+  hung awaiting ACKs they never sent, 2 empty ignored shells).
+- Matrix: channel_annotations.md converted (909 mapped / 56 excluded — the
+  56 are recorded deferrals: push/LocalDevice, RTN16 recovery, network
+  events, delta/vcdiff, JWT, and API-unrepresentable cases). Both ratchets
+  green.
+- TEST STATUS: 1287 pass / 0 fail / 61 ignored — THE FULL SUITE IS GREEN.
+  Every realtime stage (5.1–5.8) is complete.
+- Next: Phase 6 final verification (clippy, fmt, ignored-test audit,
+  protocol-variant matrix, serial integration + proxy runs).
+

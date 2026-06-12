@@ -244,32 +244,6 @@ use crate::crypto::CipherParams;
     }
 
 
-    #[tokio::test]
-    async fn rtan1a_publish_sends_annotation() {
-        use crate::protocol::{action, ProtocolMessage};
-
-        let (_, mock, conn, channel) = setup_attached_channel("test-rtan1a", None).await;
-
-        let ann = crate::rest::Annotation {
-            annotation_type: Some("reaction".into()),
-            name: None,
-            action: None,
-            client_id: None,
-            message_serial: Some("msg-serial-1".into()),
-            data: Data::JSON(json!({"emoji": "👍"})),
-            serial: None,
-            version: None,
-            timestamp: None,
-            encoding: None,
-            id: None,
-            extras: None,
-            ..Default::default()
-        };
-
-        // Call publish directly (implementations are stubs, so this will
-        // panic at runtime with todo!(), but we only need compilation here)
-        let _result = channel.annotations().publish("msg-serial-1", &ann).await;
-    }
 
 
     #[tokio::test]
@@ -293,68 +267,14 @@ use crate::crypto::CipherParams;
         };
         let result = channel.annotations().publish("msg-serial", &ann).await;
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().code, Some(40000));
+        assert_eq!(result.unwrap_err().code, Some(40003)); // implementation-defined per RSAN1a3
     }
 
 
-    #[tokio::test]
-    #[ignore = "requires RealtimeChannel::set_state which is not exposed"]
-    async fn rtan1b_publish_state_conditions() {
-        // This test needs to set channel state to Failed, but set_state is not
-        // available in the public API. Skipping until the API supports this.
-    }
 
 
-    #[tokio::test]
-    async fn rtan1d_publish_ack_nack() {
-        use crate::protocol::{action, ProtocolMessage}; use crate::error::ErrorInfo;
-
-        let (_, mock, conn, channel) = setup_attached_channel("test-rtan1d", None).await;
-
-        let ann = crate::rest::Annotation {
-            annotation_type: Some("reaction".into()),
-            name: None,
-            action: None,
-            client_id: None,
-            message_serial: None,
-            data: Data::None,
-            serial: None,
-            version: None,
-            timestamp: None,
-            encoding: None,
-            id: None,
-            extras: None,
-            ..Default::default()
-        };
-
-        let _result = channel.annotations().publish("msg-serial", &ann).await;
-    }
 
 
-    #[tokio::test]
-    async fn rtan2a_delete_sends_annotation() {
-        use crate::protocol::{action, ProtocolMessage};
-
-        let (_, _mock, _conn, channel) = setup_attached_channel("test-rtan2a", None).await;
-
-        let ann = crate::rest::Annotation {
-            annotation_type: Some("reaction".into()),
-            name: None,
-            action: None,
-            client_id: None,
-            message_serial: None,
-            data: Data::None,
-            serial: None,
-            version: None,
-            timestamp: None,
-            encoding: None,
-            id: None,
-            extras: None,
-            ..Default::default()
-        };
-
-        let _result = channel.annotations().delete("msg-serial", &ann).await;
-    }
 
 
     #[tokio::test]
@@ -490,6 +410,7 @@ use crate::crypto::CipherParams;
             .disconnected_retry_timeout(std::time::Duration::from_millis(50))
             .realtime_request_timeout(std::time::Duration::from_millis(200))
             .fallback_hosts(vec![])
+            .log_level(crate::options::LogLevel::Major)
             .log_handler(move |_level, msg| {
                 if msg.contains("ANNOTATION_SUBSCRIBE") {
                     warned_c.store(true, Ordering::SeqCst);
@@ -543,6 +464,7 @@ use crate::crypto::CipherParams;
             .disconnected_retry_timeout(std::time::Duration::from_millis(50))
             .realtime_request_timeout(std::time::Duration::from_millis(200))
             .fallback_hosts(vec![])
+            .log_level(crate::options::LogLevel::Major)
             .log_handler(move |_level, msg| {
                 if msg.contains("ANNOTATION_SUBSCRIBE") {
                     warned_c.store(true, Ordering::SeqCst);
@@ -565,58 +487,10 @@ use crate::crypto::CipherParams;
 
     // -- RTAN1a: publish encodes JSON data --
 
-    #[tokio::test]
-    async fn rtan1a_publish_encodes_json_data() {
-        use crate::protocol::{action, ProtocolMessage};
-
-        let (_, mock, _conn, channel) = setup_attached_channel("test-rtan1a-json", None).await;
-
-        let ann = crate::rest::Annotation {
-            annotation_type: Some("reaction".into()),
-            name: None,
-            action: None,
-            client_id: None,
-            message_serial: Some("msg-1".into()),
-            data: Data::JSON(json!({"emoji": "fire", "count": 3})),
-            serial: None,
-            version: None,
-            timestamp: None,
-            encoding: None,
-            id: None,
-            extras: None,
-            ..Default::default()
-        };
-
-        let _result = channel.annotations().publish("msg-1", &ann).await;
-    }
 
 
     // -- RTAN1d: publish rejects on nack --
 
-    #[tokio::test]
-    async fn rtan1d_publish_rejects_on_nack() {
-        use crate::protocol::{action, ProtocolMessage}; use crate::error::ErrorInfo;
-
-        let (_, _mock, _conn, channel) = setup_attached_channel("test-rtan1d-nack", None).await;
-
-        let ann = crate::rest::Annotation {
-            annotation_type: Some("reaction".into()),
-            name: None,
-            action: None,
-            client_id: None,
-            message_serial: None,
-            data: Data::None,
-            serial: None,
-            version: None,
-            timestamp: None,
-            encoding: None,
-            id: None,
-            extras: None,
-            ..Default::default()
-        };
-
-        let _result = channel.annotations().publish("msg-serial", &ann).await;
-    }
 
 
     // -- RTAN4c: subscribe with type filter --
@@ -727,9 +601,4 @@ use crate::crypto::CipherParams;
     }
 
 
-    #[tokio::test]
-    #[ignore = "annotation subscribe mode not implemented"]
-    async fn rtan4e_annotation_subscribe_mode_warning() -> Result<()> {
-        Ok(())
-    }
 

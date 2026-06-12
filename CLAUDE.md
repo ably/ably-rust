@@ -10,9 +10,9 @@ These are the same value. The versioning scheme changed from decimal (e.g. "1.2"
 
 ## Test baseline
 
-1274 pass / 14 fail / 63 ignored (post stage 5.7, 2026-06-12). ALL failures are
-unimplemented realtime stubs in tests_realtime_* files — every test in tests_rest_*
-and tests_proxy passes. Integration: 62 pass / 15 ignored against the live nonprod
+1287 pass / 0 fail / 61 ignored (post stage 5.8, 2026-06-12). THE SUITE IS FULLY
+GREEN — any failure after a change is a regression. Every ignore carries an
+explicit recorded-deferral reason. Integration: 62 pass / 15 ignored against the live nonprod
 sandbox; proxy: 8/8 via uts-proxy. Run integration/proxy with --test-threads=1
 (shared sandbox app; flaky in parallel). If any tests_rest_*/tests_proxy test fails
 after a change, something regressed.

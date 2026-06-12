@@ -995,20 +995,140 @@ pub struct RealtimeAnnotations<'a> {
 }
 
 impl<'a> RealtimeAnnotations<'a> {
-    pub async fn publish(&self, _msg_serial: &str, _annotation: &Annotation) -> Result<()> { todo!() }
-    pub async fn delete(&self, _msg_serial: &str, _annotation: &Annotation) -> Result<()> { todo!() }
-    pub async fn get(&self, _msg_serial: &str) -> Result<PaginatedResult<Annotation>> { todo!() }
+    /// RTAN1a: the annotation type is required.
+    fn validated(
+        &self,
+        msg_serial: &str,
+        annotation: &Annotation,
+        action: crate::rest::AnnotationAction,
+    ) -> Result<Annotation> {
+        if annotation
+            .annotation_type
+            .as_deref()
+            .unwrap_or("")
+            .is_empty()
+        {
+            return Err(ErrorInfo::with_status(
+                crate::error::ErrorCode::InvalidParameterValue.code(),
+                400,
+                "Annotation type is required",
+            ));
+        }
+        let mut wire = annotation.clone();
+        wire.action = Some(action);
+        // RSAN1c2/TAN2j: the target message serial
+        wire.message_serial = Some(msg_serial.to_string());
+        Ok(wire)
+    }
+
+    async fn op(&self, annotation: Annotation) -> Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.channel
+            .input_tx
+            .send(LoopInput::Cmd(Command::AnnotationOp {
+                name: self.channel.name.clone(),
+                annotation,
+                reply,
+            }))
+            .map_err(|_| closed_loop_error())?;
+        rx.await.map_err(|_| closed_loop_error())?
+    }
+
+    /// RTAN1: publish an annotation (ANNOTATION_CREATE) for a message.
+    pub async fn publish(&self, msg_serial: &str, annotation: &Annotation) -> Result<()> {
+        let wire = self.validated(msg_serial, annotation, crate::rest::AnnotationAction::Create)?;
+        self.op(wire).await
+    }
+
+    /// RTAN2: delete an annotation (ANNOTATION_DELETE).
+    pub async fn delete(&self, msg_serial: &str, annotation: &Annotation) -> Result<()> {
+        let wire = self.validated(msg_serial, annotation, crate::rest::AnnotationAction::Delete)?;
+        self.op(wire).await
+    }
+
+    /// RTAN3-shaped: read annotations via REST.
+    pub async fn get(&self, msg_serial: &str) -> Result<PaginatedResult<Annotation>> {
+        self.channel
+            .rest
+            .channels()
+            .get(self.channel.name.clone())
+            .annotations()
+            .get(msg_serial)
+            .send()
+            .await
+    }
+
+    fn register(
+        &self,
+        type_filter: Option<String>,
+        callback: impl Fn(Annotation) + Send + Sync + 'static,
+    ) -> SubscriptionId {
+        let id: u64 = rand::random();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let _ = self.channel.input_tx.send(LoopInput::Cmd(Command::AnnotationSubscribe {
+            name: self.channel.name.clone(),
+            id,
+            type_filter,
+            sender,
+        }));
+        // RTAN4e: warn when subscribing on a channel attached without the
+        // ANNOTATION_SUBSCRIBE mode; RTAN4e1: silent when not yet attached
+        let snapshot = self.channel.snapshot();
+        if snapshot.state == ChannelState::Attached {
+            let has_mode = snapshot
+                .modes
+                .as_ref()
+                .map(|m| m.contains(&crate::protocol::ChannelMode::AnnotationSubscribe))
+                .unwrap_or(false);
+            if !has_mode {
+                self.channel.rest.inner.opts.log(
+                    crate::options::LogLevel::Major,
+                    "Warning: subscribing to annotations on a channel attached without the ANNOTATION_SUBSCRIBE mode; no annotations will be delivered",
+                );
+            }
+        }
+        // RTAN4d: implicit attach per attachOnSubscribe
+        self.channel.maybe_implicit_attach();
+        tokio::spawn(async move {
+            while let Some(ann) = receiver.recv().await {
+                callback(ann);
+            }
+        });
+        SubscriptionId(id)
+    }
+
+    /// RTAN4a: subscribe to all annotations.
     pub fn subscribe(
         &self,
-        _callback: impl Fn(Annotation) + Send + Sync + 'static,
-    ) -> SubscriptionId { todo!() }
+        callback: impl Fn(Annotation) + Send + Sync + 'static,
+    ) -> SubscriptionId {
+        self.register(None, callback)
+    }
+
+    /// RTAN4c: subscribe to one annotation type.
     pub fn subscribe_with_type(
         &self,
-        _type_filter: &str,
-        _callback: impl Fn(Annotation) + Send + Sync + 'static,
-    ) -> SubscriptionId { todo!() }
-    pub fn unsubscribe(&self, _id: SubscriptionId) { todo!() }
-    pub fn unsubscribe_all(&self) { todo!() }
+        type_filter: &str,
+        callback: impl Fn(Annotation) + Send + Sync + 'static,
+    ) -> SubscriptionId {
+        self.register(Some(type_filter.to_string()), callback)
+    }
+
+    /// RTAN5a: remove this listener.
+    pub fn unsubscribe(&self, id: SubscriptionId) {
+        let _ = self.channel.input_tx.send(LoopInput::Cmd(Command::AnnotationUnsubscribe {
+            name: self.channel.name.clone(),
+            id: Some(id.0),
+        }));
+    }
+
+    /// RTAN5: remove every annotation listener.
+    pub fn unsubscribe_all(&self) {
+        let _ = self.channel.input_tx.send(LoopInput::Cmd(Command::AnnotationUnsubscribe {
+            name: self.channel.name.clone(),
+            id: None,
+        }));
+    }
 }
 
 pub(crate) fn options_spec(options: &RealtimeChannelOptions) -> ChannelOptionsSpec {

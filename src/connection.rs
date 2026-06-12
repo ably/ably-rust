@@ -147,6 +147,21 @@ pub(crate) enum Command {
     /// RTP17e (internal): a failed automatic re-entry becomes a channel
     /// UPDATE event carrying the error.
     PresenceReentryFailed { name: String, error: ErrorInfo },
+    /// RTAN1/RTAN2: an annotation publish or delete; resolves via ACK/NACK.
+    AnnotationOp {
+        name: String,
+        annotation: crate::rest::Annotation,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// RTAN4: register an annotation subscriber.
+    AnnotationSubscribe {
+        name: String,
+        id: u64,
+        type_filter: Option<String>,
+        sender: mpsc::UnboundedSender<crate::rest::Annotation>,
+    },
+    /// RTAN5: remove annotation subscriber(s).
+    AnnotationUnsubscribe { name: String, id: Option<u64> },
 }
 
 /// RTL7/RTL22: what a subscriber wants delivered.
@@ -290,6 +305,8 @@ struct ChannelCtx {
     subscribers: Vec<Subscriber>,
     /// RTP: the presence engine (DESIGN.md §9).
     presence: PresenceCtx,
+    /// RTAN4: annotation subscribers.
+    annotation_subscribers: Vec<AnnotationSubscriber>,
     snapshot_tx: watch::Sender<ChannelSnapshot>,
     events_tx: broadcast::Sender<ChannelStateChange>,
 }
@@ -315,6 +332,12 @@ struct PresenceCtx {
     pending_get: Vec<DeferredPresenceGet>,
     /// RTP16b: ops queued while the channel is ATTACHING.
     queued_ops: Vec<QueuedPresenceOp>,
+}
+
+struct AnnotationSubscriber {
+    id: u64,
+    type_filter: Option<String>,
+    sender: mpsc::UnboundedSender<crate::rest::Annotation>,
 }
 
 struct PresenceSubscriber {
@@ -989,6 +1012,110 @@ impl ConnectionCtx {
         });
     }
 
+    /// RTAN1b: annotation ops share the message-publish state table; the
+    /// wire shape is an ANNOTATION ProtocolMessage resolved via ACK/NACK
+    /// (RTAN1d).
+    fn handle_annotation_op(
+        &mut self,
+        name: String,
+        annotation: crate::rest::Annotation,
+        reply: oneshot::Sender<Result<()>>,
+    ) {
+        // RTL6c4-shaped channel gate
+        if let Some(ch) = self.channels.get(&name) {
+            if matches!(ch.state, ChannelState::Suspended | ChannelState::Failed) {
+                let _ = reply.send(Err(ch.error_reason.clone().unwrap_or_else(|| {
+                    ErrorInfo::new(
+                        ErrorCode::ChannelOperationFailedInvalidChannelState.code(),
+                        format!("Cannot publish an annotation on a {:?} channel", ch.state),
+                    )
+                })));
+                return;
+            }
+        }
+        if self.state != ConnectionState::Connected {
+            let _ = reply.send(Err(ErrorInfo::new(
+                ErrorCode::Disconnected.code(),
+                format!("Cannot publish an annotation in connection state {:?}", self.state),
+            )));
+            return;
+        }
+        let wire = match serde_json::to_value(&annotation) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = reply.send(Err(e.into()));
+                return;
+            }
+        };
+        let serial = self.msg_serial;
+        self.msg_serial += 1;
+        let mut pm = ProtocolMessage::new(action::ANNOTATION);
+        pm.channel = Some(name.clone());
+        pm.msg_serial = Some(serial);
+        pm.annotations = Some(serde_json::Value::Array(vec![wire]));
+        self.send_protocol(pm);
+        let (ack_reply, ack_rx) = oneshot::channel::<Result<crate::rest::PublishResult>>();
+        self.pending_publishes.push(PendingPublish {
+            msg_serial: serial,
+            channel: name,
+            wire_messages: Vec::new(),
+            params: None,
+            reply: ack_reply,
+        });
+        tokio::spawn(async move {
+            let outcome = match ack_rx.await {
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(ErrorInfo::new(
+                    ErrorCode::Disconnected.code(),
+                    "Connection loop dropped the annotation op",
+                )),
+            };
+            let _ = reply.send(outcome);
+        });
+    }
+
+    /// RTAN4: inbound ANNOTATION — decode entries and dispatch to matching
+    /// subscribers (RTAN4c type filters).
+    fn handle_annotation_action(&mut self, pm: ProtocolMessage) {
+        self.update_channel_serial(&pm);
+        let Some(name) = pm.channel.clone() else { return };
+        let Some(ch) = self.channels.get_mut(&name) else { return };
+        if ch.state != ChannelState::Attached {
+            return;
+        }
+        let entries = pm
+            .annotations
+            .as_ref()
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for (index, value) in entries.into_iter().enumerate() {
+            let Ok(mut ann) = serde_json::from_value::<crate::rest::Annotation>(value) else {
+                continue;
+            };
+            if ann.id.is_none() {
+                if let Some(pm_id) = &pm.id {
+                    ann.id = Some(format!("{}:{}", pm_id, index));
+                }
+            }
+            if ann.timestamp.is_none() {
+                ann.timestamp = pm.timestamp;
+            }
+            ch.annotation_subscribers.retain(|sub| {
+                let matches = sub
+                    .type_filter
+                    .as_ref()
+                    .map(|t| ann.annotation_type.as_deref() == Some(t.as_str()))
+                    .unwrap_or(true);
+                if !matches {
+                    return true;
+                }
+                sub.sender.send(ann.clone()).is_ok()
+            });
+        }
+    }
+
     /// RTL15b: MESSAGE/PRESENCE/SYNC carrying a channelSerial update the
     /// channel's serial.
     fn update_channel_serial(&mut self, pm: &ProtocolMessage) {
@@ -1385,6 +1512,7 @@ impl ConnectionCtx {
                     op_revert_state: ChannelState::Initialized,
                     subscribers: Vec::new(),
                     presence: PresenceCtx::default(),
+                    annotation_subscribers: Vec::new(),
                     snapshot_tx,
                     events_tx,
                 });
@@ -1400,6 +1528,26 @@ impl ConnectionCtx {
                 // RTP6: registration only; implicit attach happens handle-side
                 if let Some(ch) = self.channels.get_mut(&name) {
                     ch.presence.subscribers.push(PresenceSubscriber { id, actions, sender });
+                }
+            }
+            Command::AnnotationOp { name, annotation, reply } => {
+                self.handle_annotation_op(name, annotation, reply);
+            }
+            Command::AnnotationSubscribe { name, id, type_filter, sender } => {
+                if let Some(ch) = self.channels.get_mut(&name) {
+                    ch.annotation_subscribers.push(AnnotationSubscriber {
+                        id,
+                        type_filter,
+                        sender,
+                    });
+                }
+            }
+            Command::AnnotationUnsubscribe { name, id } => {
+                if let Some(ch) = self.channels.get_mut(&name) {
+                    match id {
+                        Some(id) => ch.annotation_subscribers.retain(|s| s.id != id),
+                        None => ch.annotation_subscribers.clear(),
+                    }
                 }
             }
             Command::PresenceReentryFailed { name, error } => {
@@ -1631,6 +1779,7 @@ impl ConnectionCtx {
             action::MESSAGE => self.handle_message_action(pm),
             action::PRESENCE => self.handle_presence_action(pm, false),
             action::SYNC => self.handle_presence_action(pm, true),
+            action::ANNOTATION => self.handle_annotation_action(pm),
             action::HEARTBEAT => {
                 // RTN13e: only a HEARTBEAT carrying a known ping id resolves a
                 // ping; id-less heartbeats are server liveness traffic only
@@ -2496,6 +2645,8 @@ fn attach_message(ch: &ChannelCtx) -> ProtocolMessage {
             ChannelMode::Publish => flags::PUBLISH,
             ChannelMode::Subscribe => flags::SUBSCRIBE,
             ChannelMode::PresenceSubscribe => flags::PRESENCE_SUBSCRIBE,
+            ChannelMode::AnnotationPublish => flags::ANNOTATION_PUBLISH,
+            ChannelMode::AnnotationSubscribe => flags::ANNOTATION_SUBSCRIBE,
         })
         .fold(0, |acc, f| acc | f);
     if ch.has_been_attached {
@@ -2521,6 +2672,12 @@ fn modes_from_flags(f: u64) -> Vec<ChannelMode> {
     }
     if f & flags::PRESENCE_SUBSCRIBE != 0 {
         modes.push(ChannelMode::PresenceSubscribe);
+    }
+    if f & flags::ANNOTATION_PUBLISH != 0 {
+        modes.push(ChannelMode::AnnotationPublish);
+    }
+    if f & flags::ANNOTATION_SUBSCRIBE != 0 {
+        modes.push(ChannelMode::AnnotationSubscribe);
     }
     modes
 }

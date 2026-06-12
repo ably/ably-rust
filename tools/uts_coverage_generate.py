@@ -28,7 +28,6 @@ SPEC = REPO.parent / "specification" / "uts"
 
 # --- whole-file exclusions (future stages / recorded deferrals) ---
 EXCLUDE_FILES = {
-    "realtime/unit/channels/channel_annotations.md": "stage 5.8 (annotations)",
     "realtime/unit/channels/channel_delta_decoding.md": "delta/vcdiff decoding not planned (needs vcdiff plugin)",
     "realtime/unit/connection/connection_recovery_test.md": "RTN16 recovery not yet implemented (planned post-5.6)",
     "realtime/unit/connection/network_change_test.md": "OS network-event detection not implemented (recorded deferral)",
@@ -118,6 +117,8 @@ OVERRIDES = {
     "realtime/unit/RTP17a/server-publishes-without-subscribe-0": "rtp17g1_reentry_omits_id_when_connection_changed",
     "realtime/unit/RTP6/presence-events-update-map-0": "rtp6_presence_events_update_map",
     "realtime/unit/RTP6/multiple-presence-in-single-message-1": "rtp6_presence_events_update_map",
+    # ---- realtime: 5.8 manual mapping ----
+    "realtime/unit/RTAN1b/publish-channel-state-0": "rtan1b_annotation_publish_state_conditions",
     # ---- rest: exclusions ----
     "rest/unit/TM2s1/version-defaults-from-message-0": "!! version defaulting deferred (recorded; ignored test exists)",
     "rest/unit/TP5/presence-message-size-0": "!! PresenceMessage::size() deferred (recorded; ignored test exists)",

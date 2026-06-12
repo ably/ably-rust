@@ -81,6 +81,8 @@ pub enum ChannelMode {
     Publish,
     Subscribe,
     PresenceSubscribe,
+    AnnotationPublish,
+    AnnotationSubscribe,
 }
 
 // --- Internal wire types (pub(crate)) ---
@@ -181,6 +183,8 @@ pub(crate) mod flags {
     pub const PUBLISH: u64 = 1 << 17;
     pub const SUBSCRIBE: u64 = 1 << 18;
     pub const PRESENCE_SUBSCRIBE: u64 = 1 << 19;
+    pub const ANNOTATION_PUBLISH: u64 = 1 << 20;
+    pub const ANNOTATION_SUBSCRIBE: u64 = 1 << 21;
 }
 
 #[allow(dead_code)]

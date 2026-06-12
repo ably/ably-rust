@@ -1000,3 +1000,176 @@ async fn rtf1_rsf1_unrecognised_attributes_ignored() {
     assert_eq!(ch.state(), ChannelState::Attached);
     server.abort();
 }
+
+// ============================================================================
+// RTAN — realtime annotations (stage 5.8; channel_annotations.md)
+// ============================================================================
+
+// UTS: RTAN1a/RTAN1c publish sends an ANNOTATION pm with ANNOTATION_CREATE;
+// data encoded per RSL4; RTAN1d resolved by the ACK
+#[tokio::test]
+async fn rtan1a_rtan1d_annotation_publish_wire_and_ack() {
+    let mock = serving_mock("conn-1");
+    let client = client_for(&mock);
+    let server = spawn_channel_server(&mock);
+    connect(&client).await;
+    let ch = client.channels.get("annotated");
+    ch.attach().await.unwrap();
+    server.abort();
+
+    let ann = crate::rest::Annotation {
+        annotation_type: Some("reaction".into()),
+        data: crate::rest::Data::JSON(serde_json::json!({"emoji": "+1"})),
+        ..Default::default()
+    };
+    let annotations = ch.annotations();
+    let publish = {
+        let ch2 = ch.clone();
+        tokio::spawn(async move {
+            ch2.annotations().publish("msg-serial-1", &crate::rest::Annotation {
+                annotation_type: Some("reaction".into()),
+                data: crate::rest::Data::JSON(serde_json::json!({"emoji": "+1"})),
+                ..Default::default()
+            }).await
+        })
+    };
+    let _ = (&annotations, &ann);
+
+    let sent = await_nth_action(&mock, action::ANNOTATION, 1, 2000).await;
+    let entries = sent.message.annotations.as_ref().unwrap().as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["type"], "reaction", "RTAN1a");
+    assert_eq!(entries[0]["action"], 0, "RTAN1c: ANNOTATION_CREATE");
+    assert_eq!(entries[0]["messageSerial"], "msg-serial-1", "TAN2j");
+
+    // RTAN1d: the ACK resolves the publish
+    assert!(!publish.is_finished());
+    let mut ack = ProtocolMessage::new(action::ACK);
+    ack.msg_serial = sent.message.msg_serial;
+    ack.count = Some(1);
+    mock.active_connection().send_to_client(ack);
+    publish.await.unwrap().expect("RTAN1d: ACK resolves");
+}
+
+// UTS: RTAN2a delete sends ANNOTATION_DELETE; RTAN1d NACK errors
+#[tokio::test]
+async fn rtan2a_rtan1d_annotation_delete_and_nack() {
+    let mock = serving_mock("conn-1");
+    let client = client_for(&mock);
+    let server = spawn_channel_server(&mock);
+    connect(&client).await;
+    let ch = client.channels.get("deannotated");
+    ch.attach().await.unwrap();
+    server.abort();
+
+    let delete = {
+        let ch2 = ch.clone();
+        tokio::spawn(async move {
+            ch2.annotations().delete("msg-serial-2", &crate::rest::Annotation {
+                annotation_type: Some("reaction".into()),
+                ..Default::default()
+            }).await
+        })
+    };
+    let sent = await_nth_action(&mock, action::ANNOTATION, 1, 2000).await;
+    let entries = sent.message.annotations.as_ref().unwrap().as_array().unwrap();
+    assert_eq!(entries[0]["action"], 1, "RTAN2a: ANNOTATION_DELETE");
+
+    let mut nack = ProtocolMessage::new(action::NACK);
+    nack.msg_serial = sent.message.msg_serial;
+    nack.count = Some(1);
+    nack.error = Some(ErrorInfo::with_status(40160, 401, "no annotation permission"));
+    mock.active_connection().send_to_client(nack);
+    let err = delete.await.unwrap().expect_err("RTAN1d: NACK errors");
+    assert_eq!(err.code, Some(40160));
+}
+
+// UTS: RTAN4a/RTAN4c inbound annotations reach (type-filtered) subscribers
+#[tokio::test]
+async fn rtan4a_rtan4c_annotation_subscribers() {
+    let mock = serving_mock("conn-1");
+    let client = client_for(&mock);
+    let server = spawn_channel_server(&mock);
+    connect(&client).await;
+    let ch = client.channels.get("ann-subs");
+
+    let all: Arc<StdMutex<Vec<crate::rest::Annotation>>> = Arc::new(StdMutex::new(Vec::new()));
+    let all_c = all.clone();
+    ch.annotations().subscribe(move |a| {
+        all_c.lock().unwrap().push(a);
+    });
+    let filtered: Arc<StdMutex<Vec<crate::rest::Annotation>>> = Arc::new(StdMutex::new(Vec::new()));
+    let filtered_c = filtered.clone();
+    ch.annotations().subscribe_with_type("reaction", move |a| {
+        filtered_c.lock().unwrap().push(a);
+    });
+    // RTAN4d: subscribing implicitly attached the channel
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
+    while ch.state() != ChannelState::Attached {
+        assert!(tokio::time::Instant::now() < deadline, "RTAN4d");
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+    }
+
+    let mut pm = ProtocolMessage::new(action::ANNOTATION);
+    pm.channel = Some("ann-subs".to_string());
+    pm.annotations = Some(serde_json::json!([
+        {"type": "reaction", "action": 0, "messageSerial": "m1", "data": "x"},
+        {"type": "edit", "action": 0, "messageSerial": "m1"}
+    ]));
+    mock.active_connection().send_to_client(pm);
+
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
+    while all.lock().unwrap().len() < 2 {
+        assert!(tokio::time::Instant::now() < deadline, "RTAN4a: both delivered");
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+    let f = filtered.lock().unwrap();
+    assert_eq!(f.len(), 1, "RTAN4c: type filter");
+    assert_eq!(f[0].annotation_type.as_deref(), Some("reaction"));
+    server.abort();
+}
+
+// UTS: RTAN1b annotation publish shares the message-publish state conditions
+#[tokio::test]
+async fn rtan1b_annotation_publish_state_conditions() {
+    let mock = serving_mock("conn-1");
+    let client = client_for(&mock);
+    connect(&client).await;
+
+    // Channel FAILED → error with the channel's reason
+    let ch = client.channels.get("ann-doomed");
+    let ch2 = ch.clone();
+    let attach = tokio::spawn(async move { ch2.attach().await });
+    await_nth_action(&mock, action::ATTACH, 1, 2000).await;
+    let mut err_msg = ProtocolMessage::new(action::ERROR);
+    err_msg.channel = Some("ann-doomed".to_string());
+    err_msg.error = Some(ErrorInfo::with_status(40160, 401, "denied"));
+    mock.active_connection().send_to_client(err_msg);
+    let _ = attach.await.unwrap();
+    assert_eq!(ch.state(), ChannelState::Failed);
+    let err = ch
+        .annotations()
+        .publish("m1", &crate::rest::Annotation {
+            annotation_type: Some("reaction".into()),
+            ..Default::default()
+        })
+        .await
+        .expect_err("RTAN1b: failed channel");
+    assert_eq!(err.code, Some(40160));
+
+    // Connection CLOSED → error
+    client.close();
+    mock.active_connection().send_to_client(ProtocolMessage::new(action::CLOSED));
+    assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
+    let healthy = client.channels.get("ann-healthy");
+    let err = healthy
+        .annotations()
+        .publish("m1", &crate::rest::Annotation {
+            annotation_type: Some("reaction".into()),
+            ..Default::default()
+        })
+        .await
+        .expect_err("RTAN1b: closed connection");
+    assert!(err.code.is_some());
+}
