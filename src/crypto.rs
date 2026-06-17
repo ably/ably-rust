@@ -262,6 +262,7 @@ mod tests {
     use serde::Deserialize;
 
     use super::*;
+    use crate::channel;
     use crate::{json, rest};
 
     #[test]
@@ -297,8 +298,8 @@ mod tests {
                 .unwrap_or_else(|_| panic!("Expected JSON data in {}", name))
         }
 
-        fn opts(&self) -> rest::ChannelOptions {
-            rest::ChannelOptions {
+        fn opts(&self) -> channel::ChannelOptions {
+            channel::ChannelOptions {
                 cipher: Some(
                     CipherParams::builder()
                         .string(&self.key)
