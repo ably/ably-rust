@@ -252,14 +252,51 @@ fn retry_delay(base: Duration, retry_count: u32) -> Duration {
     base.mul_f64(backoff_coefficient(retry_count) * jitter_coefficient())
 }
 
-/// A sent MESSAGE ProtocolMessage awaiting its ACK/NACK (RTN7).
+/// A sent ProtocolMessage awaiting its ACK/NACK (RTN7).
 struct PendingPublish {
     msg_serial: i64,
     channel: String,
-    /// Wire-encoded messages, kept verbatim for RTN19a resend.
-    wire_messages: Vec<serde_json::Value>,
-    params: Option<serde_json::Value>,
+    /// The wire payload, kept verbatim so an RTN19a resend reconstructs the
+    /// SAME kind of ProtocolMessage (MESSAGE, PRESENCE or ANNOTATION).
+    payload: PendingPayload,
     reply: oneshot::Sender<Result<crate::rest::PublishResult>>,
+}
+
+/// The payload of a publish awaiting ACK; determines the resend pm action.
+enum PendingPayload {
+    Messages {
+        messages: Vec<crate::rest::Message>,
+        params: Option<serde_json::Value>,
+    },
+    Presence(Vec<crate::rest::PresenceMessage>),
+    Annotations(Vec<crate::rest::Annotation>),
+}
+
+impl PendingPayload {
+    /// Rebuild the ProtocolMessage for an RTN19a resend.
+    fn to_protocol_message(&self, channel: String, serial: i64) -> ProtocolMessage {
+        let mut pm = match self {
+            PendingPayload::Messages { messages, params } => {
+                let mut pm = ProtocolMessage::new(action::MESSAGE);
+                pm.messages = Some(messages.clone());
+                pm.params = params.clone();
+                pm
+            }
+            PendingPayload::Presence(entries) => {
+                let mut pm = ProtocolMessage::new(action::PRESENCE);
+                pm.presence = Some(entries.clone());
+                pm
+            }
+            PendingPayload::Annotations(entries) => {
+                let mut pm = ProtocolMessage::new(action::ANNOTATION);
+                pm.annotations = Some(entries.clone());
+                pm
+            }
+        };
+        pm.channel = Some(channel);
+        pm.msg_serial = Some(serial);
+        pm
+    }
 }
 
 /// A publish awaiting a connection (RTL6c2).
@@ -821,13 +858,7 @@ impl ConnectionCtx {
             };
             msg.data = data;
             msg.encoding = encoding;
-            match serde_json::to_value(&msg) {
-                Ok(v) => wire_messages.push(v),
-                Err(e) => {
-                    let _ = reply.send(Err(e.into()));
-                    return;
-                }
-            }
+            wire_messages.push(msg);
         }
         let serial = self.msg_serial;
         self.msg_serial += 1;
@@ -840,8 +871,10 @@ impl ConnectionCtx {
         self.pending_publishes.push(PendingPublish {
             msg_serial: serial,
             channel: name,
-            wire_messages,
-            params,
+            payload: PendingPayload::Messages {
+                messages: wire_messages,
+                params,
+            },
             reply,
         });
     }
@@ -857,29 +890,15 @@ impl ConnectionCtx {
                 )
             });
         }
-        let resends: Vec<(
-            i64,
-            String,
-            Vec<serde_json::Value>,
-            Option<serde_json::Value>,
-        )> = self
+        let resends: Vec<ProtocolMessage> = self
             .pending_publishes
             .iter()
             .map(|p| {
-                (
-                    p.msg_serial,
-                    p.channel.clone(),
-                    p.wire_messages.clone(),
-                    p.params.clone(),
-                )
+                p.payload
+                    .to_protocol_message(p.channel.clone(), p.msg_serial)
             })
             .collect();
-        for (serial, channel, wire_messages, params) in resends {
-            let mut pm = ProtocolMessage::new(action::MESSAGE);
-            pm.channel = Some(channel);
-            pm.msg_serial = Some(serial);
-            pm.messages = Some(wire_messages);
-            pm.params = params;
+        for pm in resends {
             self.send_protocol(pm);
         }
     }
@@ -1054,26 +1073,18 @@ impl ConnectionCtx {
         message: crate::rest::PresenceMessage,
         reply: oneshot::Sender<Result<()>>,
     ) {
-        let wire = match serde_json::to_value(&message) {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = reply.send(Err(e.into()));
-                return;
-            }
-        };
         let serial = self.msg_serial;
         self.msg_serial += 1;
         let mut pm = ProtocolMessage::new(action::PRESENCE);
         pm.channel = Some(name.clone());
         pm.msg_serial = Some(serial);
-        pm.presence = Some(vec![wire]);
+        pm.presence = Some(vec![message.clone()]);
         self.send_protocol(pm);
         let (ack_reply, ack_rx) = oneshot::channel::<Result<crate::rest::PublishResult>>();
         self.pending_publishes.push(PendingPublish {
             msg_serial: serial,
             channel: name,
-            wire_messages: Vec::new(),
-            params: None,
+            payload: PendingPayload::Presence(vec![message]),
             reply: ack_reply,
         });
         tokio::spawn(async move {
@@ -1167,26 +1178,18 @@ impl ConnectionCtx {
             )));
             return;
         }
-        let wire = match serde_json::to_value(&annotation) {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = reply.send(Err(e.into()));
-                return;
-            }
-        };
         let serial = self.msg_serial;
         self.msg_serial += 1;
         let mut pm = ProtocolMessage::new(action::ANNOTATION);
         pm.channel = Some(name.clone());
         pm.msg_serial = Some(serial);
-        pm.annotations = Some(serde_json::Value::Array(vec![wire]));
+        pm.annotations = Some(vec![annotation.clone()]);
         self.send_protocol(pm);
         let (ack_reply, ack_rx) = oneshot::channel::<Result<crate::rest::PublishResult>>();
         self.pending_publishes.push(PendingPublish {
             msg_serial: serial,
             channel: name,
-            wire_messages: Vec::new(),
-            params: None,
+            payload: PendingPayload::Annotations(vec![annotation]),
             reply: ack_reply,
         });
         tokio::spawn(async move {
@@ -1215,22 +1218,8 @@ impl ConnectionCtx {
         if ch.state != ChannelState::Attached {
             return;
         }
-        let entries = pm
-            .annotations
-            .as_ref()
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        for (index, value) in entries.into_iter().enumerate() {
-            let Ok(mut ann) = serde_json::from_value::<crate::rest::Annotation>(value) else {
-                ch.logger.error(|| {
-                    format!(
-                        "Discarding undecodable annotation entry {} on channel '{}'",
-                        index, name
-                    )
-                });
-                continue;
-            };
+        let entries = pm.annotations.clone().unwrap_or_default();
+        for (index, mut ann) in entries.into_iter().enumerate() {
             if ann.id.is_none() {
                 if let Some(pm_id) = &pm.id {
                     ann.id = Some(format!("{}:{}", pm_id, index));
@@ -1253,8 +1242,8 @@ impl ConnectionCtx {
         }
     }
 
-    /// RTL15b: MESSAGE/PRESENCE/SYNC carrying a channelSerial update the
-    /// channel's serial.
+    /// RTL15b: MESSAGE/PRESENCE/ANNOTATION carrying a channelSerial update the
+    /// channel's serial (SYNC is excluded — see handle_presence_action).
     fn update_channel_serial(&mut self, pm: &ProtocolMessage) {
         let Some(name) = &pm.channel else { return };
         let Some(serial) = &pm.channel_serial else {
@@ -1287,17 +1276,7 @@ impl ConnectionCtx {
             return;
         }
         let wire = pm.messages.clone().unwrap_or_default();
-        for (index, value) in wire.into_iter().enumerate() {
-            let Ok(mut msg) = serde_json::from_value::<crate::rest::Message>(value) else {
-                // RSF1 tolerance, but never silently (observability policy)
-                ch.logger.error(|| {
-                    format!(
-                        "Discarding undecodable message entry {} on channel '{}'",
-                        index, name
-                    )
-                });
-                continue;
-            };
+        for (index, mut msg) in wire.into_iter().enumerate() {
             // TM2a: id defaults to protocolMessage.id + ":" + index
             if msg.id.is_none() {
                 if let Some(pm_id) = &pm.id {
@@ -1324,7 +1303,13 @@ impl ConnectionCtx {
     /// RTP6/RTP17/RTP18/RTP19: inbound PRESENCE or SYNC. Field population
     /// follows TM2 conventions; events are dispatched per RTP2 newness.
     fn handle_presence_action(&mut self, pm: ProtocolMessage, is_sync: bool) {
-        self.update_channel_serial(&pm);
+        // RTL15b: PRESENCE updates the channel serial; SYNC does not — its
+        // channelSerial carries the sync cursor ("<sequence>:<cursor>"), which
+        // is not a channel serial and would be rejected by the server if sent
+        // back in a reattach ATTACH (RTL4c1).
+        if !is_sync {
+            self.update_channel_serial(&pm);
+        }
         let Some(name) = pm.channel.clone() else {
             return;
         };
@@ -1343,16 +1328,7 @@ impl ConnectionCtx {
         }
 
         let wire = pm.presence.clone().unwrap_or_default();
-        for (index, value) in wire.into_iter().enumerate() {
-            let Ok(mut msg) = serde_json::from_value::<crate::rest::PresenceMessage>(value) else {
-                ch.logger.error(|| {
-                    format!(
-                        "Discarding undecodable presence entry {} on channel '{}'",
-                        index, name
-                    )
-                });
-                continue;
-            };
+        for (index, mut msg) in wire.into_iter().enumerate() {
             // TM2-shaped inheritance
             if msg.id.is_none() {
                 if let Some(pm_id) = &pm.id {
@@ -2216,9 +2192,22 @@ impl ConnectionCtx {
                 self.force_renewal_on_next_connect = true;
                 self.reconnect_immediately(pm.error);
             } else {
-                // RTN15h1: token error with no means to renew is terminal
+                // RTN15h1: a token error with no means to renew (no key,
+                // authCallback or authUrl) is terminal. The connection fails
+                // with 40171 ("no way to renew the auth token") rather than the
+                // server's token error, matching ably-js — the SDK detected it
+                // cannot reauth and substitutes the more specific code. The
+                // server's error is preserved as the cause (TI1).
                 self.drop_transport();
-                self.transition(ConnectionState::Failed, pm.error);
+                let mut err = ErrorInfo::with_status(
+                    ErrorCode::NoWayToRenewAuthToken.code(),
+                    401,
+                    "Token error received but the token cannot be renewed \
+                     (no key, authCallback or authUrl)"
+                        .to_string(),
+                );
+                err.cause = pm.error.map(Box::new);
+                self.transition(ConnectionState::Failed, Some(err));
             }
         } else if self.state == ConnectionState::Connected {
             // RTN15h3: non-token error — immediate resume attempt

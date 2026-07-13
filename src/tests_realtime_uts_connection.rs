@@ -1020,9 +1020,14 @@ async fn rtn15h1_disconnected_token_error_without_renewal_fails() {
     mock.active_connection().send_to_client_and_close(msg);
 
     assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+    // 40171 ("no way to renew the auth token"), not the server's 40142: the SDK
+    // detects it has no renewal means and substitutes the specific code,
+    // matching ably-js and the proxy integration spec (connection_resume.md
+    // RTN15h1 note). The unit spec's 40142 assertion contradicts this —
+    // recorded as an upstream spec issue (TASK-9).
     assert_eq!(
         client.connection.error_reason().and_then(|e| e.code),
-        Some(40142)
+        Some(40171)
     );
 }
 

@@ -19,8 +19,8 @@ use crate::tests_rest_integration::{get_sandbox, random_id};
 /// UTS "Token Auth Helper": obtains tokens directly from the sandbox
 /// (bypassing the proxy) so token requests are never intercepted by
 /// fault-injection rules.
-struct SandboxTokenCallback {
-    api_key: String,
+pub(crate) struct SandboxTokenCallback {
+    pub(crate) api_key: String,
 }
 
 impl AuthCallback for SandboxTokenCallback {
@@ -40,17 +40,28 @@ impl AuthCallback for SandboxTokenCallback {
     }
 }
 
-async fn proxy_session(rules: Vec<Rule>) -> (ProxySession, u16) {
-    let port = allocate_port();
-    let session = ProxySession::create(
-        &ProxySession::proxy_base_url(),
-        "nonprod:sandbox",
-        port,
-        rules,
-    )
-    .await
-    .expect("failed to create proxy session — is the uts-proxy available?");
-    (session, port)
+pub(crate) async fn proxy_session(rules: Vec<Rule>) -> (ProxySession, u16) {
+    // Retry on a fresh port: sessions orphaned by panicked tests keep their
+    // port bound on the long-lived proxy daemon (409 Conflict on reuse).
+    let mut last_err = None;
+    for _ in 0..5 {
+        let port = allocate_port();
+        match ProxySession::create(
+            &ProxySession::proxy_base_url(),
+            "nonprod:sandbox",
+            port,
+            rules.clone(),
+        )
+        .await
+        {
+            Ok(session) => return (session, port),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    panic!(
+        "failed to create proxy session — is the uts-proxy available?: {:?}",
+        last_err
+    );
 }
 
 /// A client routed through the proxy with fallback enabled: the primary and

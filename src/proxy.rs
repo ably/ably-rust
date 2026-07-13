@@ -17,7 +17,7 @@ const PROXY_VERSION: &str = "v0.1.0";
 const PROXY_REPO: &str = "ably/uts-proxy";
 const DEFAULT_CONTROL_PORT: u16 = 9100;
 
-static NEXT_PORT: AtomicU16 = AtomicU16::new(19100);
+static NEXT_PORT: std::sync::OnceLock<AtomicU16> = std::sync::OnceLock::new();
 static PROXY_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 static PROXY_ENSURED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -84,8 +84,19 @@ fn control_url() -> String {
 }
 
 /// Allocate a unique port for a proxy session.
+///
+/// The base is randomized per process: the proxy daemon outlives test runs,
+/// and sessions orphaned by panicked tests keep their port bound — a fixed
+/// base would collide with them on every subsequent run.
 pub fn allocate_port() -> u16 {
-    NEXT_PORT.fetch_add(1, Ordering::SeqCst)
+    let counter = NEXT_PORT.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        AtomicU16::new(19100 + (nanos % 9900) as u16)
+    });
+    counter.fetch_add(1, Ordering::SeqCst)
 }
 
 /// Download the proxy binary if not already cached.
@@ -159,11 +170,14 @@ fn spawn_proxy() -> Result<Child, Box<dyn std::error::Error>> {
     let bin = proxy_bin_path();
     let port = control_port().to_string();
 
+    // Null stdio: the daemon outlives the test process, and an inherited
+    // stdout/stderr keeps any pipe attached to the test run open forever
+    // (e.g. `cargo test | tail` never terminates).
     let child = Command::new(&bin)
         .args(["--port", &port])
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()?;
 
     Ok(child)

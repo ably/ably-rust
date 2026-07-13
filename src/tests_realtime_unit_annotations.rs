@@ -297,12 +297,15 @@ async fn rtan4a_subscribe_delivers_annotations() {
     conn.send_to_client(ProtocolMessage {
         action: action::ANNOTATION,
         channel: Some("test-rtan4a".into()),
-        annotations: Some(json!([{
-            "type": "reaction",
-            "action": 0,
-            "clientId": "user1",
-            "data": {"emoji": "👍"},
-        }])),
+        annotations: crate::protocol::wire_annotations(
+            serde_json::from_value(serde_json::json!([{
+                "type": "reaction",
+                "action": 0,
+                "clientId": "user1",
+                "data": {"emoji": "👍"},
+            }]))
+            .unwrap(),
+        ),
         ..ProtocolMessage::new(action::ANNOTATION)
     });
 
@@ -332,10 +335,13 @@ async fn rtan4c_subscribe_type_filter() {
     conn.send_to_client(ProtocolMessage {
         action: action::ANNOTATION,
         channel: Some("test-rtan4c".into()),
-        annotations: Some(json!([
-            {"type": "comment", "action": 0, "clientId": "user1"},
-            {"type": "reaction", "action": 0, "clientId": "user2"},
-        ])),
+        annotations: crate::protocol::wire_annotations(
+            serde_json::from_value(serde_json::json!([
+                {"type": "comment", "action": 0, "clientId": "user1"},
+                {"type": "reaction", "action": 0, "clientId": "user2"},
+            ]))
+            .unwrap(),
+        ),
         ..ProtocolMessage::new(action::ANNOTATION)
     });
 
@@ -369,10 +375,13 @@ async fn rtan5a_unsubscribe_removes_listener() {
     conn.send_to_client(ProtocolMessage {
         action: action::ANNOTATION,
         channel: Some("test-rtan5a".into()),
-        annotations: Some(json!([{
-            "type": "reaction",
-            "action": 0,
-        }])),
+        annotations: crate::protocol::wire_annotations(
+            serde_json::from_value(serde_json::json!([{
+                "type": "reaction",
+                "action": 0,
+            }]))
+            .unwrap(),
+        ),
         ..ProtocolMessage::new(action::ANNOTATION)
     });
 
@@ -520,10 +529,13 @@ async fn rtan4c_subscribe_with_type_filter() {
     conn.send_to_client(ProtocolMessage {
         action: action::ANNOTATION,
         channel: Some("test-rtan4c-tf".into()),
-        annotations: Some(json!([
-            {"type": "dislike", "action": 0, "clientId": "user1"},
-            {"type": "like", "action": 0, "clientId": "user2"},
-        ])),
+        annotations: crate::protocol::wire_annotations(
+            serde_json::from_value(serde_json::json!([
+                {"type": "dislike", "action": 0, "clientId": "user1"},
+                {"type": "like", "action": 0, "clientId": "user2"},
+            ]))
+            .unwrap(),
+        ),
         ..ProtocolMessage::new(action::ANNOTATION)
     });
 
@@ -597,10 +609,13 @@ async fn rtan5a_unsubscribe_with_type_filter() {
     conn.send_to_client(ProtocolMessage {
         action: action::ANNOTATION,
         channel: Some("test-rtan5a-tf".into()),
-        annotations: Some(json!([{
-            "type": "reaction",
-            "action": 0,
-        }])),
+        annotations: crate::protocol::wire_annotations(
+            serde_json::from_value(serde_json::json!([{
+                "type": "reaction",
+                "action": 0,
+            }]))
+            .unwrap(),
+        ),
         ..ProtocolMessage::new(action::ANNOTATION)
     });
 

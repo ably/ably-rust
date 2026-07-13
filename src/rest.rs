@@ -466,7 +466,10 @@ impl Rest {
 
     /// POST a signed TokenRequest to /keys/{keyName}/requestToken. The signed
     /// request is self-authenticating; no Authorization header is sent.
-    async fn exchange_token_request(&self, tr: &auth::TokenRequest) -> Result<TokenDetails> {
+    pub(crate) async fn exchange_token_request(
+        &self,
+        tr: &auth::TokenRequest,
+    ) -> Result<TokenDetails> {
         let body = self.serialize_body(tr)?;
         let path = format!("/keys/{}/requestToken", tr.key_name);
         let resp = self

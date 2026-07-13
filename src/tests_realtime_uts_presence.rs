@@ -79,7 +79,7 @@ fn presence_pm(channel: &str, serial: Option<&str>, entries: serde_json::Value) 
     let mut pm = ProtocolMessage::new(action::PRESENCE);
     pm.channel = Some(channel.to_string());
     pm.channel_serial = serial.map(|s| s.to_string());
-    pm.presence = Some(entries.as_array().unwrap().clone());
+    pm.presence = crate::protocol::wire_presence(entries.as_array().unwrap().clone());
     pm
 }
 
@@ -87,7 +87,7 @@ fn sync_pm(channel: &str, serial: &str, entries: serde_json::Value) -> ProtocolM
     let mut pm = ProtocolMessage::new(action::SYNC);
     pm.channel = Some(channel.to_string());
     pm.channel_serial = Some(serial.to_string());
-    pm.presence = Some(entries.as_array().unwrap().clone());
+    pm.presence = crate::protocol::wire_presence(entries.as_array().unwrap().clone());
     pm
 }
 
@@ -289,7 +289,7 @@ async fn rtp8a_rtp8c_rtp8e_enter_wire_shape() {
         .filter(|m| m.action == action::PRESENCE)
         .collect();
     assert_eq!(sent.len(), 1);
-    let entry = &sent[0].message.presence.as_ref().unwrap()[0];
+    let entry = &sent[0].message.presence_json()[0];
     assert_eq!(entry["action"], 2, "RTP8a: ENTER");
     assert!(
         entry.get("clientId").is_none(),
@@ -629,7 +629,7 @@ async fn rtp17g1_reentry_omits_id_when_connection_changed() {
         assert!(tokio::time::Instant::now() < deadline, "re-entry sent");
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     };
-    let entry = &reentry.message.presence.as_ref().unwrap()[0];
+    let entry = &reentry.message.presence_json()[0];
     assert_eq!(entry["action"], 2, "RTP17i: ENTER");
     assert_eq!(entry["clientId"], "me", "RTP17g: stored clientId");
     assert_eq!(entry["data"], "d", "RTP17g: stored data");

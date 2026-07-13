@@ -2914,7 +2914,7 @@ async fn rtl6i1_publish_single_message() {
         message_msgs[0].message.channel.as_deref(),
         Some(channel_name)
     );
-    let messages = message_msgs[0].message.messages.as_ref().unwrap();
+    let messages = message_msgs[0].message.messages_json();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["name"], "greeting");
     assert_eq!(messages[0]["data"], "hello");
@@ -3002,12 +3002,9 @@ async fn rtl6c1_publish_immediately_when_attached() {
         .filter(|m| m.message.action == action::MESSAGE)
         .collect();
     assert_eq!(message_msgs.len(), 1);
+    assert_eq!(message_msgs[0].message.messages_json()[0]["name"], "test");
     assert_eq!(
-        message_msgs[0].message.messages.as_ref().unwrap()[0]["name"],
-        "test"
-    );
-    assert_eq!(
-        message_msgs[0].message.messages.as_ref().unwrap()[0]["data"],
+        message_msgs[0].message.messages_json()[0]["data"],
         "immediate"
     );
 }
@@ -3066,7 +3063,7 @@ async fn rtl6c1_publish_immediately_when_initialized() {
         .collect();
     assert_eq!(message_msgs.len(), 1);
     assert_eq!(
-        message_msgs[0].message.messages.as_ref().unwrap()[0]["name"],
+        message_msgs[0].message.messages_json()[0]["name"],
         "before-attach"
     );
 }
@@ -3196,10 +3193,7 @@ async fn rtl6c2_publish_queued_when_connecting() {
         .filter(|m| m.message.action == action::MESSAGE)
         .collect();
     assert_eq!(message_msgs.len(), 1);
-    assert_eq!(
-        message_msgs[0].message.messages.as_ref().unwrap()[0]["name"],
-        "queued"
-    );
+    assert_eq!(message_msgs[0].message.messages_json()[0]["name"], "queued");
 
     // ACK to resolve
     let conns = mock.active_connections();
@@ -3280,7 +3274,7 @@ async fn rtl6c2_publish_queued_when_initialized() {
         .collect();
     assert_eq!(message_msgs.len(), 1);
     assert_eq!(
-        message_msgs[0].message.messages.as_ref().unwrap()[0]["name"],
+        message_msgs[0].message.messages_json()[0]["name"],
         "pre-connect"
     );
 
@@ -3378,18 +3372,9 @@ async fn rtl6c2_multiple_queued_messages_order() {
         .filter(|m| m.message.action == action::MESSAGE)
         .collect();
     assert_eq!(message_msgs.len(), 3);
-    assert_eq!(
-        message_msgs[0].message.messages.as_ref().unwrap()[0]["name"],
-        "first"
-    );
-    assert_eq!(
-        message_msgs[1].message.messages.as_ref().unwrap()[0]["name"],
-        "second"
-    );
-    assert_eq!(
-        message_msgs[2].message.messages.as_ref().unwrap()[0]["name"],
-        "third"
-    );
+    assert_eq!(message_msgs[0].message.messages_json()[0]["name"], "first");
+    assert_eq!(message_msgs[1].message.messages_json()[0]["name"], "second");
+    assert_eq!(message_msgs[2].message.messages_json()[0]["name"], "third");
 }
 
 // --- RTL6c4: Publish fails when connection FAILED ---
@@ -3766,19 +3751,23 @@ async fn rtl7a_subscribe_receives_all_messages() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
-        messages: Some(vec![serde_json::json!({"name": "event1", "data": "data1"})]),
+        messages: crate::protocol::wire_messages(vec![
+            serde_json::json!({"name": "event1", "data": "data1"}),
+        ]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
-        messages: Some(vec![serde_json::json!({"name": "event2", "data": "data2"})]),
+        messages: crate::protocol::wire_messages(vec![
+            serde_json::json!({"name": "event2", "data": "data2"}),
+        ]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
-        messages: Some(vec![serde_json::json!({"data": "data3"})]),
+        messages: crate::protocol::wire_messages(vec![serde_json::json!({"data": "data3"})]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
 
@@ -3849,7 +3838,7 @@ async fn rtl7a_subscribe_multiple_messages_in_single_protocol_message() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
-        messages: Some(vec![
+        messages: crate::protocol::wire_messages(vec![
             serde_json::json!({"name": "batch1", "data": "first"}),
             serde_json::json!({"name": "batch2", "data": "second"}),
             serde_json::json!({"name": "batch3", "data": "third"}),
@@ -3921,19 +3910,23 @@ async fn rtl7b_subscribe_with_name_filter() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
-        messages: Some(vec![serde_json::json!({"name": "other", "data": "skip"})]),
+        messages: crate::protocol::wire_messages(vec![
+            serde_json::json!({"name": "other", "data": "skip"}),
+        ]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
-        messages: Some(vec![serde_json::json!({"name": "target", "data": "match"})]),
+        messages: crate::protocol::wire_messages(vec![
+            serde_json::json!({"name": "target", "data": "match"}),
+        ]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
-        messages: Some(vec![serde_json::json!({"data": "no-name"})]),
+        messages: crate::protocol::wire_messages(vec![serde_json::json!({"data": "no-name"})]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
 
@@ -4001,7 +3994,7 @@ async fn rtl7b_multiple_name_subscriptions() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
-        messages: Some(vec![
+        messages: crate::protocol::wire_messages(vec![
             serde_json::json!({"name": "alpha", "data": "a1"}),
             serde_json::json!({"name": "beta", "data": "b1"}),
             serde_json::json!({"name": "alpha", "data": "a2"}),
@@ -4070,7 +4063,9 @@ async fn rtl7g_subscribe_triggers_implicit_attach() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(channel_name.to_string()),
-        messages: Some(vec![serde_json::json!({"name": "test", "data": "hello"})]),
+        messages: crate::protocol::wire_messages(vec![
+            serde_json::json!({"name": "test", "data": "hello"}),
+        ]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -4234,7 +4229,7 @@ async fn rtl17_messages_not_delivered_when_not_attached() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(channel_name.to_string()),
-        messages: Some(vec![
+        messages: crate::protocol::wire_messages(vec![
             serde_json::json!({"name": "premature", "data": "skip"}),
         ]),
         ..ProtocolMessage::new(action::MESSAGE)
@@ -4300,7 +4295,9 @@ async fn rtl8a_unsubscribe_specific_listener() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
-        messages: Some(vec![serde_json::json!({"name": "msg1", "data": "first"})]),
+        messages: crate::protocol::wire_messages(vec![
+            serde_json::json!({"name": "msg1", "data": "first"}),
+        ]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -4314,7 +4311,9 @@ async fn rtl8a_unsubscribe_specific_listener() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
-        messages: Some(vec![serde_json::json!({"name": "msg2", "data": "second"})]),
+        messages: crate::protocol::wire_messages(vec![
+            serde_json::json!({"name": "msg2", "data": "second"}),
+        ]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -4379,7 +4378,7 @@ async fn rtl8b_unsubscribe_from_specific_name() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
-        messages: Some(vec![
+        messages: crate::protocol::wire_messages(vec![
             serde_json::json!({"name": "alpha", "data": "a1"}),
             serde_json::json!({"name": "beta", "data": "b1"}),
         ]),
@@ -4395,7 +4394,7 @@ async fn rtl8b_unsubscribe_from_specific_name() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
-        messages: Some(vec![
+        messages: crate::protocol::wire_messages(vec![
             serde_json::json!({"name": "alpha", "data": "a2"}),
             serde_json::json!({"name": "beta", "data": "b2"}),
         ]),
@@ -4464,7 +4463,7 @@ async fn rtl8c_unsubscribe_all() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
-        messages: Some(vec![
+        messages: crate::protocol::wire_messages(vec![
             serde_json::json!({"name": "specific", "data": "first"}),
         ]),
         ..ProtocolMessage::new(action::MESSAGE)
@@ -4479,7 +4478,7 @@ async fn rtl8c_unsubscribe_all() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
-        messages: Some(vec![
+        messages: crate::protocol::wire_messages(vec![
             serde_json::json!({"name": "specific", "data": "second"}),
             serde_json::json!({"name": "other", "data": "third"}),
         ]),
@@ -4724,7 +4723,7 @@ async fn rtl15b_channel_serial_updated_from_message() {
         action: action::MESSAGE,
         channel: Some(channel_name.to_string()),
         channel_serial: Some("msg-serial-002".to_string()),
-        messages: Some(vec![serde_json::json!({"name": "test"})]),
+        messages: crate::protocol::wire_messages(vec![serde_json::json!({"name": "test"})]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -4754,7 +4753,7 @@ async fn rtl15b_channel_serial_not_updated_when_absent() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(channel_name.to_string()),
-        messages: Some(vec![serde_json::json!({"name": "test"})]),
+        messages: crate::protocol::wire_messages(vec![serde_json::json!({"name": "test"})]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -5646,7 +5645,7 @@ async fn rtl32b_update_message_sends_message() {
     let mutation_msg = sent.iter().find(|m| {
         m.message.action == action::MESSAGE
             && m.message.messages.is_some()
-            && m.message.messages.as_ref().unwrap().iter().any(|msg| {
+            && m.message.messages_json().iter().any(|msg| {
                 msg.get("action").and_then(|a| a.as_u64()) == Some(1) // MESSAGE_UPDATE
             })
     });
@@ -5693,7 +5692,7 @@ async fn rtl32b_delete_message_sends_message() {
         m.message.action == action::MESSAGE
             && m.message.messages.as_ref().is_some_and(|msgs| {
                 msgs.iter()
-                    .any(|msg| msg.get("action").and_then(|a| a.as_u64()) == Some(2))
+                    .any(|msg| msg.action == Some(crate::rest::MessageAction::Delete))
             })
     });
     assert!(
@@ -5735,7 +5734,7 @@ async fn rtl32b_append_message_sends_message() {
         m.message.action == action::MESSAGE
             && m.message.messages.as_ref().is_some_and(|msgs| {
                 msgs.iter()
-                    .any(|msg| msg.get("action").and_then(|a| a.as_u64()) == Some(5))
+                    .any(|msg| msg.action == Some(crate::rest::MessageAction::Append))
             })
     });
     assert!(
@@ -5779,13 +5778,13 @@ async fn rtl32b2_version_from_operation() {
             && m.message
                 .messages
                 .as_ref()
-                .is_some_and(|msgs| msgs.iter().any(|msg| msg.get("version").is_some()))
+                .is_some_and(|msgs| msgs.iter().any(|msg| msg.version.is_some()))
     });
     assert!(
         mutation_msg.is_some(),
         "Should have version field in message"
     );
-    let msg_val = &mutation_msg.unwrap().message.messages.as_ref().unwrap()[0];
+    let msg_val = &mutation_msg.unwrap().message.messages_json()[0];
     assert_eq!(msg_val["version"]["description"], "edited");
 
     let serial = mutation_msg.unwrap().message.msg_serial.unwrap();
@@ -6475,7 +6474,7 @@ async fn rtl6_binary_data_round_trip() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
-        messages: Some(vec![serde_json::json!({
+        messages: crate::protocol::wire_messages(vec![serde_json::json!({
             "name": "binary-event",
             "data": "SGVsbG8=",
             "encoding": "base64"
@@ -6575,7 +6574,7 @@ async fn rtl6_e2e_publish() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some(channel_name.to_string()),
-        messages: Some(vec![serde_json::json!({
+        messages: crate::protocol::wire_messages(vec![serde_json::json!({
             "name": "e2e-event",
             "data": "e2e-data"
         })]),
@@ -6658,10 +6657,7 @@ async fn rtl6c1_publish_when_channel_attaching() {
         !message_msgs.is_empty(),
         "Queued message should be sent after attach"
     );
-    assert_eq!(
-        message_msgs[0].message.messages.as_ref().unwrap()[0]["name"],
-        "queued"
-    );
+    assert_eq!(message_msgs[0].message.messages_json()[0]["name"], "queued");
 }
 
 // --- RTL6c2: Publish fails when queueMessages is false ---
@@ -6863,7 +6859,7 @@ async fn rtl6i1_publish_message_object() {
         .collect();
     assert_eq!(message_msgs.len(), 1);
 
-    let messages = message_msgs[0].message.messages.as_ref().unwrap();
+    let messages = message_msgs[0].message.messages_json();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["name"], "msg-event");
 
@@ -7006,7 +7002,7 @@ async fn rtl7a_subscribe_receives_multiple_from_single_pm() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some("test-rtl7a-multi".to_string()),
-        messages: Some(vec![
+        messages: crate::protocol::wire_messages(vec![
             serde_json::json!({"name": "a", "data": "1"}),
             serde_json::json!({"name": "b", "data": "2"}),
             serde_json::json!({"name": "c", "data": "3"}),
@@ -7037,19 +7033,25 @@ async fn rtl7b_multiple_name_specific_subscriptions_independent() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some("test-rtl7b-indep".to_string()),
-        messages: Some(vec![serde_json::json!({"name": "alpha", "data": "a-data"})]),
+        messages: crate::protocol::wire_messages(vec![
+            serde_json::json!({"name": "alpha", "data": "a-data"}),
+        ]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some("test-rtl7b-indep".to_string()),
-        messages: Some(vec![serde_json::json!({"name": "beta", "data": "b-data"})]),
+        messages: crate::protocol::wire_messages(vec![
+            serde_json::json!({"name": "beta", "data": "b-data"}),
+        ]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some("test-rtl7b-indep".to_string()),
-        messages: Some(vec![serde_json::json!({"name": "gamma", "data": "g-data"})]),
+        messages: crate::protocol::wire_messages(vec![
+            serde_json::json!({"name": "gamma", "data": "g-data"}),
+        ]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
 
@@ -7162,7 +7164,9 @@ async fn rtl8a_unsubscribe_non_subscribed_is_noop() {
     conn.send_to_client(ProtocolMessage {
         action: action::MESSAGE,
         channel: Some("test-rtl8a-noop".to_string()),
-        messages: Some(vec![serde_json::json!({"name": "test", "data": "ok"})]),
+        messages: crate::protocol::wire_messages(vec![
+            serde_json::json!({"name": "test", "data": "ok"}),
+        ]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
 
@@ -7756,7 +7760,7 @@ async fn tm2_all_fields_populated_together() {
         id: Some("connId:7".to_string()),
         connection_id: Some("connId".to_string()),
         timestamp: Some(1700000000000),
-        messages: Some(vec![
+        messages: crate::protocol::wire_messages(vec![
             serde_json::json!({"name": "first", "data": "a"}),
             serde_json::json!({"name": "second", "data": "b"}),
         ]),
@@ -7829,7 +7833,7 @@ async fn tm2a_existing_id_not_overwritten() {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
         id: Some("proto-id:0".to_string()),
-        messages: Some(vec![
+        messages: crate::protocol::wire_messages(vec![
             serde_json::json!({"id": "my-custom-id", "name": "msg", "data": "hello"}),
         ]),
         ..ProtocolMessage::new(action::MESSAGE)
@@ -7895,7 +7899,7 @@ async fn tm2a_message_id_populated() {
         id: Some("abc123:5".to_string()),
         connection_id: Some("abc123".to_string()),
         timestamp: Some(1700000000000),
-        messages: Some(vec![
+        messages: crate::protocol::wire_messages(vec![
             serde_json::json!({"name": "first", "data": "a"}),
             serde_json::json!({"name": "second", "data": "b"}),
             serde_json::json!({"name": "third", "data": "c"}),
@@ -7965,7 +7969,9 @@ async fn tm2a_no_id_when_protocol_message_has_no_id() {
         action: action::MESSAGE,
         channel: Some(cn.clone()),
         connection_id: Some("abc123".to_string()),
-        messages: Some(vec![serde_json::json!({"name": "msg", "data": "hello"})]),
+        messages: crate::protocol::wire_messages(vec![
+            serde_json::json!({"name": "msg", "data": "hello"}),
+        ]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
 
@@ -8026,7 +8032,9 @@ async fn tm2c_connection_id_populated() {
         channel: Some(cn.clone()),
         id: Some("msg:0".to_string()),
         connection_id: Some("server-conn-xyz".to_string()),
-        messages: Some(vec![serde_json::json!({"name": "msg", "data": "hello"})]),
+        messages: crate::protocol::wire_messages(vec![
+            serde_json::json!({"name": "msg", "data": "hello"}),
+        ]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
 
@@ -8087,7 +8095,7 @@ async fn tm2c_existing_connection_id_not_overwritten() {
         channel: Some(cn.clone()),
         id: Some("msg:0".to_string()),
         connection_id: Some("proto-conn".to_string()),
-        messages: Some(vec![
+        messages: crate::protocol::wire_messages(vec![
             serde_json::json!({"connectionId": "msg-conn", "name": "msg", "data": "hello"}),
         ]),
         ..ProtocolMessage::new(action::MESSAGE)
@@ -8150,7 +8158,7 @@ async fn tm2f_existing_timestamp_not_overwritten() {
         channel: Some(cn.clone()),
         id: Some("msg:0".to_string()),
         timestamp: Some(1700000000000),
-        messages: Some(vec![
+        messages: crate::protocol::wire_messages(vec![
             serde_json::json!({"timestamp": 1600000000000_i64, "name": "msg", "data": "hello"}),
         ]),
         ..ProtocolMessage::new(action::MESSAGE)
@@ -8213,7 +8221,9 @@ async fn tm2f_timestamp_populated() {
         channel: Some(cn.clone()),
         id: Some("msg:0".to_string()),
         timestamp: Some(1700000000000),
-        messages: Some(vec![serde_json::json!({"name": "msg", "data": "hello"})]),
+        messages: crate::protocol::wire_messages(vec![
+            serde_json::json!({"name": "msg", "data": "hello"}),
+        ]),
         ..ProtocolMessage::new(action::MESSAGE)
     });
 

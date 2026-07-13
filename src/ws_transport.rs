@@ -80,18 +80,12 @@ impl TransportConnection for WsConnection {
                         continue;
                     }
                 },
-                Ok(WsMessage::Binary(bytes)) => match decode_msgpack_tolerant(&bytes) {
-                    Some(pm) => return Some(TransportEvent::Message(pm)),
-                    None => {
-                        self.logger.error(|| {
-                            format!(
-                                "Discarding undecodable msgpack frame ({} bytes) — failed even tolerant decode",
-                                bytes.len()
-                            )
-                        });
-                        continue;
+                Ok(WsMessage::Binary(bytes)) => {
+                    match decode_msgpack_tolerant(&bytes, &self.logger) {
+                        Some(pm) => return Some(TransportEvent::Message(pm)),
+                        None => continue,
                     }
-                },
+                }
                 Ok(WsMessage::Close(_)) => return Some(TransportEvent::Disconnected),
                 Ok(_) => continue, // ping/pong/frame are transport-level
                 Err(_) => return Some(TransportEvent::Disconnected),
@@ -110,14 +104,41 @@ impl TransportConnection for WsConnection {
 /// (deserialization must be tolerant) we dedup keys — last occurrence wins —
 /// and retry. Re-encoding (rather than a JSON round-trip) preserves binary
 /// payloads.
-fn decode_msgpack_tolerant(bytes: &[u8]) -> Option<ProtocolMessage> {
+pub(crate) fn decode_msgpack_tolerant(
+    bytes: &[u8],
+    logger: &crate::options::Logger,
+) -> Option<ProtocolMessage> {
+    let discarded = |e: &dyn std::fmt::Display| {
+        logger.error(|| {
+            format!(
+                "Discarding undecodable msgpack frame ({} bytes) — failed even tolerant decode: {}",
+                bytes.len(),
+                e
+            )
+        });
+    };
     match rmp_serde::from_slice(bytes) {
         Ok(pm) => Some(pm),
-        Err(_) => {
-            let value = rmpv::decode::read_value(&mut &bytes[..]).ok()?;
+        Err(first_err) => {
+            let value = match rmpv::decode::read_value(&mut &bytes[..]) {
+                Ok(v) => v,
+                Err(e) => {
+                    discarded(&e);
+                    return None;
+                }
+            };
             let mut out = Vec::new();
-            rmpv::encode::write_value(&mut out, &dedup_map_keys(value)).ok()?;
-            rmp_serde::from_slice(&out).ok()
+            if let Err(e) = rmpv::encode::write_value(&mut out, &dedup_map_keys(value)) {
+                discarded(&e);
+                return None;
+            }
+            match rmp_serde::from_slice(&out) {
+                Ok(pm) => Some(pm),
+                Err(_) => {
+                    discarded(&first_err);
+                    None
+                }
+            }
         }
     }
 }

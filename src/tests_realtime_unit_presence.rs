@@ -1746,7 +1746,7 @@ async fn rtp13_sync_complete_after_sync() {
         channel_serial: Some("serial:cursor123".to_string()),
         connection_id: Some("conn-1".to_string()),
         timestamp: Some(1000),
-        presence: Some(vec![serde_json::json!({
+        presence: crate::protocol::wire_presence(vec![serde_json::json!({
             "action": 1, // PRESENT
             "clientId": "alice",
             "connectionId": "conn-1",
@@ -1767,7 +1767,7 @@ async fn rtp13_sync_complete_after_sync() {
         channel_serial: Some("serial:".to_string()),
         connection_id: Some("conn-1".to_string()),
         timestamp: Some(1001),
-        presence: Some(vec![serde_json::json!({
+        presence: crate::protocol::wire_presence(vec![serde_json::json!({
             "action": 1, // PRESENT
             "clientId": "bob",
             "connectionId": "conn-1",
@@ -1892,7 +1892,7 @@ async fn rtp6a_subscribe_all_presence_events() {
         channel: Some("test-rtp6a".to_string()),
         connection_id: Some("conn-1".to_string()),
         timestamp: Some(1000),
-        presence: Some(vec![serde_json::json!({
+        presence: crate::protocol::wire_presence(vec![serde_json::json!({
             "action": 2, // ENTER
             "clientId": "alice",
             "connectionId": "conn-1",
@@ -1908,7 +1908,7 @@ async fn rtp6a_subscribe_all_presence_events() {
         channel: Some("test-rtp6a".to_string()),
         connection_id: Some("conn-1".to_string()),
         timestamp: Some(1001),
-        presence: Some(vec![serde_json::json!({
+        presence: crate::protocol::wire_presence(vec![serde_json::json!({
             "action": 4, // UPDATE
             "clientId": "alice",
             "connectionId": "conn-1",
@@ -1925,7 +1925,7 @@ async fn rtp6a_subscribe_all_presence_events() {
         channel: Some("test-rtp6a".to_string()),
         connection_id: Some("conn-1".to_string()),
         timestamp: Some(1002),
-        presence: Some(vec![serde_json::json!({
+        presence: crate::protocol::wire_presence(vec![serde_json::json!({
             "action": 3, // LEAVE
             "clientId": "alice",
             "connectionId": "conn-1",
@@ -1975,7 +1975,7 @@ async fn rtp6b_subscribe_filtered_single_action() {
             channel: Some("test-rtp6b-single".to_string()),
             connection_id: Some("conn-1".to_string()),
             timestamp: Some(1000 + id_serial as i64),
-            presence: Some(vec![serde_json::json!({
+            presence: crate::protocol::wire_presence(vec![serde_json::json!({
                 "action": action_num,
                 "clientId": "alice",
                 "connectionId": "conn-1",
@@ -2021,7 +2021,7 @@ async fn rtp6b_subscribe_filtered_multiple_actions() {
             channel: Some("test-rtp6b-multi".to_string()),
             connection_id: Some("conn-1".to_string()),
             timestamp: Some(1000 + id_serial as i64),
-            presence: Some(vec![serde_json::json!({
+            presence: crate::protocol::wire_presence(vec![serde_json::json!({
                 "action": action_num,
                 "clientId": "alice",
                 "connectionId": "conn-1",
@@ -2065,7 +2065,7 @@ async fn rtp7a_unsubscribe_specific_listener() {
         channel: Some("test-rtp7a".to_string()),
         connection_id: Some("conn-1".to_string()),
         timestamp: Some(1000),
-        presence: Some(vec![serde_json::json!({
+        presence: crate::protocol::wire_presence(vec![serde_json::json!({
             "action": 2,
             "clientId": "alice",
             "connectionId": "conn-1",
@@ -2107,7 +2107,7 @@ async fn rtp7c_unsubscribe_all() {
         channel: Some("test-rtp7c".to_string()),
         connection_id: Some("conn-1".to_string()),
         timestamp: Some(1000),
-        presence: Some(vec![serde_json::json!({
+        presence: crate::protocol::wire_presence(vec![serde_json::json!({
             "action": 2,
             "clientId": "alice",
             "connectionId": "conn-1",
@@ -2128,7 +2128,7 @@ async fn rtp7c_unsubscribe_all() {
         channel: Some("test-rtp7c".to_string()),
         connection_id: Some("conn-1".to_string()),
         timestamp: Some(1001),
-        presence: Some(vec![serde_json::json!({
+        presence: crate::protocol::wire_presence(vec![serde_json::json!({
             "action": 2,
             "clientId": "bob",
             "connectionId": "conn-1",
@@ -2165,7 +2165,7 @@ async fn rtp8a_enter_sends_presence_enter() {
 
     let pm = &presence_msgs[0].message;
     assert_eq!(pm.channel.as_deref(), Some("test-rtp8a"));
-    let presence_arr = pm.presence.as_ref().unwrap();
+    let presence_arr = pm.presence_json();
     assert_eq!(presence_arr.len(), 1);
     assert_eq!(presence_arr[0]["action"], 2); // ENTER
                                               // RTP8c: clientId must NOT be in the presence message (uses connection's clientId)
@@ -2206,7 +2206,7 @@ async fn rtp8e_enter_with_data() {
         .filter(|m| m.message.action == crate::protocol::action::PRESENCE)
         .collect();
     assert_eq!(presence_msgs.len(), 1);
-    let presence_arr = presence_msgs[0].message.presence.as_ref().unwrap();
+    let presence_arr = presence_msgs[0].message.presence_json();
     assert_eq!(
         presence_arr[0]["data"],
         serde_json::json!({"status": "online"})
@@ -2314,7 +2314,7 @@ async fn rtp9a_update_sends_presence_update() {
         .filter(|m| m.message.action == crate::protocol::action::PRESENCE)
         .collect();
     assert_eq!(presence_msgs.len(), 1);
-    let presence_arr = presence_msgs[0].message.presence.as_ref().unwrap();
+    let presence_arr = presence_msgs[0].message.presence_json();
     assert_eq!(presence_arr[0]["action"], 4); // UPDATE
     assert_eq!(presence_arr[0]["data"], "new-status");
     // RTP9d: clientId must NOT be in message
@@ -2347,7 +2347,7 @@ async fn rtp10a_leave_sends_presence_leave() {
         .filter(|m| m.message.action == crate::protocol::action::PRESENCE)
         .collect();
     assert_eq!(presence_msgs.len(), 1);
-    let presence_arr = presence_msgs[0].message.presence.as_ref().unwrap();
+    let presence_arr = presence_msgs[0].message.presence_json();
     assert_eq!(presence_arr[0]["action"], 3); // LEAVE
                                               // RTP10c: clientId must NOT be in message
     assert!(presence_arr[0].get("clientId").is_none());
@@ -2383,7 +2383,7 @@ async fn rtp10a_leave_with_data() {
         .iter()
         .filter(|m| m.message.action == crate::protocol::action::PRESENCE)
         .collect();
-    let presence_arr = presence_msgs[0].message.presence.as_ref().unwrap();
+    let presence_arr = presence_msgs[0].message.presence_json();
     assert_eq!(presence_arr[0]["data"], "goodbye");
 
     let serial = presence_msgs[0].message.msg_serial.unwrap();
@@ -2416,7 +2416,7 @@ async fn rtp14a_enter_client() {
         .filter(|m| m.message.action == crate::protocol::action::PRESENCE)
         .collect();
     assert_eq!(presence_msgs.len(), 1);
-    let presence_arr = presence_msgs[0].message.presence.as_ref().unwrap();
+    let presence_arr = presence_msgs[0].message.presence_json();
     assert_eq!(presence_arr[0]["action"], 2); // ENTER
     assert_eq!(presence_arr[0]["clientId"], "user-1");
     assert_eq!(presence_arr[0]["data"], "data-1");
@@ -2510,13 +2510,13 @@ async fn rtp15a_update_client_and_leave_client() {
         .filter(|m| m.message.action == crate::protocol::action::PRESENCE)
         .collect();
     assert_eq!(pm.len(), 3);
-    let p0 = pm[0].message.presence.as_ref().unwrap();
+    let p0 = pm[0].message.presence_json();
     assert_eq!(p0[0]["action"], 2); // ENTER
     assert_eq!(p0[0]["clientId"], "user-1");
-    let p1 = pm[1].message.presence.as_ref().unwrap();
+    let p1 = pm[1].message.presence_json();
     assert_eq!(p1[0]["action"], 4); // UPDATE
     assert_eq!(p1[0]["clientId"], "user-1");
-    let p2 = pm[2].message.presence.as_ref().unwrap();
+    let p2 = pm[2].message.presence_json();
     assert_eq!(p2[0]["action"], 3); // LEAVE
     assert_eq!(p2[0]["clientId"], "user-1");
 }
@@ -2701,13 +2701,13 @@ async fn rtp15c_enter_client_no_side_effects() {
         .collect();
     assert_eq!(pm.len(), 2);
     // First: enter() — no clientId
-    let p0 = pm[0].message.presence.as_ref().unwrap();
+    let p0 = pm[0].message.presence_json();
     // (adapted: with unidentified auth the main identity also enters via
     // enter_client, so clientId is present — RTP8j vs RTP15c upstream
     // conflict is flagged in PROGRESS.md)
     assert_eq!(p0[0]["clientId"], "main-client");
     // Second: enterClient() — explicit clientId
-    let p1 = pm[1].message.presence.as_ref().unwrap();
+    let p1 = pm[1].message.presence_json();
     assert_eq!(p1[0]["clientId"], "other-client");
 }
 
@@ -2757,7 +2757,7 @@ async fn rtp11a_get_waits_for_sync() {
         channel_serial: Some("serial:".to_string()), // empty cursor = complete
         connection_id: Some("conn-1".to_string()),
         timestamp: Some(1000),
-        presence: Some(vec![
+        presence: crate::protocol::wire_presence(vec![
             serde_json::json!({"action": 1, "clientId": "alice", "connectionId": "conn-1"}),
             serde_json::json!({"action": 1, "clientId": "bob", "connectionId": "conn-2"}),
         ]),
@@ -2849,7 +2849,7 @@ async fn rtp17i_reentry_on_non_resumed_attach() {
         connection_id: Some("test-conn-id".to_string()),
         timestamp: Some(1000),
         id: Some("test-conn-id:0".to_string()),
-        presence: Some(vec![serde_json::json!({
+        presence: crate::protocol::wire_presence(vec![serde_json::json!({
             "action": 2,
             "clientId": "my-client",
             "connectionId": "test-conn-id"
@@ -2897,7 +2897,7 @@ async fn rtp17i_reentry_on_non_resumed_attach() {
         .map(|m| m.message.clone())
         .collect();
     let reentry_msg = all_presence.last().unwrap();
-    let presence_arr = reentry_msg.presence.as_ref().unwrap();
+    let presence_arr = reentry_msg.presence_json();
     let entry = &presence_arr[0];
     // action 2 = Enter
     assert_eq!(entry["action"], 2);
@@ -2935,7 +2935,7 @@ async fn rtp17i_no_reentry_when_resumed() {
         connection_id: Some("test-conn-id".to_string()),
         timestamp: Some(1000),
         id: Some("test-conn-id:0".to_string()),
-        presence: Some(vec![serde_json::json!({
+        presence: crate::protocol::wire_presence(vec![serde_json::json!({
             "action": 2,
             "clientId": "my-client",
             "connectionId": "test-conn-id"
@@ -3008,7 +3008,7 @@ async fn rtp17e_failed_reentry_emits_update() {
         connection_id: Some("test-conn-id".to_string()),
         timestamp: Some(1000),
         id: Some("test-conn-id:0".to_string()),
-        presence: Some(vec![serde_json::json!({
+        presence: crate::protocol::wire_presence(vec![serde_json::json!({
             "action": 2,
             "clientId": "my-client",
             "connectionId": "test-conn-id"
@@ -3098,7 +3098,7 @@ async fn rtp11a_get_waits_for_multi_message_sync() {
         channel_serial: Some("seq1:cursor1".to_string()),
         connection_id: Some("c1".to_string()),
         timestamp: Some(100),
-        presence: Some(vec![serde_json::json!({
+        presence: crate::protocol::wire_presence(vec![serde_json::json!({
             "action": 1, // PRESENT
             "clientId": "alice",
             "connectionId": "c1",
@@ -3121,7 +3121,7 @@ async fn rtp11a_get_waits_for_multi_message_sync() {
         channel_serial: Some("seq1:".to_string()),
         connection_id: Some("c2".to_string()),
         timestamp: Some(100),
-        presence: Some(vec![serde_json::json!({
+        presence: crate::protocol::wire_presence(vec![serde_json::json!({
             "action": 1, // PRESENT
             "clientId": "bob",
             "connectionId": "c2",
@@ -3200,7 +3200,7 @@ async fn rtp4_50_members_enter_client_same_connection() {
             channel: Some("test-rtp4".to_string()),
             connection_id: Some("test-conn-id".to_string()),
             timestamp: Some(1000 + i as i64),
-            presence: Some(vec![serde_json::json!({
+            presence: crate::protocol::wire_presence(vec![serde_json::json!({
                 "action": 2,
                 "clientId": format!("user-{}", i),
                 "connectionId": "test-conn-id",
@@ -3241,7 +3241,7 @@ async fn rtp4_50_members_enter_client_same_connection() {
         channel_serial: Some("seq1:".to_string()),
         connection_id: Some("test-conn-id".to_string()),
         timestamp: Some(2000),
-        presence: Some(sync_members),
+        presence: crate::protocol::wire_presence(sync_members),
         ..crate::protocol::ProtocolMessage::new(crate::protocol::action::SYNC)
     });
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -3540,7 +3540,7 @@ async fn rtp7b_unsubscribe_for_specific_action() {
         channel: Some("test-rtp7b".to_string()),
         connection_id: Some("c1".to_string()),
         timestamp: Some(1000),
-        presence: Some(vec![
+        presence: crate::protocol::wire_presence(vec![
             serde_json::json!({
                 "action": 2, // ENTER
                 "clientId": "alice",
@@ -3635,7 +3635,7 @@ async fn deliver_messages_populates_mutable_fields() {
         action: action::MESSAGE,
         channel: Some("test-mutable-deliver".into()),
         id: Some("proto-id".into()),
-        messages: Some(vec![json!({
+        messages: crate::protocol::wire_messages(vec![json!({
             "id": "msg-1",
             "name": "event",
             "data": "hello",
@@ -3667,7 +3667,7 @@ async fn deliver_messages_mutable_fields_default_none() {
         action: action::MESSAGE,
         channel: Some("test-mutable-default".into()),
         id: Some("proto-id".into()),
-        messages: Some(vec![json!({
+        messages: crate::protocol::wire_messages(vec![json!({
             "id": "msg-1",
             "data": "hello",
         })]),
@@ -3920,7 +3920,7 @@ async fn rtp4_50_members_same_connection() {
             channel: Some("test-rtp4-same".to_string()),
             connection_id: Some("test-conn-id".to_string()),
             timestamp: Some(1000 + i as i64),
-            presence: Some(vec![serde_json::json!({
+            presence: crate::protocol::wire_presence(vec![serde_json::json!({
                 "action": 2,
                 "clientId": format!("user-{}", i),
                 "connectionId": "test-conn-id",
@@ -3973,7 +3973,7 @@ async fn rtp4_50_members_different_connection() {
         channel_serial: Some("seq1:".to_string()),
         connection_id: Some("conn-0".to_string()),
         timestamp: Some(1000),
-        presence: Some(sync_members),
+        presence: crate::protocol::wire_presence(sync_members),
         ..crate::protocol::ProtocolMessage::new(crate::protocol::action::SYNC)
     });
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;

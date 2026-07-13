@@ -61,11 +61,11 @@ impl SandboxApp {
         &self.keys[4].key_str
     }
 
-    fn restricted_key(&self) -> &str {
+    pub(crate) fn restricted_key(&self) -> &str {
         &self.keys[2].key_str
     }
 
-    fn subscribe_only_key(&self) -> &str {
+    pub(crate) fn subscribe_only_key(&self) -> &str {
         &self.keys[3].key_str
     }
 }
@@ -2461,8 +2461,10 @@ async fn rsa17g_revoke_tokens_prevents_use() {
         .await
         .unwrap();
 
-    // The service disconnects the revoked connection with a 40141-range
-    // token error (the literal-token client cannot renew and stays down)
+    // The service disconnects the revoked connection with a 4014x token
+    // error. The literal-token client cannot renew, so per RTN15h1 it goes
+    // FAILED with 40171 ("no way to renew"), carrying the server's revocation
+    // error as the cause (TI1).
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
     loop {
         let change = tokio::time::timeout_at(deadline, events.recv())
@@ -2470,10 +2472,10 @@ async fn rsa17g_revoke_tokens_prevents_use() {
             .expect("disconnect after revocation within 30s")
             .expect("event stream open");
         if let Some(reason) = &change.reason {
-            if let Some(code) = reason.code {
-                if (40140..40150).contains(&code) {
-                    break;
-                }
+            let code = reason.code;
+            let cause_code = reason.cause.as_ref().and_then(|c| c.code);
+            if code == Some(40171) && cause_code.is_some_and(|c| (40140..40150).contains(&c)) {
+                break;
             }
         }
     }
@@ -2569,7 +2571,23 @@ async fn rsl11_get_message() {
         .unwrap();
     let serial = result.serials[0].as_deref().expect("serial").to_string();
 
-    let msg = channel.get_message(&serial).await.unwrap();
+    // The message is not immediately readable after publish (read-after-write
+    // lag, as with history) — retry 404s until the deadline.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let msg = loop {
+        match channel.get_message(&serial).await {
+            Ok(msg) => break msg,
+            Err(err) if err.status_code == Some(404) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "getMessage did not converge: {}",
+                    err
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            Err(err) => panic!("getMessage failed: {}", err),
+        }
+    };
     assert_eq!(msg.name.as_deref(), Some("test-event"));
     assert!(matches!(msg.data, Data::String(ref s) if s == "hello world"));
     assert_eq!(msg.serial.as_deref(), Some(serial.as_str()));

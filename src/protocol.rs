@@ -110,9 +110,9 @@ pub(crate) struct ProtocolMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub flags: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub messages: Option<Vec<serde_json::Value>>,
+    pub messages: Option<Vec<crate::rest::Message>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub presence: Option<Vec<serde_json::Value>>,
+    pub presence: Option<Vec<crate::rest::PresenceMessage>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -122,7 +122,7 @@ pub(crate) struct ProtocolMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub annotations: Option<serde_json::Value>,
+    pub annotations: Option<Vec<crate::rest::Annotation>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub res: Option<Vec<PublishResult>>,
 }
@@ -133,7 +133,74 @@ pub(crate) struct PublishResult {
     pub serials: Vec<Option<String>>,
 }
 
+/// TEST bridge: build typed wire entries from JSON literals (tolerant —
+/// unknown fields are ignored exactly as on the real wire).
+#[cfg(test)]
+pub(crate) fn wire_messages(entries: Vec<serde_json::Value>) -> Option<Vec<crate::rest::Message>> {
+    Some(
+        entries
+            .into_iter()
+            .map(|v| serde_json::from_value(v).expect("test wire message"))
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn wire_presence(
+    entries: Vec<serde_json::Value>,
+) -> Option<Vec<crate::rest::PresenceMessage>> {
+    Some(
+        entries
+            .into_iter()
+            .map(|v| serde_json::from_value(v).expect("test wire presence"))
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn wire_annotations(
+    entries: Vec<serde_json::Value>,
+) -> Option<Vec<crate::rest::Annotation>> {
+    Some(
+        entries
+            .into_iter()
+            .map(|v| serde_json::from_value(v).expect("test wire annotation"))
+            .collect(),
+    )
+}
+
 impl ProtocolMessage {
+    /// TEST bridge: captured wire entries as JSON for assertion ergonomics.
+    #[cfg(test)]
+    pub(crate) fn messages_json(&self) -> Vec<serde_json::Value> {
+        self.messages
+            .clone()
+            .unwrap_or_default()
+            .iter()
+            .map(|m| serde_json::to_value(m).unwrap())
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn presence_json(&self) -> Vec<serde_json::Value> {
+        self.presence
+            .clone()
+            .unwrap_or_default()
+            .iter()
+            .map(|m| serde_json::to_value(m).unwrap())
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn annotations_json(&self) -> Vec<serde_json::Value> {
+        self.annotations
+            .clone()
+            .unwrap_or_default()
+            .iter()
+            .map(|m| serde_json::to_value(m).unwrap())
+            .collect()
+    }
+
     pub fn new(action: u8) -> Self {
         Self {
             action,
@@ -188,8 +255,9 @@ pub(crate) mod flags {
     pub const PUBLISH: u64 = 1 << 17;
     pub const SUBSCRIBE: u64 = 1 << 18;
     pub const PRESENCE_SUBSCRIBE: u64 = 1 << 19;
-    pub const ANNOTATION_PUBLISH: u64 = 1 << 20;
-    pub const ANNOTATION_SUBSCRIBE: u64 = 1 << 21;
+    // NOTE 1 << 20 is the service-internal MAY_HAVE_PRESENCE flag
+    pub const ANNOTATION_PUBLISH: u64 = 1 << 21;
+    pub const ANNOTATION_SUBSCRIBE: u64 = 1 << 22;
 }
 
 #[allow(dead_code)]
@@ -212,5 +280,6 @@ pub(crate) mod action {
     pub const MESSAGE: u8 = 15;
     pub const SYNC: u8 = 16;
     pub const AUTH: u8 = 17;
-    pub const ANNOTATION: u8 = 18;
+    // 18 ACTIVATE (deprecated), 19 OBJECT, 20 OBJECT_SYNC — not implemented
+    pub const ANNOTATION: u8 = 21;
 }

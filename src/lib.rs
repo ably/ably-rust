@@ -84,6 +84,8 @@ mod tests_rest_integration;
 // Proxy integration tests (uts-proxy fault injection)
 #[cfg(test)]
 mod tests_proxy;
+#[cfg(test)]
+mod tests_proxy_realtime;
 
 // Design conformance ratchet (DESIGN.md Realtime §14)
 #[cfg(test)]
@@ -92,6 +94,8 @@ mod tests_design_conformance;
 mod tests_uts_coverage;
 
 // Realtime unit tests (UTS-derived, stage 5.1+)
+#[cfg(test)]
+mod tests_realtime_integration;
 #[cfg(test)]
 mod tests_realtime_uts_channels;
 #[cfg(test)]

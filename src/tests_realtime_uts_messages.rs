@@ -145,7 +145,7 @@ async fn await_nth_action(
 fn send_channel_message(mock: &MockWebSocket, channel: &str, messages: serde_json::Value) {
     let mut pm = ProtocolMessage::new(action::MESSAGE);
     pm.channel = Some(channel.to_string());
-    pm.messages = Some(messages.as_array().unwrap().clone());
+    pm.messages = crate::protocol::wire_messages(messages.as_array().unwrap().clone());
     mock.active_connection().send_to_client(pm);
 }
 
@@ -174,7 +174,7 @@ async fn rtl6i1_rtl6j_publish_name_data_with_ack_serials() {
         Some(0),
         "RTN7b: serials start at 0"
     );
-    let wire = sent.message.messages.as_ref().unwrap();
+    let wire = sent.message.messages_json();
     assert_eq!(wire.len(), 1);
     assert_eq!(wire[0]["name"], "greeting");
     assert_eq!(wire[0]["data"], "hello");
@@ -213,7 +213,7 @@ async fn rtl6i2_publish_array_of_messages() {
     let result = ch.publish().messages(msgs).send().await.expect("publish");
 
     let sent = await_nth_action(&mock, action::MESSAGE, 1, 2000).await;
-    let wire = sent.message.messages.as_ref().unwrap();
+    let wire = sent.message.messages_json();
     assert_eq!(wire.len(), 3, "RTL6i2: one ProtocolMessage, three messages");
     assert_eq!(wire[0]["name"], "event1");
     assert_eq!(wire[2]["name"], "event3");
@@ -237,7 +237,7 @@ async fn rtl6i3_null_fields_omitted() {
         .await
         .expect("publish");
     let sent = await_nth_action(&mock, action::MESSAGE, 1, 2000).await;
-    let wire = &sent.message.messages.as_ref().unwrap()[0];
+    let wire = &sent.message.messages_json()[0];
     let obj = wire.as_object().unwrap();
     assert_eq!(obj.get("name").and_then(|v| v.as_str()), Some("only-name"));
     for absent in ["id", "clientId", "connectionId", "encoding", "extras"] {
@@ -309,10 +309,10 @@ async fn rtl6c2_publish_queued_while_connecting_in_order() {
         .filter(|m| m.action == action::MESSAGE)
         .collect();
     assert_eq!(sent[0].message.msg_serial, Some(0));
-    assert_eq!(sent[0].message.messages.as_ref().unwrap()[0]["name"], "m0");
+    assert_eq!(sent[0].message.messages_json()[0]["name"], "m0");
     assert_eq!(sent[1].message.msg_serial, Some(1));
     assert_eq!(sent[2].message.msg_serial, Some(2));
-    assert_eq!(third.message.messages.as_ref().unwrap()[0]["name"], "m2");
+    assert_eq!(third.message.messages_json()[0]["name"], "m2");
 
     // ACK all three
     let mut ack = ProtocolMessage::new(action::ACK);
@@ -497,7 +497,7 @@ async fn rtn19a_rtn19a2_resend_keeps_serials_on_resume() {
     let resent2 = await_nth_action(&mock, action::MESSAGE, 4, 5000).await;
     assert_eq!(resent1.message.msg_serial, Some(0), "RTN19a2: serial kept");
     assert_eq!(resent2.message.msg_serial, Some(1), "RTN19a2: serial kept");
-    assert_eq!(resent1.message.messages.as_ref().unwrap()[0]["name"], "m1");
+    assert_eq!(resent1.message.messages_json()[0]["name"], "m1");
 
     // ACK both on the new transport
     let mut ack = ProtocolMessage::new(action::ACK);
@@ -506,6 +506,73 @@ async fn rtn19a_rtn19a2_resend_keeps_serials_on_resume() {
     mock.active_connection().send_to_client(ack);
     assert!(f1.await.unwrap().is_ok());
     assert!(f2.await.unwrap().is_ok());
+}
+
+// RTN19a: a pending PRESENCE or ANNOTATION publish must be resent as the
+// SAME kind of ProtocolMessage. Regression: these were resent as MESSAGE
+// frames with an empty messages array (live-caught; server NACKs 40000
+// "Malformed message; messages empty").
+#[tokio::test]
+async fn rtn19a_presence_and_annotation_resends_keep_kind() {
+    let mock = serving_mock("conn-stable");
+    let transport = Arc::new(MockTransport::new(mock.inner()));
+    let client = Realtime::with_mock(
+        &ClientOptions::new("appId.keyId:keySecret")
+            .auto_connect(false)
+            .client_id("me")
+            .unwrap(),
+        transport,
+    )
+    .unwrap();
+    let server = spawn_channel_server(&mock);
+    connect(&client).await;
+    let ch = client.channels.get("kind");
+    ch.attach().await.unwrap();
+    server.abort();
+
+    // A pending presence ENTER and a pending annotation publish (no ACKs)
+    let p = ch.clone();
+    let _enter = tokio::spawn(async move { p.presence().enter(None).await });
+    await_nth_action(&mock, action::PRESENCE, 1, 2000).await;
+    let a = ch.clone();
+    let _annotate = tokio::spawn(async move {
+        let ann = crate::rest::Annotation {
+            annotation_type: Some("reaction:distinct.v1".to_string()),
+            ..Default::default()
+        };
+        a.annotations().publish("serial-1", &ann).await
+    });
+    await_nth_action(&mock, action::ANNOTATION, 1, 2000).await;
+
+    // Drop the transport; the client reconnects and resumes
+    mock.active_connection().simulate_disconnect();
+    let resent_presence = await_nth_action(&mock, action::PRESENCE, 2, 5000).await;
+    let resent_annotation = await_nth_action(&mock, action::ANNOTATION, 2, 5000).await;
+
+    // Same kind, same serial, payload intact
+    assert_eq!(resent_presence.message.msg_serial, Some(0));
+    let presence = resent_presence.message.presence.clone().unwrap_or_default();
+    assert_eq!(presence.len(), 1, "presence entry resent verbatim");
+    assert_eq!(presence[0].action, Some(crate::rest::PresenceAction::Enter));
+    assert_eq!(resent_annotation.message.msg_serial, Some(1));
+    let annotations = resent_annotation
+        .message
+        .annotations
+        .clone()
+        .unwrap_or_default();
+    assert_eq!(annotations.len(), 1, "annotation entry resent verbatim");
+    assert_eq!(
+        annotations[0].annotation_type.as_deref(),
+        Some("reaction:distinct.v1")
+    );
+
+    // The bug shape: no MESSAGE frame may appear anywhere in this exchange
+    assert!(
+        mock.client_messages()
+            .iter()
+            .all(|m| m.action != action::MESSAGE),
+        "presence/annotation publishes must never resend as MESSAGE"
+    );
 }
 
 // UTS: RTN19a2 failed resume renumbers from a reset counter (RTN15c7)
@@ -539,8 +606,8 @@ async fn rtn19a2_failed_resume_renumbers_serials() {
     // RTN15c7: the counter reset; the pendings were renumbered from 0
     assert_eq!(resent1.message.msg_serial, Some(0));
     assert_eq!(resent2.message.msg_serial, Some(1));
-    assert_eq!(resent1.message.messages.as_ref().unwrap()[0]["name"], "m1");
-    assert_eq!(resent2.message.messages.as_ref().unwrap()[0]["name"], "m2");
+    assert_eq!(resent1.message.messages_json()[0]["name"], "m1");
+    assert_eq!(resent2.message.messages_json()[0]["name"], "m2");
 }
 
 // UTS: RTN19b pending ATTACH and DETACH are resent on the new transport
@@ -885,7 +952,7 @@ async fn tm2_field_population() {
     pm.id = Some("pm-42".to_string());
     pm.connection_id = Some("conn-other".to_string());
     pm.timestamp = Some(1_700_000_000_000);
-    pm.messages = Some(vec![
+    pm.messages = crate::protocol::wire_messages(vec![
         serde_json::json!({"name": "bare", "data": "x"}),
         serde_json::json!({"name": "preset", "data": "y", "id": "explicit-id",
                             "connectionId": "their-conn", "timestamp": 1_600_000_000_000_i64}),
@@ -921,7 +988,8 @@ async fn rtl15b_serial_updates_from_message_and_presence() {
     let mut pm = ProtocolMessage::new(action::MESSAGE);
     pm.channel = Some("serial-track".to_string());
     pm.channel_serial = Some("msg-serial-7".to_string());
-    pm.messages = Some(vec![serde_json::json!({"name": "n", "data": "d"})]);
+    pm.messages =
+        crate::protocol::wire_messages(vec![serde_json::json!({"name": "n", "data": "d"})]);
     mock.active_connection().send_to_client(pm);
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
     while ch.channel_serial().as_deref() != Some("msg-serial-7") {
@@ -1125,13 +1193,7 @@ async fn rtan1a_rtan1d_annotation_publish_wire_and_ack() {
     let _ = (&annotations, &ann);
 
     let sent = await_nth_action(&mock, action::ANNOTATION, 1, 2000).await;
-    let entries = sent
-        .message
-        .annotations
-        .as_ref()
-        .unwrap()
-        .as_array()
-        .unwrap();
+    let entries = sent.message.annotations_json();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["type"], "reaction", "RTAN1a");
     assert_eq!(entries[0]["action"], 0, "RTAN1c: ANNOTATION_CREATE");
@@ -1172,13 +1234,7 @@ async fn rtan2a_rtan1d_annotation_delete_and_nack() {
         })
     };
     let sent = await_nth_action(&mock, action::ANNOTATION, 1, 2000).await;
-    let entries = sent
-        .message
-        .annotations
-        .as_ref()
-        .unwrap()
-        .as_array()
-        .unwrap();
+    let entries = sent.message.annotations_json();
     assert_eq!(entries[0]["action"], 1, "RTAN2a: ANNOTATION_DELETE");
 
     let mut nack = ProtocolMessage::new(action::NACK);
@@ -1222,10 +1278,10 @@ async fn rtan4a_rtan4c_annotation_subscribers() {
 
     let mut pm = ProtocolMessage::new(action::ANNOTATION);
     pm.channel = Some("ann-subs".to_string());
-    pm.annotations = Some(serde_json::json!([
-        {"type": "reaction", "action": 0, "messageSerial": "m1", "data": "x"},
-        {"type": "edit", "action": 0, "messageSerial": "m1"}
-    ]));
+    pm.annotations = crate::protocol::wire_annotations(vec![
+        serde_json::json!({"type": "reaction", "action": 0, "messageSerial": "m1", "data": "x"}),
+        serde_json::json!({"type": "edit", "action": 0, "messageSerial": "m1"}),
+    ]);
     mock.active_connection().send_to_client(pm);
 
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
@@ -1322,39 +1378,46 @@ fn logging_client(
 }
 
 // Policy: an undecodable message entry logs at Error (never a silent discard)
-#[tokio::test]
-async fn observability_undecodable_message_entry_logs_error() {
-    let mock = serving_mock("conn-1");
-    let (client, lines) = logging_client(&mock, crate::options::LogLevel::Error);
-    let server = spawn_channel_server(&mock);
-    connect(&client).await;
-    let ch = client.channels.get("noisy");
-    ch.attach().await.unwrap();
-    server.abort();
-
-    // A message entry that cannot deserialize (data must not be an integer
-    // map key holder — use a shape Message cannot accept: array for name)
-    let mut pm = ProtocolMessage::new(action::MESSAGE);
-    pm.channel = Some("noisy".to_string());
-    pm.messages = Some(vec![serde_json::json!({"name": ["not", "a", "string"]})]);
-    mock.active_connection().send_to_client(pm);
-
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
-    loop {
-        let found = lines.lock().unwrap().iter().any(|(lvl, msg)| {
-            *lvl == crate::options::LogLevel::Error
-                && msg.contains("undecodable message entry")
-                && msg.contains("noisy")
+// Wire entries are typed, so a malformed entry can no longer survive past
+// transport decode — the discard happens (and must be logged) there.
+#[test]
+fn observability_undecodable_message_entry_logs_error() {
+    let lines: CapturedLogs = Arc::new(StdMutex::new(Vec::new()));
+    let lines_c = lines.clone();
+    let opts = ClientOptions::new("appId.keyId:keySecret")
+        .log_level(crate::options::LogLevel::Error)
+        .log_handler(move |lvl, msg| {
+            lines_c.lock().unwrap().push((lvl, msg.to_string()));
         });
-        if found {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "discard must log at Error"
-        );
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    }
+    let logger = opts.logger();
+
+    // A frame whose message entry cannot deserialize (array for name) fails
+    // strict decode AND the tolerant dedup retry: discarded, loudly.
+    let frame = rmp_serde::to_vec_named(&serde_json::json!({
+        "action": 15,
+        "channel": "noisy",
+        "messages": [{"name": ["not", "a", "string"]}],
+    }))
+    .unwrap();
+    assert!(crate::ws_transport::decode_msgpack_tolerant(&frame, &logger).is_none());
+
+    // Outright garbage bytes are discarded loudly too.
+    assert!(crate::ws_transport::decode_msgpack_tolerant(&[0xc1, 0x00], &logger).is_none());
+
+    let captured = lines.lock().unwrap();
+    let errors: Vec<&String> = captured
+        .iter()
+        .filter(|(l, _)| *l == crate::options::LogLevel::Error)
+        .map(|(_, m)| m)
+        .collect();
+    assert!(
+        errors.len() >= 2
+            && errors
+                .iter()
+                .all(|m| m.contains("Discarding undecodable msgpack frame")),
+        "discards must log at Error, got {:?}",
+        errors
+    );
 }
 
 // Policy: an ACK for an unknown serial logs at Error

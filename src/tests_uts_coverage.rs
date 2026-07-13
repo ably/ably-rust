@@ -116,7 +116,12 @@ fn collect_area_ids(spec: &Path, area: &str) -> BTreeSet<String> {
 
 fn collect_spec_ids(spec: &Path) -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
-    for area in ["rest/unit", "realtime/unit"] {
+    for area in [
+        "rest/unit",
+        "realtime/unit",
+        "rest/integration",
+        "realtime/integration",
+    ] {
         let mut files = Vec::new();
         collect_md_files(&spec.join(area), &mut files);
         for file in files {

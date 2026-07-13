@@ -802,18 +802,13 @@ async fn rtn15h1_token_error_no_renewal() {
         conn.send_to_client_and_close(msg);
     }
 
-    // For now, without token renewal infrastructure, should go to DISCONNECTED
-    // (Full RTN15h1 would go to FAILED, but that requires auth integration)
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-    let state = client.connection.state();
-    // Should have transitioned to DISCONNECTED at minimum
-    assert!(
-        state == ConnectionState::Disconnected || state == ConnectionState::Failed,
-        "Expected DISCONNECTED or FAILED, got {:?}",
-        state
-    );
+    // RTN15h1: a token error with a non-renewable token (token string only, no
+    // key/authCallback/authUrl) is terminal — the connection goes to FAILED.
+    assert!(await_state(&client.connection, ConnectionState::Failed, 5000).await);
+    // The SDK substitutes 40171 ("no way to renew the auth token") for the
+    // server's token error, matching ably-js.
     let err = client.connection.error_reason().unwrap();
-    assert_eq!(err.code, Some(40142));
+    assert_eq!(err.code, Some(40171));
     assert_eq!(err.status_code, Some(401));
 }
 

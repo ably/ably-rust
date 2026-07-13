@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Generate uts_coverage.txt — the UTS traceability matrix.
 
-For every `**Test ID**` in the UTS tree (rest/unit + realtime/unit), emit one
-line:
+For every `**Test ID**` in the UTS tree (rest + realtime, unit + integration;
+objects/ and docs/ are excluded by `!area` lines), emit one line:
     <test-id> => <rust_test_fn>[, <fn2>...]     covered by these PASSING tests
     <test-id> !! <reason>                        deliberately not covered (yet)
 
@@ -33,6 +33,8 @@ EXCLUDE_FILES = {
     "realtime/unit/connection/network_change_test.md": "OS network-event detection not implemented (recorded deferral)",
     "rest/unit/push/push_channel_subscriptions.md": "push admin: LocalDevice not implemented (recorded deferral)",
     "rest/unit/push/push_channels.md": "push channels: LocalDevice not implemented (recorded deferral)",
+    "realtime/integration/delta_decoding_test.md": "delta/vcdiff decoding not planned (needs vcdiff plugin)",
+    "rest/integration/push_channels.md": "push channels: LocalDevice not implemented (recorded deferral)",
 }
 
 # --- per-ID dispositions ---
@@ -119,6 +121,24 @@ OVERRIDES = {
     "realtime/unit/RTP6/multiple-presence-in-single-message-1": "rtp6_presence_events_update_map",
     # ---- realtime: 5.8 manual mapping ----
     "realtime/unit/RTAN1b/publish-channel-state-0": "rtan1b_annotation_publish_state_conditions",
+    # ---- TASK-11: integration mappings (each verified by reading the test) ----
+    "rest/integration/RSP4b2/history-direction-forwards-0": "rsp4_presence_history",
+    "rest/integration/RSP4b3/history-limit-pagination-0": "rsp4_presence_history",
+    "realtime/integration/RSA9a/token-request-server-accepted-0": "rsa8_rsa9_rsa7_token_auth_connect",
+    "realtime/integration/RTC8a/in-band-reauth-connected-0": "rtc8_authorize_live",
+    "realtime/integration/RTC8c/authorize-initiates-connection-0": "rtc8_authorize_live",
+    "realtime/integration/RTL4c/attach-succeeds-0": "live_channel_attach_detach_against_sandbox",
+    "realtime/integration/RTL5d/detach-succeeds-0": "live_channel_attach_detach_against_sandbox",
+    "realtime/integration/RTL6f/connectionid-matches-publisher-0": "rtl6_data_roundtrips_with_metadata",
+    "realtime/integration/RSL6a2/message-extras-roundtrip-0": "rtl6_data_roundtrips_with_metadata",
+    "realtime/integration/RTL7a/subscribe-all-messages-0": "rtl7_subscribe_flows_between_clients",
+    "realtime/integration/RTL7b/subscribe-filtered-by-name-0": "rtl7_subscribe_flows_between_clients",
+    "realtime/integration/RTAN1/annotation-publish-delete-0": "rtan_annotations_live",
+    "realtime/integration/RTAN4c/annotation-type-filtering-0": "rtan_annotations_live",
+    "realtime/integration/RTAN4d/annotation-implicit-attach-0": "rtan_annotations_live",
+    # ---- TASK-11: integration exclusions ----
+    "realtime/proxy/RTN16d/recovery-preserves-connid-0": "!! RTN16 recovery not yet implemented (planned post-5.6)",
+    "realtime/proxy/RTN16l/recovery-failure-fresh-conn-0": "!! RTN16 recovery not yet implemented (planned post-5.6)",
     # ---- rest: exclusions ----
     "rest/unit/TM2s1/version-defaults-from-message-0": "!! version defaulting deferred (recorded; ignored test exists)",
     "rest/unit/TP5/presence-message-size-0": "!! PresenceMessage::size() deferred (recorded; ignored test exists)",
@@ -128,7 +148,7 @@ OVERRIDES = {
 
 # --- collect UTS Test IDs ---
 ids = []
-for area in ("rest/unit", "realtime/unit"):
+for area in ("rest/unit", "realtime/unit", "rest/integration", "realtime/integration"):
     for md in sorted((SPEC / area).rglob("*.md")):
         rel = str(md.relative_to(SPEC))
         for m in re.finditer(r"\*\*Test ID\*\*:\s*`([^`]+)`", md.read_text()):
@@ -141,11 +161,31 @@ for line in Path(sys.argv[1]).read_text().splitlines():
     if m:
         results[m.group(1)] = m.group(2)
 passing = sorted({p.rsplit("::", 1)[-1] for p, s in results.items() if s == "ok"})
+# A bare fn name can exist in several modules (e.g. a unit and an integration
+# variant of the same spec point) — keep every module it passes in.
+passing_modules = defaultdict(set)
+for p, s in results.items():
+    if s == "ok":
+        passing_modules[p.rsplit("::", 1)[-1]].add(
+            p.rsplit("::", 1)[0] if "::" in p else ""
+        )
 fn_components = {name: set(name.split("_")) for name in passing}
 
-def candidates(token):
+# Integration-area Test IDs may only be claimed by tests that actually run
+# against a live environment or the proxy (CLAUDE.md policy 3: a mocked unit
+# test cannot honestly cover an integration ID).
+def is_integration_test(name):
+    return name.startswith("live_") or any(
+        "integration" in m or "proxy" in m for m in passing_modules.get(name, ())
+    )
+
+def candidates(token, integration_only=False):
     t = token.lower()
-    return [n for n in passing if t in fn_components[n]]
+    return [
+        n
+        for n in passing
+        if t in fn_components[n] and (not integration_only or is_integration_test(n))
+    ]
 
 out_lines = []
 unresolved = []
@@ -162,7 +202,8 @@ for tid, src in ids:
         out_lines.append(f"{tid} !! {EXCLUDE_FILES[src]}")
         continue
     token, slug = tid.split("/")[2], tid.split("/")[3]
-    cands = candidates(token)
+    integration_only = "/integration/" in tid or "/proxy/" in tid or tid.split("/")[1] in ("integration", "proxy")
+    cands = candidates(token, integration_only)
     if not cands:
         unresolved.append(tid)
         out_lines.append(f"{tid} ?? UNRESOLVED ({src})")
@@ -183,15 +224,14 @@ for tid, src in ids:
         out_lines.append(f"{tid} => {', '.join(cands)}")
 
 AREA_EXCLUSIONS = {
-    "rest/integration": "pending TASK-11 (integration-spec traceability)",
-    "realtime/integration": "pending TASK-11 (integration-spec traceability; realtime integration largely unimplemented)",
     "objects/unit": "LiveObjects is not implemented in this SDK (out of scope)",
     "objects/integration": "LiveObjects is not implemented in this SDK (out of scope)",
     "objects/helpers": "LiveObjects is not implemented in this SDK (out of scope)",
     "docs": "spec-authoring guide; Test IDs are illustrative examples",
 }
 
-header = """# UTS coverage matrix — one line per UTS Test ID (rest/unit + realtime/unit).
+header = """# UTS coverage matrix — one line per UTS Test ID (rest + realtime, unit +
+# integration; objects/ and docs/ are dispositioned by the !area lines below).
 #
 #   <test-id> => <rust_test_fn>[, ...]   covered by these passing tests
 #   <test-id> !! <reason>                deliberately not covered (stage/deferral)
