@@ -48,6 +48,9 @@ pub struct ClientOptions {
     pub(crate) tls_port: u32,
     pub(crate) echo_messages: bool,
     pub(crate) queue_messages: bool,
+    /// RTC1c/RTN16: a serialized recovery key from a previous instance's
+    /// `Connection::create_recovery_key()`.
+    pub(crate) recover: Option<String>,
     pub(crate) transport_params: Vec<(String, String)>,
     pub(crate) disconnected_retry_timeout: Duration,
     pub(crate) suspended_retry_timeout: Duration,
@@ -277,6 +280,13 @@ impl ClientOptions {
         self
     }
 
+    /// RTC1c/RTN16: recover a previous instance's connection state from the
+    /// key returned by its `Connection::create_recovery_key()`.
+    pub fn recover(mut self, key: impl Into<String>) -> Self {
+        self.recover = Some(key.into());
+        self
+    }
+
     pub fn transport_params(mut self, params: Vec<(String, String)>) -> Self {
         self.transport_params = params;
         self
@@ -363,6 +373,7 @@ impl ClientOptions {
             tls_port: self.tls_port,
             echo_messages: self.echo_messages,
             queue_messages: self.queue_messages,
+            recover: self.recover.clone(),
             transport_params: self.transport_params.clone(),
             disconnected_retry_timeout: self.disconnected_retry_timeout,
             suspended_retry_timeout: self.suspended_retry_timeout,
@@ -573,6 +584,7 @@ impl ClientOptions {
             tls_port: 443,
             echo_messages: true,
             queue_messages: true,
+            recover: None,
             transport_params: Vec::new(),
             disconnected_retry_timeout: Duration::from_secs(15),
             suspended_retry_timeout: Duration::from_secs(30),

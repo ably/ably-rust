@@ -2303,3 +2303,386 @@ async fn rsa4a1_non_renewable_token_logs_warning() {
         "RSA4a1: the help URL is included"
     );
 }
+
+// ============================================================================
+// RTN16 — connection recovery (connection_recovery_test.md, RTC1c)
+// ============================================================================
+
+/// Drive `ch.attach()` to completion by answering the ATTACH frame with an
+/// ATTACHED carrying `serial`.
+async fn attach_with_serial(
+    mock: &MockWebSocket,
+    ch: &Arc<crate::channel::RealtimeChannel>,
+    name: &str,
+    serial: &str,
+) {
+    let before = mock
+        .client_messages()
+        .iter()
+        .filter(|m| m.action == action::ATTACH)
+        .count();
+    let ch2 = ch.clone();
+    let attach = tokio::spawn(async move { ch2.attach().await });
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
+    loop {
+        let n = mock
+            .client_messages()
+            .iter()
+            .filter(|m| m.action == action::ATTACH)
+            .count();
+        if n > before {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "ATTACH sent");
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+    }
+    let mut reply = ProtocolMessage::new(action::ATTACHED);
+    reply.channel = Some(name.to_string());
+    reply.channel_serial = Some(serial.to_string());
+    mock.active_connection().send_to_client(reply);
+    attach.await.unwrap().unwrap();
+}
+
+// UTS: realtime/unit/RTN16g/recovery-key-structure-0 (RTN16g, RTN16g1)
+#[tokio::test]
+async fn rtn16g_recovery_key_structure() {
+    let mock = MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_success(connected_msg("connection-1", "key-abc-123"));
+        std::mem::forget(c);
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    let ch_a = client.channels.get("channel-alpha");
+    attach_with_serial(&mock, &ch_a, "channel-alpha", "serial-a-001").await;
+    // RTN16g1: any unicode channel name must serialize correctly
+    let ch_b = client.channels.get("channel-éàü-世界");
+    attach_with_serial(&mock, &ch_b, "channel-éàü-世界", "serial-b-002").await;
+
+    let key = client
+        .connection
+        .create_recovery_key()
+        .await
+        .expect("recovery key while CONNECTED");
+    let parsed: serde_json::Value = serde_json::from_str(&key).unwrap();
+    assert_eq!(parsed["connectionKey"], "key-abc-123");
+    assert_eq!(parsed["msgSerial"], 0);
+    assert_eq!(parsed["channelSerials"]["channel-alpha"], "serial-a-001");
+    assert_eq!(parsed["channelSerials"]["channel-éàü-世界"], "serial-b-002");
+
+    // Round-trip preserves the unicode name
+    let reparsed: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&parsed).unwrap()).unwrap();
+    assert_eq!(
+        reparsed["channelSerials"]["channel-éàü-世界"],
+        "serial-b-002"
+    );
+    client.close();
+}
+
+// UTS: realtime/unit/RTN16g2/recovery-key-null-inactive-0
+#[tokio::test]
+async fn rtn16g2_recovery_key_null_in_inactive_states() {
+    // INITIALIZED / CONNECTED / CLOSING / CLOSED
+    let mock = MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_success(connected_msg("connection-1", "key-1"));
+        std::mem::forget(c);
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+    assert!(
+        client.connection.create_recovery_key().await.is_none(),
+        "RTN16g2: None before the first connect"
+    );
+
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+    assert!(client.connection.create_recovery_key().await.is_some());
+
+    // The mock does not answer CLOSE, so the state rests at CLOSING
+    client.close();
+    assert!(await_state(&client.connection, ConnectionState::Closing, 5000).await);
+    assert!(
+        client.connection.create_recovery_key().await.is_none(),
+        "RTN16g2: None while CLOSING"
+    );
+    mock.active_connection()
+        .send_to_client(ProtocolMessage::new(action::CLOSED));
+    assert!(await_state(&client.connection, ConnectionState::Closed, 5000).await);
+    assert!(
+        client.connection.create_recovery_key().await.is_none(),
+        "RTN16g2: None once CLOSED"
+    );
+
+    // FAILED
+    let mock_f = MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_success(connected_msg("conn-f", "key-f"));
+        std::mem::forget(c);
+    });
+    let client_f = client_with(&mock_f, default_opts().auto_connect(false));
+    client_f.connect();
+    assert!(await_state(&client_f.connection, ConnectionState::Connected, 5000).await);
+    let mut fatal = ProtocolMessage::new(action::ERROR);
+    fatal.error = Some(ErrorInfo::with_status(50000, 500, "Fatal error"));
+    mock_f.active_connection().send_to_client_and_close(fatal);
+    assert!(await_state(&client_f.connection, ConnectionState::Failed, 5000).await);
+    assert!(
+        client_f.connection.create_recovery_key().await.is_none(),
+        "RTN16g2: None once FAILED"
+    );
+
+    // SUSPENDED: 1ms TTL, reconnects refused
+    let count = Arc::new(AtomicU32::new(0));
+    let count_c = count.clone();
+    let mock_s = MockWebSocket::with_handler(move |conn| {
+        let n = count_c.fetch_add(1, Ordering::SeqCst);
+        if n == 0 {
+            let mut msg = connected_msg("conn-s", "key-s");
+            if let Some(ref mut details) = msg.connection_details {
+                details.connection_state_ttl = Some(1);
+            }
+            let c = conn.respond_with_success(msg);
+            std::mem::forget(c);
+        } else {
+            conn.respond_with_refused();
+        }
+    });
+    let client_s = client_with(
+        &mock_s,
+        default_opts()
+            .auto_connect(false)
+            .disconnected_retry_timeout(std::time::Duration::from_millis(50))
+            .suspended_retry_timeout(std::time::Duration::from_secs(30))
+            .realtime_request_timeout(std::time::Duration::from_millis(300)),
+    );
+    client_s.connect();
+    assert!(await_state(&client_s.connection, ConnectionState::Connected, 5000).await);
+    mock_s.active_connection().simulate_disconnect();
+    assert!(await_state(&client_s.connection, ConnectionState::Suspended, 10000).await);
+    assert!(
+        client_s.connection.create_recovery_key().await.is_none(),
+        "RTN16g2: None while SUSPENDED"
+    );
+}
+
+// UTS: realtime/unit/RTN16k/recover-query-param-0 (also RTC1c/recover-option-0)
+#[tokio::test]
+async fn rtn16k_recover_param_first_connection_only() {
+    let recovery_key = serde_json::json!({
+        "connectionKey": "recovered-key-xyz",
+        "msgSerial": 5,
+        "channelSerials": {}
+    })
+    .to_string();
+
+    let urls: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+    let urls_c = urls.clone();
+    let count = Arc::new(AtomicU32::new(0));
+    let count_c = count.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        urls_c.lock().unwrap().push(conn.url.clone());
+        let n = count_c.fetch_add(1, Ordering::SeqCst);
+        let key = if n == 0 {
+            "new-key-after-recovery"
+        } else {
+            "resumed-key"
+        };
+        let c = conn.respond_with_success(connected_msg("recovered-conn-id", key));
+        std::mem::forget(c);
+    });
+    let client = client_with(
+        &mock,
+        default_opts().auto_connect(false).recover(&recovery_key),
+    );
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    mock.active_connection().simulate_disconnect();
+    assert!(
+        await_connection_count(&mock, 2, 5000).await,
+        "reconnect after drop"
+    );
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    let urls = urls.lock().unwrap();
+    // RTN16k: first attempt recovers, and only the first
+    assert!(
+        urls[0].contains("recover=recovered-key-xyz"),
+        "first URL carries recover: {}",
+        urls[0]
+    );
+    assert!(!urls[0].contains("resume="), "no resume on the first URL");
+    // The reconnect resumes with the key issued by the recovery CONNECTED
+    assert!(
+        urls[1].contains("resume=new-key-after-recovery"),
+        "second URL resumes: {}",
+        urls[1]
+    );
+    assert!(!urls[1].contains("recover="), "recover never resent");
+    client.close();
+}
+
+// UTS: realtime/unit/RTN16f/recover-initializes-msgserial-0
+#[tokio::test]
+async fn rtn16f_recover_initializes_msg_serial() {
+    let recovery_key = serde_json::json!({
+        "connectionKey": "old-key",
+        "msgSerial": 42,
+        "channelSerials": {"test-channel": "ch-serial-1"}
+    })
+    .to_string();
+
+    let mock = MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_success(connected_msg("recovered-conn", "new-key"));
+        std::mem::forget(c);
+    });
+    let client = client_with(
+        &mock,
+        default_opts().auto_connect(false).recover(&recovery_key),
+    );
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    let ch = client.channels.get("test-channel");
+    attach_with_serial(&mock, &ch, "test-channel", "ch-serial-updated").await;
+
+    let ch2 = ch.clone();
+    let publish = tokio::spawn(async move { ch2.publish_message(Some("event"), None).await });
+
+    // The first publish continues from the recovered msgSerial (42)
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
+    let sent_serial = loop {
+        if let Some(m) = mock
+            .client_messages()
+            .iter()
+            .find(|m| m.action == action::MESSAGE)
+        {
+            break m.message.msg_serial;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "MESSAGE sent");
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+    };
+    assert_eq!(
+        sent_serial,
+        Some(42),
+        "RTN16f: msgSerial from the recovery key"
+    );
+
+    let mut ack = ProtocolMessage::new(action::ACK);
+    ack.msg_serial = Some(42);
+    ack.count = Some(1);
+    mock.active_connection().send_to_client(ack);
+    publish.await.unwrap().expect("ACK resolves the publish");
+    client.close();
+}
+
+// UTS: realtime/unit/RTN16f1/malformed-recovery-key-0
+#[tokio::test]
+async fn rtn16f1_malformed_recovery_key_connects_fresh() {
+    let urls: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+    let urls_c = urls.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        urls_c.lock().unwrap().push(conn.url.clone());
+        let c = conn.respond_with_success(connected_msg("fresh-conn", "fresh-key"));
+        std::mem::forget(c);
+    });
+    let logged: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+    let logged_c = logged.clone();
+    let client = client_with(
+        &mock,
+        default_opts()
+            .auto_connect(false)
+            .recover("this-is-not-valid-json!!!")
+            .log_handler(move |_level, msg| {
+                logged_c.lock().unwrap().push(msg.to_string());
+            }),
+    );
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    assert_eq!(client.connection.id().as_deref(), Some("fresh-conn"));
+    assert_eq!(client.connection.key().as_deref(), Some("fresh-key"));
+    let urls = urls.lock().unwrap();
+    assert_eq!(urls.len(), 1, "a single normal connection attempt");
+    assert!(
+        !urls[0].contains("recover="),
+        "no recover param: {}",
+        urls[0]
+    );
+    assert!(!urls[0].contains("resume="), "no resume param");
+    // RTN16f1: the malformed key is reported via the logger
+    assert!(
+        logged
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.contains("recovery key")),
+        "an error mentioning the recovery key was logged: {:?}",
+        logged.lock().unwrap()
+    );
+    client.close();
+}
+
+// UTS: realtime/unit/RTN16j/recover-channel-serials-0 (RTN16j, RTN16i)
+#[tokio::test]
+async fn rtn16j_recover_seeds_channel_serials() {
+    let recovery_key = serde_json::json!({
+        "connectionKey": "old-key-abc",
+        "msgSerial": 10,
+        "channelSerials": {
+            "channel-one": "serial-1-abc",
+            "channel-two": "serial-2-def",
+            "channel-üñîçöðé": "serial-3-unicode"
+        }
+    })
+    .to_string();
+
+    let mock = MockWebSocket::with_handler(|conn| {
+        let c = conn.respond_with_success(connected_msg("recovered-conn", "new-key"));
+        std::mem::forget(c);
+    });
+    let client = client_with(
+        &mock,
+        default_opts().auto_connect(false).recover(&recovery_key),
+    );
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    // RTN16j: each channel from the key carries its recovered channelSerial
+    let expectations = [
+        ("channel-one", "serial-1-abc"),
+        ("channel-two", "serial-2-def"),
+        ("channel-üñîçöðé", "serial-3-unicode"),
+    ];
+    for (name, serial) in expectations {
+        let ch = client.channels.get(name);
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
+        while ch.channel_serial().as_deref() != Some(serial) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{} seeded with {}, got {:?}",
+                name,
+                serial,
+                ch.channel_serial()
+            );
+            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+        }
+        // RTN16i: instantiated but NOT attached
+        assert_eq!(ch.state(), crate::protocol::ChannelState::Initialized);
+    }
+
+    // The first ATTACH after recovery carries the recovered serial (RTL4c1)
+    let ch = client.channels.get("channel-one");
+    attach_with_serial(&mock, &ch, "channel-one", "serial-1-abc-updated").await;
+    let attach_frame = mock
+        .client_messages()
+        .into_iter()
+        .find(|m| m.action == action::ATTACH && m.channel.as_deref() == Some("channel-one"))
+        .expect("ATTACH frame");
+    assert_eq!(
+        attach_frame.message.channel_serial.as_deref(),
+        Some("serial-1-abc"),
+        "RTN16j: ATTACH carries the recovered channelSerial"
+    );
+    client.close();
+}

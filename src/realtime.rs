@@ -201,6 +201,20 @@ impl Connection {
         let _ = self.input_tx.send(LoopInput::Cmd(Command::Close));
     }
 
+    /// RTN16g: a serialized recovery key (connectionKey, msgSerial and the
+    /// attached channels' serials) for a future instance's
+    /// `ClientOptions::recover`. RTN16g2: `None` while CLOSING, CLOSED,
+    /// FAILED or SUSPENDED, or before the first connection.
+    pub async fn create_recovery_key(&self) -> Option<String> {
+        self.logger
+            .micro(|| "API: Connection::create_recovery_key".to_string());
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        self.input_tx
+            .send(LoopInput::Cmd(Command::CreateRecoveryKey { reply }))
+            .ok()?;
+        rx.await.ok().flatten()
+    }
+
     /// RTN13: heartbeat ping over the live connection; resolves with the
     /// round-trip time.
     pub async fn ping(&self) -> Result<Duration> {

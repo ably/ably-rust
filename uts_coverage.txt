@@ -80,8 +80,8 @@ realtime/proxy/RTN15g/ttl-expiry-clears-resume-0 => proxy_rtn15g_ttl_expiry_clea
 realtime/proxy/RTN15h1/token-error-nonrenewable-failed-0 => proxy_rtn15h1_token_error_nonrenewable_failed
 realtime/proxy/RTN15h3/non-token-error-reconnects-0 => proxy_rtn15h3_non_token_error_reconnects
 realtime/proxy/RTN15j/fatal-error-established-conn-0 => proxy_rtn15j_fatal_error_on_established_connection
-realtime/proxy/RTN16d/recovery-preserves-connid-0 !! RTN16 recovery not yet implemented (planned post-5.6)
-realtime/proxy/RTN16l/recovery-failure-fresh-conn-0 !! RTN16 recovery not yet implemented (planned post-5.6)
+realtime/proxy/RTN16d/recovery-preserves-connid-0 => proxy_rtn16d_recovery_preserves_connection_id
+realtime/proxy/RTN16l/recovery-failure-fresh-conn-0 => proxy_rtn16l_recovery_failure_fresh_connection
 realtime/proxy/RTN19a/unacked-resent-on-resume-0 => proxy_rtn19a_unacked_message_resent_on_resume
 realtime/proxy/RTN22/server-initiated-reauth-0 => proxy_rtn22_server_initiated_reauth
 realtime/proxy/RTN23a/heartbeat-starvation-reconnect-0 => proxy_rtn23a_transport_failure_reconnects_with_resume
@@ -132,7 +132,7 @@ realtime/unit/RTC16/close-method-0 => rtc8c_authorize_from_closed_reconnects
 realtime/unit/RTC17/client-id-attribute-0 => rtc17_client_id_returns_auth_client_id
 realtime/unit/RTC1a/echo-messages-option-0 => rtc1a_echo_messages_default_true
 realtime/unit/RTC1b/auto-connect-option-0 => rtc1b_auto_connect_false
-realtime/unit/RTC1c/recover-option-0 !! RTN16 recovery not yet implemented (planned post-5.6)
+realtime/unit/RTC1c/recover-option-0 => rtn16k_recover_param_first_connection_only
 realtime/unit/RTC1f/transport-params-option-0 => rtc1f_transport_params
 realtime/unit/RTC2/connection-attribute-0 => rtc2_connection_attribute
 realtime/unit/RTC3/channels-attribute-0 => rtc3_channels_attribute
@@ -355,12 +355,12 @@ realtime/unit/RTN15h2/token-error-renew-fails-1 => rtn15h2_disconnected_token_er
 realtime/unit/RTN15h2/token-error-renew-success-0 => rtn15h2_disconnected_token_error_renews_and_reconnects
 realtime/unit/RTN15h3/non-token-error-resume-0 => proxy_rtn15h3_non_token_error_reconnects
 realtime/unit/RTN15j/error-empty-channel-failed-0 => rtn15j_error_empty_channel_while_connected
-realtime/unit/RTN16f/recover-initializes-msgserial-0 !! RTN16 recovery not yet implemented (planned post-5.6)
-realtime/unit/RTN16f1/malformed-recovery-key-0 !! RTN16 recovery not yet implemented (planned post-5.6)
-realtime/unit/RTN16g/recovery-key-structure-0 !! RTN16 recovery not yet implemented (planned post-5.6)
-realtime/unit/RTN16g2/recovery-key-null-inactive-0 !! RTN16 recovery not yet implemented (planned post-5.6)
-realtime/unit/RTN16j/recover-channel-serials-0 !! RTN16 recovery not yet implemented (planned post-5.6)
-realtime/unit/RTN16k/recover-query-param-0 !! RTN16 recovery not yet implemented (planned post-5.6)
+realtime/unit/RTN16f/recover-initializes-msgserial-0 => rtn16f_recover_initializes_msg_serial
+realtime/unit/RTN16f1/malformed-recovery-key-0 => rtn16f1_malformed_recovery_key_connects_fresh
+realtime/unit/RTN16g/recovery-key-structure-0 => rtn16g_recovery_key_structure
+realtime/unit/RTN16g2/recovery-key-null-inactive-0 => rtn16g2_recovery_key_null_in_inactive_states
+realtime/unit/RTN16j/recover-channel-serials-0 => rtn16j_recover_seeds_channel_serials
+realtime/unit/RTN16k/recover-query-param-0 => rtn16k_recover_param_first_connection_only
 realtime/unit/RTN17e/http-uses-same-fallback-0 => rtn17e_http_uses_same_fallback_as_realtime
 realtime/unit/RTN17f/fallback-on-error-0 => rtn17f_connection_refused_triggers_fallback
 realtime/unit/RTN17f1/disconnected-5xx-fallback-0 => rtn17f1_5xx_disconnected_triggers_fallback

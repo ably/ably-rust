@@ -64,6 +64,11 @@ pub(crate) enum Command {
     Ping {
         reply: oneshot::Sender<Result<Duration>>,
     },
+    /// RTN16g: snapshot the recovery key (connectionKey + msgSerial +
+    /// attached channels' serials), or None in inactive states (RTN16g2).
+    CreateRecoveryKey {
+        reply: oneshot::Sender<Option<String>>,
+    },
     /// RTC8: apply an externally obtained token to the live connection.
     /// RTC8: authorize with an already-obtained token. The reply resolves
     /// once the server has confirmed (CONNECTED) or refused (RTC8a3/RTC8b1).
@@ -643,6 +648,15 @@ struct ConnectionCtx {
     current_host: Option<String>,
     /// RTN15b: the connection key used for resume on reconnects.
     resume_key: Option<String>,
+    /// RTN16: the connectionKey from ClientOptions::recover, consumed by the
+    /// first connect attempt (RTN16k).
+    recover_key: Option<String>,
+    /// RTN16f: the current connect attempt carries a recover param — a clean
+    /// CONNECTED then keeps the recovered msgSerial.
+    recovering: bool,
+    /// RTN16j: channel/channelSerial pairs from the recovery key, seeding
+    /// channels as they are first created.
+    recover_channel_serials: std::collections::HashMap<String, String>,
     /// The id of the last successful connection (RTN15c6/c7 comparison).
     last_connected_id: Option<String>,
     /// Consecutive failed attempts in the current disconnected cycle (RTB1).
@@ -1552,9 +1566,17 @@ impl ConnectionCtx {
         // RTN15b: resume with the previous connection key, unless the TTL has
         // passed (RTN15g) — past_ttl clears resume_key when it fires.
         let resume = self.resume_key.clone();
+        // RTN16k: the recover param goes on the first connection attempt only
+        // (and never alongside resume) — consumed here so it is never resent.
+        let recover = if resume.is_none() {
+            self.recover_key.take()
+        } else {
+            None
+        };
+        self.recovering = recover.is_some();
         let force_renewal = std::mem::take(&mut self.force_renewal_on_next_connect);
         tokio::spawn(async move {
-            let result = connect_task(rest, factory, host, resume, force_renewal).await;
+            let result = connect_task(rest, factory, host, resume, recover, force_renewal).await;
             let _ = input_tx.send(LoopInput::ConnectAttempt { generation, result });
         });
     }
@@ -1686,13 +1708,19 @@ impl ConnectionCtx {
                 events_tx,
             } => {
                 let logger = self.rest.inner.opts.logger();
-                self.channels
+                // RTN16j: a channel named in the recovery key starts with its
+                // recovered channelSerial, so the first ATTACH carries it
+                // (RTL4c1) and the server can resume the channel's continuity
+                let recovered_serial = self.recover_channel_serials.remove(&name);
+                let seeded = recovered_serial.is_some();
+                let ctx = self
+                    .channels
                     .entry(name.clone())
                     .or_insert_with(|| ChannelCtx {
                         name,
                         state: ChannelState::Initialized,
                         error_reason: None,
-                        channel_serial: None,
+                        channel_serial: recovered_serial,
                         attach_serial: None,
                         options,
                         attached_modes: None,
@@ -1715,6 +1743,9 @@ impl ConnectionCtx {
                         events_tx,
                         logger,
                     });
+                if seeded {
+                    ctx.publish_snapshot();
+                }
             }
             Command::Attach { name, reply } => self.handle_attach(name, reply),
             Command::PresenceOp {
@@ -1945,7 +1976,46 @@ impl ConnectionCtx {
                     )));
                 }
             },
+            Command::CreateRecoveryKey { reply } => {
+                let _ = reply.send(self.create_recovery_key());
+            }
         }
+    }
+
+    /// RTN16g: serialize the recovery key — the connectionKey, the current
+    /// msgSerial and every attached channel's channelSerial. RTN16g2: None in
+    /// CLOSING/CLOSED/FAILED/SUSPENDED or without a connectionKey. RTN16g1:
+    /// JSON encodes any unicode channel name.
+    fn create_recovery_key(&self) -> Option<String> {
+        if matches!(
+            self.state,
+            ConnectionState::Closing
+                | ConnectionState::Closed
+                | ConnectionState::Failed
+                | ConnectionState::Suspended
+        ) {
+            return None;
+        }
+        let key = self.key.as_ref()?;
+        let serials: serde_json::Map<String, serde_json::Value> = self
+            .channels
+            .values()
+            .filter(|c| c.state == ChannelState::Attached)
+            .map(|c| {
+                (
+                    c.name.clone(),
+                    serde_json::Value::String(c.channel_serial.clone().unwrap_or_default()),
+                )
+            })
+            .collect();
+        Some(
+            serde_json::json!({
+                "connectionKey": key,
+                "msgSerial": self.msg_serial,
+                "channelSerials": serials,
+            })
+            .to_string(),
+        )
     }
 
     fn handle_connect_attempt(&mut self, result: Result<Box<dyn TransportConnection>>) {
@@ -2124,10 +2194,15 @@ impl ConnectionCtx {
                 // connection id; RTN15c7: a new id means the resume failed and
                 // the server's error (if any) becomes the change reason.
                 let reason = pm.error.clone();
+                // RTN16f: a clean CONNECTED on a recover attempt continues the
+                // previous instance's msgSerial; an error means the recovery
+                // failed and the counter resets (RTN15c7)
+                let recovered = std::mem::take(&mut self.recovering) && reason.is_none();
                 // (was this a resume at all, and did it succeed? RTN19a2)
-                let resume_succeeded = self.last_connected_id.is_some()
-                    && new_id == self.last_connected_id
-                    && reason.is_none();
+                let resume_succeeded = recovered
+                    || (self.last_connected_id.is_some()
+                        && new_id == self.last_connected_id
+                        && reason.is_none());
                 if self.last_connected_id.is_some() {
                     self.logger().minor(|| {
                         format!(
@@ -3039,17 +3114,23 @@ async fn connect_task(
     factory: Arc<dyn Transport>,
     host: String,
     resume: Option<String>,
+    recover: Option<String>,
     force_renewal: bool,
 ) -> Result<Box<dyn TransportConnection>> {
     if force_renewal {
         rest.invalidate_cached_token();
     }
-    let url = build_connection_url(&rest, &host, resume.as_deref()).await?;
+    let url = build_connection_url(&rest, &host, resume.as_deref(), recover.as_deref()).await?;
     factory.connect(&url).await
 }
 
 /// RTN2: the realtime connection URL with auth and protocol params.
-async fn build_connection_url(rest: &Rest, host: &str, resume: Option<&str>) -> Result<String> {
+async fn build_connection_url(
+    rest: &Rest,
+    host: &str,
+    resume: Option<&str>,
+    recover: Option<&str>,
+) -> Result<String> {
     let opts = &rest.inner.opts;
     let scheme = if opts.tls { "wss" } else { "ws" };
     let port = if opts.tls { opts.tls_port } else { opts.port };
@@ -3080,6 +3161,11 @@ async fn build_connection_url(rest: &Rest, host: &str, resume: Option<&str>) -> 
     // RTN15b1: resume with the previous connection key
     if let Some(resume_key) = resume {
         params.push(("resume".into(), resume_key.into()));
+    }
+    // RTN16k: recover a previous instance's connection (first attempt only;
+    // mutually exclusive with resume — see start_connect_to)
+    if let Some(recover_key) = recover {
+        params.push(("recover".into(), recover_key.into()));
     }
     // RTC1f: user transportParams, overriding library defaults (RTC1f1)
     for (k, v) in &opts.transport_params {
@@ -3164,6 +3250,16 @@ fn spawn_transport_tasks(
 
 /// Spawn the connection loop. Returns the input sender, the snapshot
 /// receiver, and the event sender (handles subscribe to it).
+/// RTN16g: the serialized recovery key (JSON, matching the ably-js format).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryKey {
+    connection_key: String,
+    msg_serial: i64,
+    #[serde(default)]
+    channel_serials: std::collections::HashMap<String, String>,
+}
+
 pub(crate) fn spawn_connection_loop(
     rest: Rest,
     transport_factory: Arc<dyn Transport>,
@@ -3175,6 +3271,25 @@ pub(crate) fn spawn_connection_loop(
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<LoopInput>();
     let (snapshot_tx, snapshot_rx) = watch::channel(ConnectionSnapshot::default());
     let (events_tx, _) = broadcast::channel(64);
+
+    // RTN16: a recover option primes the loop before the first connect. A
+    // malformed key logs an error and connects as if none was given (RTN16f1).
+    let recovery = rest.inner.opts.recover.as_ref().and_then(|raw| {
+        match serde_json::from_str::<RecoveryKey>(raw) {
+            Ok(rk) => Some(rk),
+            Err(e) => {
+                rest.inner
+                    .opts
+                    .logger()
+                    .error(|| format!("Malformed recovery key ignored (connecting fresh): {}", e));
+                None
+            }
+        }
+    });
+    let (recover_key, recover_msg_serial, recover_channel_serials) = match recovery {
+        Some(rk) => (Some(rk.connection_key), rk.msg_serial, rk.channel_serials),
+        None => (None, 0, std::collections::HashMap::new()),
+    };
 
     let mut ctx = ConnectionCtx {
         rest,
@@ -3189,6 +3304,9 @@ pub(crate) fn spawn_connection_loop(
         connect_hosts: Vec::new(),
         current_host: None,
         resume_key: None,
+        recover_key,
+        recovering: false,
+        recover_channel_serials,
         last_connected_id: None,
         retry_count: 0,
         renewed_this_cycle: false,
@@ -3202,7 +3320,8 @@ pub(crate) fn spawn_connection_loop(
         pending_pings: Vec::new(),
         deferred_pings: Vec::new(),
         pending_authorize: Vec::new(),
-        msg_serial: 0,
+        // RTN16f: the msgSerial counter continues from the recovered value
+        msg_serial: recover_msg_serial,
         pending_publishes: Vec::new(),
         queued_publishes: Vec::new(),
         channels: std::collections::HashMap::new(),

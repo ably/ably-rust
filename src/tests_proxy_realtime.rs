@@ -1601,3 +1601,136 @@ async fn proxy_rtl6_publish_and_history_through_proxy() {
     close_client(&client).await;
     session.close().await.ok();
 }
+
+// ============================================================================
+// RTN16 — connection recovery over the real transport (connection_resume.md)
+// ============================================================================
+
+// UTS: realtime/proxy/RTN16d/recovery-preserves-connid-0 (RTN16d, RTN16k)
+#[tokio::test]
+async fn proxy_rtn16d_recovery_preserves_connection_id() {
+    let app = get_sandbox().await;
+
+    // Phase 1: first client — connect, attach, snapshot the recovery key,
+    // then lose the transport WITHOUT a graceful protocol CLOSE (the server
+    // must keep the connection state alive for recovery)
+    let (session_1, port_1) = proxy_session(vec![]).await;
+    let client_1 = proxied_realtime(app.full_access_key(), port_1);
+    client_1.connect();
+    assert!(await_state(&client_1.connection, ConnectionState::Connected, 15000).await);
+    let original_id = client_1.connection.id().expect("connection id");
+    let original_key = client_1.connection.key().expect("connection key");
+
+    let channel_name = format!("test-rtn16d-{}", random_id());
+    let ch = client_1.channels.get(&channel_name);
+    ch.attach().await.unwrap();
+
+    let recovery_key = client_1
+        .connection
+        .create_recovery_key()
+        .await
+        .expect("recovery key");
+    let parsed: serde_json::Value = serde_json::from_str(&recovery_key).unwrap();
+    assert_eq!(parsed["connectionKey"], original_key.as_str());
+    assert_eq!(parsed["channelSerials"][&channel_name].is_string(), true);
+
+    session_1
+        .trigger_action(serde_json::json!({"type": "close"}))
+        .await
+        .expect("drop transport");
+    // Local close while disconnected — no CLOSE reaches the server
+    poll_until("client 1 off the wire", 10, async || {
+        client_1.connection.state() != ConnectionState::Connected
+    })
+    .await;
+    client_1.close();
+    session_1.close().await.ok();
+
+    // Phase 2: a NEW client instance recovers the connection
+    let (session_2, port_2) = proxy_session(vec![]).await;
+    let opts = proxied_options(app.full_access_key(), port_2).recover(&recovery_key);
+    let client_2 = Realtime::new(&opts).unwrap();
+    client_2.connect();
+    assert!(await_state(&client_2.connection, ConnectionState::Connected, 15000).await);
+
+    // RTN16d: same connection id; a fresh connection key
+    assert_eq!(
+        client_2.connection.id().as_deref(),
+        Some(original_id.as_str())
+    );
+    let new_key = client_2.connection.key().expect("new key");
+    assert_ne!(new_key, original_key, "RTN16d: the key is rotated");
+    assert!(client_2.connection.error_reason().is_none());
+
+    // RTN16k: the first ws_connect carried recover=<old key>, and no resume
+    let connects = ws_connect_events(&session_2).await;
+    assert!(!connects.is_empty());
+    assert_eq!(
+        connects[0]["queryParams"]["recover"].as_str(),
+        Some(original_key.as_str())
+    );
+    assert!(connects[0]["queryParams"]["resume"].is_null());
+
+    close_client(&client_2).await;
+    session_2.close().await.ok();
+}
+
+// UTS: realtime/proxy/RTN16l/recovery-failure-fresh-conn-0 (RTN16l, RTN15c7)
+#[tokio::test]
+async fn proxy_rtn16l_recovery_failure_fresh_connection() {
+    let app = get_sandbox().await;
+    let (session, port) = proxy_session(vec![rule(
+        serde_json::json!({"type": "ws_frame_to_client", "action": "CONNECTED"}),
+        serde_json::json!({"type": "replace", "message": {
+            "action": 4,
+            "connectionId": "recovery-failed-new-id",
+            "connectionKey": "recovery-failed-new-key",
+            "connectionDetails": {
+                "connectionKey": "recovery-failed-new-key",
+                "maxMessageSize": 65536,
+                "maxInboundRate": 250,
+                "maxOutboundRate": 100,
+                "maxFrameSize": 524288,
+                "serverId": "test-server",
+                "connectionStateTtl": 120000,
+                "maxIdleInterval": 15000
+            },
+            "error": {"code": 80008, "statusCode": 400, "message": "Unable to recover connection"}
+        }}),
+        "RTN16l: Replace CONNECTED with recovery failure (new id + error 80008)",
+    )])
+    .await;
+
+    let fabricated = serde_json::json!({
+        "connectionKey": "bogus-connection-key",
+        "msgSerial": 7,
+        "channelSerials": {}
+    })
+    .to_string();
+    let opts = proxied_options(app.full_access_key(), port).recover(&fabricated);
+    let client = Realtime::new(&opts).unwrap();
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 15000).await);
+
+    // RTN16l/RTN15c7: fresh identity, error surfaced, still CONNECTED
+    assert_eq!(
+        client.connection.id().as_deref(),
+        Some("recovery-failed-new-id")
+    );
+    assert_eq!(
+        client.connection.key().as_deref(),
+        Some("recovery-failed-new-key")
+    );
+    let reason = client.connection.error_reason().expect("recovery failure");
+    assert_eq!(reason.code, Some(80008));
+    assert_eq!(client.connection.state(), ConnectionState::Connected);
+
+    // RTN16k was honoured even though the recovery failed
+    let connects = ws_connect_events(&session).await;
+    assert_eq!(
+        connects[0]["queryParams"]["recover"].as_str(),
+        Some("bogus-connection-key")
+    );
+    close_client(&client).await;
+    session.close().await.ok();
+}

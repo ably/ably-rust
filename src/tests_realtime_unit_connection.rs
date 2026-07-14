@@ -3274,55 +3274,8 @@ async fn rtn8c_id_key_null_in_suspended() {
 // Ignored stubs — features not yet implemented
 // ===============================================================
 
-// --- RTN16: Connection recovery ---
-
-#[tokio::test]
-#[ignore = "connection recovery not implemented"]
-async fn rtn16d_recovery_integration() -> Result<()> {
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "connection recovery not implemented"]
-async fn rtn16f_recovery_key_creation() -> Result<()> {
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "connection recovery not implemented"]
-async fn rtn16f_recovery_key_contains_connection_key() -> Result<()> {
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "connection recovery not implemented"]
-async fn rtn16f1_malformed_recovery_key() -> Result<()> {
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "connection recovery not implemented"]
-async fn rtn16g_msg_serial_from_recovery() -> Result<()> {
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "connection recovery not implemented"]
-async fn rtn16j_channel_instantiation_on_recovery() -> Result<()> {
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "connection recovery not implemented"]
-async fn rtn16k_recovery_key_channel_state() -> Result<()> {
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "connection recovery not implemented"]
-async fn rtn16l_recovery_failure_handling() -> Result<()> {
-    Ok(())
-}
+// (The RTN16 recovery stubs that lived here were superseded by the real
+// UTS-derived tests in tests_realtime_uts_connection.rs — TASK-4.)
 
 // --- RTN20: Network event detection ---
 

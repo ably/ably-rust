@@ -836,3 +836,72 @@ async fn rtp4_rtp2_bulk_enter_and_sync() {
     a.close();
     b.close();
 }
+
+// ============================================================================
+// RTN16 — live connection recovery proof (TASK-4, AC #2)
+// ============================================================================
+
+// UTS: RTN16 end-to-end — a NEW client instance recovers a dropped client's
+// connection: same connectionId, recovered msgSerial continuity, channel
+// serial carried into the recovery key
+#[tokio::test]
+async fn rtn16_live_recovery_proof() {
+    let app = get_sandbox().await;
+
+    // Client A: connect, attach, publish one message (msgSerial -> 1)
+    let a = connected_client(app).await;
+    let a_id = a.connection.id().expect("id");
+    let name = format!("test-rtn16-live-{}", random_id());
+    let ch_a = a.channels.get(&name);
+    ch_a.attach().await.unwrap();
+    ch_a.publish().name("pre").string("x").send().await.unwrap();
+
+    let key = a
+        .connection
+        .create_recovery_key()
+        .await
+        .expect("recovery key");
+    let parsed: serde_json::Value = serde_json::from_str(&key).unwrap();
+    assert_eq!(parsed["msgSerial"], 1, "one publish ACKed");
+    assert!(parsed["channelSerials"][&name].is_string());
+
+    // Drop A without a protocol CLOSE: the socket dies abruptly and the
+    // server keeps the connection state alive for recovery
+    drop(a);
+
+    // Client B: a NEW instance recovers A's connection
+    let opts = live_opts(app.full_access_key()).recover(&key);
+    let b = Realtime::new(&opts).unwrap();
+    b.connect();
+    assert!(
+        await_state(&b.connection, ConnectionState::Connected, 15000).await,
+        "RTN16: recovery connects"
+    );
+    assert_eq!(
+        b.connection.id().as_deref(),
+        Some(a_id.as_str()),
+        "RTN16d: the connection id survives the instance boundary"
+    );
+    assert!(b.connection.error_reason().is_none());
+
+    // The recovered instance is fully usable and continues the msgSerial
+    let ch_b = b.channels.get(&name);
+    ch_b.attach().await.unwrap();
+    ch_b.publish()
+        .name("post")
+        .string("y")
+        .send()
+        .await
+        .unwrap();
+    let key_b = b
+        .connection
+        .create_recovery_key()
+        .await
+        .expect("recovery key after recovery");
+    let parsed_b: serde_json::Value = serde_json::from_str(&key_b).unwrap();
+    assert_eq!(
+        parsed_b["msgSerial"], 2,
+        "RTN16f: msgSerial continued from the recovered value"
+    );
+    b.close();
+}

@@ -29,7 +29,6 @@ SPEC = REPO.parent / "specification" / "uts"
 # --- whole-file exclusions (future stages / recorded deferrals) ---
 EXCLUDE_FILES = {
     "realtime/unit/channels/channel_delta_decoding.md": "delta/vcdiff decoding not planned (needs vcdiff plugin)",
-    "realtime/unit/connection/connection_recovery_test.md": "RTN16 recovery not yet implemented (planned post-5.6)",
     "realtime/unit/connection/network_change_test.md": "OS network-event detection not implemented (recorded deferral)",
     "rest/unit/push/push_channel_subscriptions.md": "push admin: LocalDevice not implemented (recorded deferral)",
     "rest/unit/push/push_channels.md": "push channels: LocalDevice not implemented (recorded deferral)",
@@ -47,8 +46,9 @@ OVERRIDES = {
     "realtime/unit/RTC12/invalid-arguments-error-1": "rtc12_constructor_detects_key_vs_token",
     "realtime/unit/RTB1/disconnected-retry-delay-0": "rtb1a_backoff_coefficient_sequence, rtb1b_jitter_coefficient_range, rtn14d_retries_after_recoverable_failure",
     "realtime/unit/RTC16/close-method-0": "rtc8c_authorize_from_closed_reconnects",
+    # ---- TASK-4: RTN16 recovery ----
+    "realtime/unit/RTC1c/recover-option-0": "rtn16k_recover_param_first_connection_only",
     # ---- realtime: exclusions ----
-    "realtime/unit/RTC1c/recover-option-0": "!! RTN16 recovery not yet implemented (planned post-5.6)",
     "realtime/unit/RTC13/push-attribute-0": "!! push: LocalDevice not implemented (recorded deferral)",
     "realtime/unit/RTB1/suspended-channel-retry-delay-1": "rtl13b_failed_reattach_suspends_and_retries, rtb1a_backoff_coefficient_sequence",
     "realtime/unit/RTN23b/heartbeats-false-query-param-0": "!! SDK consumes protocol-level heartbeats (heartbeats=true; RTN23b design choice, stage 5.2)",
@@ -136,9 +136,6 @@ OVERRIDES = {
     "realtime/integration/RTAN1/annotation-publish-delete-0": "rtan_annotations_live",
     "realtime/integration/RTAN4c/annotation-type-filtering-0": "rtan_annotations_live",
     "realtime/integration/RTAN4d/annotation-implicit-attach-0": "rtan_annotations_live",
-    # ---- TASK-11: integration exclusions ----
-    "realtime/proxy/RTN16d/recovery-preserves-connid-0": "!! RTN16 recovery not yet implemented (planned post-5.6)",
-    "realtime/proxy/RTN16l/recovery-failure-fresh-conn-0": "!! RTN16 recovery not yet implemented (planned post-5.6)",
     # ---- TASK-12: former score-0 claim-set entries, each verified by reading
     # the spec variant and the test body (or a new test was written) ----
     "rest/unit/REC1d/resthost-precedence-over-realtimehost-0": "rec1d1_rest_host_takes_precedence_over_realtime_host",
