@@ -1003,6 +1003,38 @@ async fn rtn15c7_failed_resume_gets_new_connection_id() {
     client.close();
 }
 
+// UTS: realtime/unit/RTN15e/connection-key-updated-0
+#[tokio::test]
+async fn rtn15e_connection_key_updated_on_resume() {
+    let count = Arc::new(AtomicU32::new(0));
+    let count_c = count.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        let n = count_c.fetch_add(1, Ordering::SeqCst) + 1;
+        // Same connection id both times (a successful resume); the key is
+        // rotated by the server in the resumed CONNECTED's connectionDetails
+        let key = if n == 1 { "key-1" } else { "key-1-updated" };
+        let c = conn.respond_with_success(connected_msg("conn-id", key));
+        std::mem::forget(c);
+    });
+    let client = client_with(&mock, default_opts().auto_connect(false));
+
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+    assert_eq!(client.connection.key().as_deref(), Some("key-1"));
+
+    mock.active_connection().simulate_disconnect();
+    assert!(
+        await_connection_count(&mock, 2, 5000).await,
+        "resume attempt expected"
+    );
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    // RTN15e: the key from the resumed CONNECTED replaces the old one
+    assert_eq!(client.connection.key().as_deref(), Some("key-1-updated"));
+    assert_eq!(client.connection.id().as_deref(), Some("conn-id"));
+    client.close();
+}
+
 // UTS: realtime/unit/RTN15h1/token-error-no-renew-0
 #[tokio::test]
 async fn rtn15h1_disconnected_token_error_without_renewal_fails() {

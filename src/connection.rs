@@ -1178,6 +1178,25 @@ impl ConnectionCtx {
             )));
             return;
         }
+        // RTAN1a/RSAN1c3: annotation data is encoded per RSL4 (annotations
+        // are not encrypted, so no cipher applies)
+        let mut annotation = annotation;
+        let format = self.rest.inner.opts.format;
+        match crate::rest::encode_data_for_wire(
+            annotation.data.clone(),
+            annotation.encoding.clone(),
+            format,
+            None,
+        ) {
+            Ok((data, encoding)) => {
+                annotation.data = data;
+                annotation.encoding = encoding;
+            }
+            Err(e) => {
+                let _ = reply.send(Err(e));
+                return;
+            }
+        }
         let serial = self.msg_serial;
         self.msg_serial += 1;
         let mut pm = ProtocolMessage::new(action::ANNOTATION);
@@ -1228,6 +1247,11 @@ impl ConnectionCtx {
             if ann.timestamp.is_none() {
                 ann.timestamp = pm.timestamp;
             }
+            // RTAN4b1: annotation data decodes per RSL6 (no cipher —
+            // annotations are not encrypted)
+            let (data, encoding) = crate::rest::decode_data(ann.data, ann.encoding, None);
+            ann.data = data;
+            ann.encoding = encoding;
             ch.annotation_subscribers.retain(|sub| {
                 let matches = sub
                     .type_filter
@@ -1941,6 +1965,14 @@ impl ConnectionCtx {
                 // connect_deadline still applies to that wait (RTN14c).
             }
             Err(err) => {
+                // RSA15c: incompatible credentials (the token's clientId does
+                // not match the configured clientId) is a client
+                // misconfiguration that no retry can fix — terminal FAILED
+                if err.code == Some(ErrorCode::IncompatibleCredentials.code()) {
+                    self.drop_transport();
+                    self.transition(ConnectionState::Failed, Some(err));
+                    return;
+                }
                 // RTN17f: a host-unreachable failure tries the next fallback
                 // within the same CONNECTING phase
                 if !self.try_next_host() {

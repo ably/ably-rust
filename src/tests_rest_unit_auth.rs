@@ -1285,6 +1285,45 @@ async fn rsa16a_token_from_callback() {
     assert!(client.auth().token_details().is_none());
 }
 
+// UTS: rest/unit/RSA16a/reflects-capability-1
+#[tokio::test]
+async fn rsa16a_reflects_capability() -> Result<()> {
+    use crate::auth::{AuthCallback, AuthToken, TokenDetails, TokenMetadata, TokenParams};
+
+    const CAPABILITY: &str = r#"{"channel1":["publish","subscribe"],"channel2":["subscribe"]}"#;
+    struct CapabilityCb;
+    impl AuthCallback for CapabilityCb {
+        fn token<'a>(
+            &'a self,
+            _params: &'a TokenParams,
+        ) -> std::pin::Pin<Box<dyn Send + futures::Future<Output = Result<AuthToken>> + 'a>>
+        {
+            Box::pin(async {
+                Ok(AuthToken::Details(TokenDetails {
+                    token: "capable-token".to_string(),
+                    metadata: Some(TokenMetadata {
+                        expires: chrono::Utc::now() + chrono::Duration::hours(1),
+                        issued: chrono::Utc::now(),
+                        capability: CAPABILITY.to_string(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }))
+            })
+        }
+    }
+
+    let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!({})));
+    let client = ClientOptions::with_auth_callback(Arc::new(CapabilityCb)).rest_with_mock(mock)?;
+    client.request("GET", "/channels/test").send().await?;
+
+    // RSA16a: tokenDetails reflects the capability of the callback-issued token
+    let td = client.auth().token_details().expect("tokenDetails cached");
+    assert_eq!(td.token, "capable-token");
+    assert_eq!(td.metadata.expect("metadata").capability, CAPABILITY);
+    Ok(())
+}
+
 #[tokio::test]
 async fn rsa16b_token_string_in_options() {
     let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(200));

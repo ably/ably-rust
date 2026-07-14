@@ -1557,6 +1557,16 @@ impl<'a> RestAnnotations<'a> {
         ann.action = Some(AnnotationAction::Create);
         // RSAN1c2: messageSerial set from the identifier argument
         ann.message_serial = Some(msg_serial.to_string());
+        // RSAN1c3: annotation data is encoded per RSL4 (annotations are not
+        // encrypted, so no cipher applies)
+        let (data, encoding) = encode_data_for_wire(
+            ann.data,
+            ann.encoding,
+            self.channel.rest.inner.opts.format,
+            None,
+        )?;
+        ann.data = data;
+        ann.encoding = encoding;
         // RSAN1c4: idempotent publishing applies to annotations too
         if self.channel.rest.inner.opts.idempotent_rest_publishing && ann.id.is_none() {
             ann.id = Some(format!("{}:0", idempotent_id_base()));
@@ -1578,6 +1588,15 @@ impl<'a> RestAnnotations<'a> {
         let mut ann = annotation.clone();
         ann.action = Some(AnnotationAction::Delete);
         ann.message_serial = Some(msg_serial.to_string());
+        // RSAN1c3 applies to deletes too — the body is an annotation
+        let (data, encoding) = encode_data_for_wire(
+            ann.data,
+            ann.encoding,
+            self.channel.rest.inner.opts.format,
+            None,
+        )?;
+        ann.data = data;
+        ann.encoding = encoding;
         let body = self.channel.rest.serialize_body(&vec![ann])?;
         self.channel
             .rest
@@ -2407,7 +2426,15 @@ impl Decodable for PresenceMessage {
         self.decode_with_cipher(cipher);
     }
 }
-impl Decodable for Annotation {}
+impl Decodable for Annotation {
+    fn decode_item(&mut self, _cipher: Option<&CipherParams>) {
+        // RSL6-style decode; annotations are not encrypted, so no cipher
+        let (data, encoding) =
+            decode_data(std::mem::take(&mut self.data), self.encoding.take(), None);
+        self.data = data;
+        self.encoding = encoding;
+    }
+}
 impl Decodable for Stats {}
 impl Decodable for serde_json::Value {}
 

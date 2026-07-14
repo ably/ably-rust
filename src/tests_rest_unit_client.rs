@@ -2817,6 +2817,30 @@ async fn rec2b_qualifying_status_codes_500_to_504() -> Result<()> {
     Ok(())
 }
 
+// UTS: rest/unit/REC2c2/explicit-hostname-no-fallbacks-0
+#[tokio::test]
+async fn rec2c2_explicit_hostname_endpoint_no_fallbacks() -> Result<()> {
+    let mock = MockHttpClient::new();
+    mock.queue_response(MockResponse::json(500, &json!({"error": {"code": 50000}})));
+    let client = ClientOptions::new("appId.keyId:keySecret")
+        .use_binary_protocol(false)
+        .endpoint("custom.ably.example.com")?
+        .rest_with_mock(mock)?;
+    let result = client.time().await;
+    assert!(
+        result.is_err(),
+        "the 500 is terminal — nothing to fall back to"
+    );
+    let reqs = get_mock(&client).captured_requests();
+    assert_eq!(
+        reqs.len(),
+        1,
+        "REC2c2: an explicit hostname endpoint has no fallback domains"
+    );
+    assert_eq!(reqs[0].url.host_str(), Some("custom.ably.example.com"));
+    Ok(())
+}
+
 #[tokio::test]
 async fn rec2c2_connection_timeout_triggers_fallback() -> Result<()> {
     let mock = MockHttpClient::new();

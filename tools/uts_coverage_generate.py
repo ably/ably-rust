@@ -139,6 +139,42 @@ OVERRIDES = {
     # ---- TASK-11: integration exclusions ----
     "realtime/proxy/RTN16d/recovery-preserves-connid-0": "!! RTN16 recovery not yet implemented (planned post-5.6)",
     "realtime/proxy/RTN16l/recovery-failure-fresh-conn-0": "!! RTN16 recovery not yet implemented (planned post-5.6)",
+    # ---- TASK-12: former score-0 claim-set entries, each verified by reading
+    # the spec variant and the test body (or a new test was written) ----
+    "rest/unit/REC1d/resthost-precedence-over-realtimehost-0": "rec1d1_rest_host_takes_precedence_over_realtime_host",
+    "rest/unit/REC1d1/resthost-sets-primary-domain-0": "rec1d1_custom_rest_host",
+    "rest/unit/REC2c2/explicit-hostname-no-fallbacks-0": "rec2c2_explicit_hostname_endpoint_no_fallbacks",
+    "rest/unit/RSA16a/reflects-capability-1": "rsa16a_reflects_capability",
+    "realtime/unit/RTAN1a/encodes-data-json-2": "rtan1a_rtan1d_annotation_publish_wire_and_ack",
+    "realtime/unit/RTAN4e1/no-warn-unattached-0": "rtan4e1_skip_warning_when_attach_on_subscribe_false",
+    "realtime/unit/RTL10b/adds-from-serial-0": "rtl10b_until_attach_bounded_by_attach_point",
+    "realtime/unit/RTL10b/errors-when-not-attached-1": "rtl10b_until_attach",
+    "realtime/unit/RTN15e/connection-key-updated-0": "rtn15e_connection_key_updated_on_resume",
+    "realtime/unit/RTN7d/fail-disconnected-no-queue-0": "rtn7d_pending_publishes_fail_on_disconnected_without_queueing",
+    "realtime/unit/RTN7d/survive-disconnected-queue-1": "rtn19a_rtn19a2_resend_keeps_serials_on_resume",
+    "realtime/unit/RTN7e/error-represents-reason-4": "rtn7e_pending_publishes_fail_on_failed",
+    "realtime/unit/RTP14a/enterclient-on-behalf-0": "rtp14a_enter_client",
+    "realtime/unit/RTP15a/updateclient-leaveclient-0": "rtp15a_update_client_and_leave_client",
+    "realtime/unit/RTP15f/enterclient-mismatched-clientid-0": "rtp15f_enter_client_mismatched_client_id_errors",
+    "realtime/unit/RTP5a/detached-clears-presence-maps-0": "rtp5a_rtp5f_channel_state_effects",
+    "realtime/unit/RTP5a/failed-clears-presence-maps-1": "rtp5a_failed_clears_presence_maps",
+    "realtime/unit/RTP5f/suspended-maintains-presence-map-0": "rtp5f_suspended_maintains_presence_map",
+    "realtime/unit/TM2c/connectionid-from-protocol-0": "tm2c_connection_id_populated",
+    "rest/integration/RSP5/decode-history-messages-3": "rsp4_presence_history",
+    "realtime/integration/RSA7/matching-clientid-succeeds-0": "rsa8_rsa9_rsa7_token_auth_connect",
+    "realtime/integration/RSA7/mismatched-clientid-fails-1": "rsa7_mismatched_client_id_fails",
+    "realtime/integration/RTL28/get-message-and-versions-0": "rtl32_rtl28_mutation_lifecycle_observed",
+    "realtime/integration/RTL7/bidirectional-message-flow-0": "rtl7_subscribe_flows_between_clients",
+    "realtime/integration/RTN11/connect-reconnect-cycle-0": "rtn4b_rtn4c_rtn11_connection_lifecycle",
+    "realtime/integration/RTN4c/graceful-close-0": "rtn4b_rtn4c_rtn11_connection_lifecycle",
+    # The spec's own test body IS a transport drop (delay_after_ws_connect +
+    # close), the title notwithstanding
+    "realtime/proxy/RTN23a/heartbeat-starvation-reconnect-0": "proxy_rtn23a_transport_failure_reconnects_with_resume",
+    # ---- TASK-12: exclusions ----
+    "rest/unit/REC2b/fallback-hosts-use-default-0": "!! deprecated fallbackHostsUseDefault is deliberately not exposed (as REC2a1)",
+    "rest/unit/REC3/connectivity-check-validation-0": "!! connectivity check not implemented (TASK-5: RTN17j)",
+    "rest/unit/REC3a/default-connectivity-check-url-0": "!! connectivity check not implemented (TASK-5: RTN17j)",
+    "rest/unit/REC3b/custom-connectivity-check-url-0": "!! connectivity check not implemented (TASK-5: RTN17j)",
     # ---- rest: exclusions ----
     "rest/unit/TM2s1/version-defaults-from-message-0": "!! version defaulting deferred (recorded; ignored test exists)",
     "rest/unit/TP5/presence-message-size-0": "!! PresenceMessage::size() deferred (recorded; ignored test exists)",
@@ -189,9 +225,6 @@ def candidates(token, integration_only=False):
 
 out_lines = []
 unresolved = []
-ids_per_token = defaultdict(int)
-for tid, _ in ids:
-    ids_per_token[tid.split("/")[2]] += 1
 
 for tid, src in ids:
     if tid in OVERRIDES:
@@ -216,12 +249,13 @@ for tid, src in ids:
     best_score = sum(1 for w in slug_words if w in fn_components[best])
     if best_score > 0:
         out_lines.append(f"{tid} => {best}")
-    elif ids_per_token[token] == 1:
-        out_lines.append(f"{tid} => {', '.join(cands)}")
     else:
-        # multiple IDs share this token and no slug words discriminate:
-        # claim coverage by the full candidate set (the spec point's tests)
-        out_lines.append(f"{tid} => {', '.join(cands)}")
+        # No slug word discriminates a candidate: a same-token test exists but
+        # nothing verifies it covers THIS variant. Claiming the candidate set
+        # produced false coverage (TASK-12) — force a human disposition via
+        # OVERRIDES instead.
+        unresolved.append(tid)
+        out_lines.append(f"{tid} ?? UNRESOLVED ({src}; same-token candidates: {', '.join(cands)})")
 
 AREA_EXCLUSIONS = {
     "objects/unit": "LiveObjects is not implemented in this SDK (out of scope)",

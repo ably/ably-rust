@@ -3700,6 +3700,45 @@ async fn rtp15f_enter_client_requires_valid_client_id() {
     assert!(result.is_err(), "Wildcard clientId should be rejected");
 }
 
+// UTS: realtime/unit/RTP15f/enterclient-mismatched-clientid-0
+#[tokio::test]
+async fn rtp15f_enter_client_mismatched_client_id_errors() {
+    use crate::mock_ws::MockWebSocket;
+    use crate::protocol::{ChannelState, ConnectionState, ProtocolMessage};
+    use crate::realtime::{await_state, Realtime};
+
+    let mock = MockWebSocket::with_handler(|pending| {
+        pending.respond_with_success(ProtocolMessage::connected("connId", "connKey"));
+    });
+    let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+    let client = Realtime::with_mock(
+        &ClientOptions::new("appId.keyId:keySecret")
+            .auto_connect(false)
+            .client_id("my-client")
+            .unwrap(),
+        transport,
+    )
+    .unwrap();
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    let channel = client.channels.get("test-rtp15f-mismatch");
+    phase8d_attach(&channel, &mock, None).await;
+    assert_eq!(channel.state(), ChannelState::Attached);
+
+    // RTP15f: an identified client cannot enter on behalf of a different id
+    let err = channel
+        .presence()
+        .enter_client("other-client", None)
+        .await
+        .expect_err("mismatched clientId must be rejected");
+    assert!(err.code.is_some());
+
+    // The connection and channel are unaffected
+    assert_eq!(client.connection.state(), ConnectionState::Connected);
+    assert_eq!(channel.state(), ChannelState::Attached);
+}
+
 // UTS: realtime/unit/presence/realtime_presence_history.md — RTP12c
 #[tokio::test]
 async fn rtp12c_presence_history_returns_paginated_result() -> Result<()> {

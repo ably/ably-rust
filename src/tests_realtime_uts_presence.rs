@@ -265,6 +265,130 @@ async fn rtp5a_rtp5f_channel_state_effects() {
         .is_empty());
 }
 
+// UTS: realtime/unit/RTP5a/failed-clears-presence-maps-1
+#[tokio::test]
+async fn rtp5a_failed_clears_presence_maps() {
+    let mock = presence_mock("conn-1", flags::HAS_PRESENCE);
+    let client = client_for(&mock, None);
+    connect(&client).await;
+    let ch = client.channels.get("failing");
+    ch.attach().await.unwrap();
+    mock.active_connection().send_to_client(sync_pm(
+        "failing",
+        "seq1:",
+        serde_json::json!([
+            {"action": 1, "clientId": "alice", "connectionId": "c1",
+             "id": "c1:0:0", "timestamp": 100}
+        ]),
+    ));
+    let members = ch.presence().get().await.unwrap();
+    assert_eq!(members.len(), 1);
+
+    let leaves = Arc::new(AtomicUsize::new(0));
+    let leaves_c = leaves.clone();
+    ch.presence().subscribe(move |msg| {
+        if msg.action == Some(PresenceAction::Leave) {
+            leaves_c.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+
+    // A channel-scoped ERROR fails the channel
+    let mut err_pm = ProtocolMessage::new(action::ERROR);
+    err_pm.channel = Some("failing".to_string());
+    err_pm.error = Some(ErrorInfo::new(90001, "Channel failed"));
+    mock.active_connection().send_to_client(err_pm);
+    assert!(await_channel_state(&ch, ChannelState::Failed, 5000).await);
+
+    // RTP5a: maps cleared silently — no LEAVE events are emitted
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    assert_eq!(
+        leaves.load(Ordering::SeqCst),
+        0,
+        "RTP5a: no LEAVE on FAILED"
+    );
+}
+
+// UTS: realtime/unit/RTP5f/suspended-maintains-presence-map-0
+#[tokio::test]
+async fn rtp5f_suspended_maintains_presence_map() {
+    // First attempt: CONNECTED with a 1ms connectionStateTtl so the connection
+    // (and with it the channel, RTL3c) suspends quickly after a disconnect.
+    // Later attempts: refused.
+    let count = Arc::new(AtomicUsize::new(0));
+    let count_c = count.clone();
+    let mock = MockWebSocket::with_handler(move |conn| {
+        let n = count_c.fetch_add(1, Ordering::SeqCst);
+        if n == 0 {
+            let mut msg = ProtocolMessage::connected("conn-1", "conn-key");
+            if let Some(ref mut details) = msg.connection_details {
+                details.connection_state_ttl = Some(1);
+            }
+            let c = conn.respond_with_success(msg);
+            std::mem::forget(c);
+        } else {
+            conn.respond_with_refused();
+        }
+    });
+    // Serve the first connection's ATTACH with HAS_PRESENCE and a sync
+    let mock2 = mock.clone();
+    let server = tokio::spawn(async move {
+        let mut served = 0usize;
+        loop {
+            let msgs = mock2.client_messages();
+            for m in msgs.iter().skip(served) {
+                if m.action == action::ATTACH {
+                    let mut reply = ProtocolMessage::new(action::ATTACHED);
+                    reply.channel = m.channel.clone();
+                    reply.flags = Some(flags::HAS_PRESENCE);
+                    mock2.active_connection().send_to_client(reply);
+                    mock2.active_connection().send_to_client(sync_pm(
+                        "kept",
+                        "seq1:",
+                        serde_json::json!([
+                            {"action": 1, "clientId": "alice", "connectionId": "c1",
+                             "id": "c1:0:0", "timestamp": 100},
+                            {"action": 1, "clientId": "bob", "connectionId": "c2",
+                             "id": "c2:0:0", "timestamp": 100}
+                        ]),
+                    ));
+                }
+            }
+            served = msgs.len();
+            tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+        }
+    });
+
+    let transport = Arc::new(MockTransport::new(mock.inner()));
+    let client = Realtime::with_mock(
+        &ClientOptions::new("appId.keyId:keySecret")
+            .auto_connect(false)
+            .disconnected_retry_timeout(std::time::Duration::from_millis(50))
+            .suspended_retry_timeout(std::time::Duration::from_secs(30))
+            .realtime_request_timeout(std::time::Duration::from_millis(300)),
+        transport,
+    )
+    .unwrap();
+    connect(&client).await;
+    let ch = client.channels.get("kept");
+    ch.attach().await.unwrap();
+    let members = ch.presence().get().await.unwrap();
+    assert_eq!(members.len(), 2);
+    server.abort();
+
+    // Drop the transport; reconnects are refused; the 1ms TTL expires and the
+    // connection — then the channel (RTL3c) — suspends
+    mock.active_connection().simulate_disconnect();
+    assert!(await_channel_state(&ch, ChannelState::Suspended, 10000).await);
+
+    // RTP5f: the presence map is maintained while SUSPENDED
+    let no_wait = crate::channel::PresenceGetOptions {
+        wait_for_sync: false,
+        ..Default::default()
+    };
+    let kept = ch.presence().get_with_options(&no_wait).await.unwrap();
+    assert_eq!(kept.len(), 2, "RTP5f: map maintained through SUSPENDED");
+}
+
 // ============================================================================
 // RTP8/RTP16 — enter and the op state table
 // ============================================================================

@@ -471,6 +471,43 @@ async fn rtn7e_pending_publishes_fail_on_failed() {
     }
 }
 
+// UTS: RTN7d with queueMessages=false, pending publishes fail on DISCONNECTED
+#[tokio::test]
+async fn rtn7d_pending_publishes_fail_on_disconnected_without_queueing() {
+    let mock = serving_mock("conn-1");
+    let transport = Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+    let client = Realtime::with_mock(
+        &ClientOptions::new("appId.keyId:keySecret")
+            .auto_connect(false)
+            .queue_messages(false),
+        transport,
+    )
+    .unwrap();
+    let server = spawn_channel_server(&mock);
+    connect(&client).await;
+    let ch = client.channels.get("no-queue");
+    ch.attach().await.unwrap();
+    server.abort();
+
+    // Two unACKed publishes in flight
+    let ch1 = ch.clone();
+    let f1 = tokio::spawn(async move { ch1.publish_message(Some("a"), None).await });
+    let ch2 = ch.clone();
+    let f2 = tokio::spawn(async move { ch2.publish_message(Some("b"), None).await });
+    await_nth_action(&mock, action::MESSAGE, 2, 2000).await;
+
+    // An unexpected transport drop → DISCONNECTED. With queueMessages=false
+    // the pending publishes fail now instead of being retained for RTN19a.
+    mock.active_connection().simulate_disconnect();
+    for f in [f1, f2] {
+        let err = f
+            .await
+            .unwrap()
+            .expect_err("RTN7d: pending fails on DISCONNECTED without queueing");
+        assert!(err.code.is_some(), "an ErrorInfo with a code");
+    }
+}
+
 // UTS: RTN19a pending publishes resent on the new transport; RTN19a2 serials
 // kept on a successful resume
 #[tokio::test]
@@ -1198,6 +1235,15 @@ async fn rtan1a_rtan1d_annotation_publish_wire_and_ack() {
     assert_eq!(entries[0]["type"], "reaction", "RTAN1a");
     assert_eq!(entries[0]["action"], 0, "RTAN1c: ANNOTATION_CREATE");
     assert_eq!(entries[0]["messageSerial"], "msg-serial-1", "TAN2j");
+    // RTAN1a: JSON data is encoded per RSL4 — a JSON string on the wire with
+    // encoding "json"
+    let wire_data = entries[0]["data"].as_str().expect("data is a string");
+    assert_eq!(entries[0]["encoding"], "json", "RTAN1a: RSL4 encoding");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(wire_data).unwrap(),
+        serde_json::json!({"emoji": "+1"}),
+        "RTAN1a: data round-trips"
+    );
 
     // RTAN1d: the ACK resolves the publish
     assert!(!publish.is_finished());

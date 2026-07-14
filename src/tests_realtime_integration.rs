@@ -368,6 +368,152 @@ async fn rsa4b_token_renewal_on_expiry() {
     client.close();
 }
 
+// UTS: realtime/unit/RTL10b/adds-from-serial-0 — behavioral proof against the
+// live sandbox: history(untilAttach=true) is bounded by the attach point
+// (fromSerial=attachSerial), so a message published BEFORE the attach is
+// returned and one published AFTER it is not. The unit mock cannot observe the
+// HTTP layer (dual WS+HTTP injection is TASK-5), and the uts-proxy strips
+// query strings from its http_request log, so the bound itself is asserted.
+#[tokio::test]
+async fn rtl10b_until_attach_bounded_by_attach_point() {
+    let app = get_sandbox().await;
+    let name = format!("persisted:test-rtl10b-{}", random_id());
+
+    // Publish "before" via REST, ahead of the realtime attachment
+    let rest = live_opts(app.full_access_key()).rest().unwrap();
+    rest.channels()
+        .get(&name)
+        .publish()
+        .name("before")
+        .string("b")
+        .send()
+        .await
+        .unwrap();
+    // Wait until it is readable — the attach point must be after it
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let page = rest.channels().get(&name).history().send().await.unwrap();
+        if page
+            .items()
+            .iter()
+            .any(|m| m.name.as_deref() == Some("before"))
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "'before' visible in history within 15s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+
+    let client = connected_client(app).await;
+    let ch = client.channels.get(&name);
+    ch.attach().await.unwrap();
+    assert!(ch.attach_serial().is_some(), "attachSerial from ATTACHED");
+
+    // Publish "after" over the live attachment
+    ch.publish().name("after").string("a").send().await.unwrap();
+
+    // Plain history sees both...
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let names: Vec<String> = ch
+            .history(false)
+            .await
+            .unwrap()
+            .items()
+            .iter()
+            .filter_map(|m| m.name.clone())
+            .collect();
+        if names.contains(&"before".to_string()) && names.contains(&"after".to_string()) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "both messages in plain history, got {:?}",
+            names
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+
+    // ...but untilAttach is bounded by the attach point: "before" only
+    let until: Vec<String> = ch
+        .history(true)
+        .await
+        .expect("history untilAttach")
+        .items()
+        .iter()
+        .filter_map(|m| m.name.clone())
+        .collect();
+    assert!(
+        until.contains(&"before".to_string()),
+        "RTL10b: pre-attach message included, got {:?}",
+        until
+    );
+    assert!(
+        !until.contains(&"after".to_string()),
+        "RTL10b: post-attach message excluded, got {:?}",
+        until
+    );
+    client.close();
+}
+
+// UTS: realtime/integration/RSA7/mismatched-clientid-fails-1 — the token's
+// clientId is incompatible with the configured one; detected when the token
+// is obtained (40102)
+#[tokio::test]
+async fn rsa7_mismatched_client_id_fails() {
+    let app = get_sandbox().await;
+    struct FixedClientIdToken {
+        rest: crate::rest::Rest,
+    }
+    impl AuthCallback for FixedClientIdToken {
+        fn token<'a>(
+            &'a self,
+            _params: &'a TokenParams,
+        ) -> std::pin::Pin<
+            Box<dyn Send + futures::Future<Output = crate::error::Result<AuthToken>> + 'a>,
+        > {
+            Box::pin(async move {
+                let td = self
+                    .rest
+                    .auth()
+                    .request_token(
+                        Some(&TokenParams {
+                            client_id: Some("token-client-id".to_string()),
+                            ..Default::default()
+                        }),
+                        None,
+                    )
+                    .await?;
+                Ok(AuthToken::Details(td))
+            })
+        }
+    }
+
+    let rest = live_opts(app.full_access_key()).rest().unwrap();
+    let opts = ClientOptions::with_auth_callback(Arc::new(FixedClientIdToken { rest }))
+        .endpoint("nonprod:sandbox")
+        .unwrap()
+        .client_id("wrong-client-id")
+        .unwrap()
+        .auto_connect(false);
+    let client = Realtime::new(&opts).unwrap();
+    client.connect();
+
+    assert!(
+        await_state(&client.connection, ConnectionState::Failed, 15000).await,
+        "RSA7: mismatched clientId fails the connection"
+    );
+    let err = client.connection.error_reason().expect("errorReason set");
+    assert_eq!(
+        err.code,
+        Some(40102),
+        "RSA7/RSA15: incompatible credentials"
+    );
+}
+
 // UTS: RTC8a in-band reauth while connected; RTC8c authorize initiates a
 // connection
 #[tokio::test]
@@ -472,8 +618,21 @@ async fn rtl32_rtl28_mutation_lifecycle_observed() {
     );
     assert_eq!(updated.data, Data::String("v2".into()));
 
-    // RTL28: get the message via the realtime channel
-    let fetched = ch.get_message(&serial).await.expect("RTL28 get_message");
+    // RTL28: get the message via the realtime channel. The update is not
+    // immediately readable (read-after-write lag) — poll until it lands.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let fetched = loop {
+        let msg = ch.get_message(&serial).await.expect("RTL28 get_message");
+        if msg.data == Data::String("v2".into()) {
+            break msg;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "update visible via getMessage within 10s, got {:?}",
+            msg.data
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    };
     assert_eq!(fetched.data, Data::String("v2".into()));
     let versions = ch.message_versions(&serial).await.expect("RTL28 versions");
     assert!(versions.items().len() >= 2, "create + update versions");
