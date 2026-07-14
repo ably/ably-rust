@@ -1914,11 +1914,51 @@ async fn rsa17d_token_auth_client_cannot_revoke() {
 
 // --- Auth (JWT / authCallback) ---
 
+/// Mint an Ably-shaped JWT: HS256 signed with the key secret, `kid` carrying
+/// the key name, expiring `ttl_secs` from now (negative = already expired).
+fn generate_jwt(api_key: &str, client_id: Option<&str>, ttl_secs: i64) -> String {
+    let (key_name, key_secret) = api_key.split_once(':').expect("keyName:keySecret");
+    let now = chrono::Utc::now().timestamp();
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256);
+    header.kid = Some(key_name.to_string());
+    // For an already-expired JWT the iat must ALSO be in the past — the
+    // server derives ttl = exp - iat and rejects a negative ttl as malformed
+    // (40003) rather than expired (40142)
+    let exp = now + ttl_secs;
+    let iat = if ttl_secs < 0 { exp - 3600 } else { now };
+    let mut claims = serde_json::json!({
+        "iat": iat,
+        "exp": exp,
+    });
+    if let Some(cid) = client_id {
+        claims["x-ably-clientId"] = serde_json::json!(cid);
+    }
+    jsonwebtoken::encode(
+        &header,
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(key_secret.as_bytes()),
+    )
+    .expect("jwt encode")
+}
+
 // UTS: rest/integration/RSA8/token-auth-jwt-0
 #[tokio::test]
-#[ignore = "JWT generation not implemented - needs third-party JWT library"]
 async fn rsa8_jwt_token_auth() {
-    todo!()
+    let app = get_sandbox().await;
+    let jwt = generate_jwt(app.full_access_key(), None, 3600);
+
+    let client = crate::options::ClientOptions::with_token(&jwt)
+        .endpoint("nonprod:sandbox")
+        .unwrap()
+        .rest()
+        .unwrap();
+    let channel_name = format!("test-RSA8-jwt-{}", random_id());
+    let resp = client
+        .request("GET", &format!("/channels/{}", channel_name))
+        .send()
+        .await
+        .expect("RSA8: JWT accepted by the server");
+    assert!((200..300).contains(&resp.status_code()));
 }
 
 // UTS: rest/integration/RSA8/auth-callback-token-request-1
@@ -1971,16 +2011,105 @@ async fn rsa8_auth_callback_with_token_request() {
 
 // UTS: rest/integration/RSA8/auth-callback-jwt-3
 #[tokio::test]
-#[ignore = "authCallback + JWT not implemented"]
 async fn rsa8_auth_callback_jwt() {
-    todo!()
+    use crate::auth::{AuthCallback, AuthToken, TokenDetails, TokenParams};
+    use std::sync::Arc;
+
+    struct JwtCb {
+        api_key: String,
+    }
+    impl AuthCallback for JwtCb {
+        fn token<'a>(
+            &'a self,
+            params: &'a TokenParams,
+        ) -> std::pin::Pin<
+            Box<dyn Send + futures::Future<Output = crate::error::Result<AuthToken>> + 'a>,
+        > {
+            Box::pin(async move {
+                let jwt = generate_jwt(&self.api_key, params.client_id.as_deref(), 3600);
+                Ok(AuthToken::Details(TokenDetails::token(jwt)))
+            })
+        }
+    }
+
+    let app = get_sandbox().await;
+    let client = ClientOptions::with_auth_callback(Arc::new(JwtCb {
+        api_key: app.full_access_key().to_string(),
+    }))
+    .endpoint("nonprod:sandbox")
+    .unwrap()
+    .rest()
+    .unwrap();
+
+    let channel_name = format!("test-RSA8-jwt-callback-{}", random_id());
+    let resp = client
+        .request("GET", &format!("/channels/{}", channel_name))
+        .send()
+        .await
+        .expect("RSA8: callback-minted JWT accepted");
+    assert!((200..300).contains(&resp.status_code()));
 }
 
 // UTS: rest/integration/RSC10/token-renewal-expired-jwt-0
 #[tokio::test]
-#[ignore = "JWT generation + authCallback not implemented"]
 async fn rsc10_token_renewal_with_expired_jwt() {
-    todo!()
+    use crate::auth::{AuthCallback, AuthToken, TokenDetails, TokenParams};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct ExpiredThenValidJwt {
+        api_key: String,
+        count: Arc<AtomicUsize>,
+    }
+    impl AuthCallback for ExpiredThenValidJwt {
+        fn token<'a>(
+            &'a self,
+            _params: &'a TokenParams,
+        ) -> std::pin::Pin<
+            Box<dyn Send + futures::Future<Output = crate::error::Result<AuthToken>> + 'a>,
+        > {
+            let n = self.count.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                // First call: a JWT that expired 5s ago; then valid ones
+                let ttl = if n == 0 { -5 } else { 3600 };
+                let jwt = generate_jwt(&self.api_key, None, ttl);
+                Ok(AuthToken::Details(TokenDetails::token(jwt)))
+            })
+        }
+    }
+
+    let app = get_sandbox().await;
+    let count = Arc::new(AtomicUsize::new(0));
+    let client = ClientOptions::with_auth_callback(Arc::new(ExpiredThenValidJwt {
+        api_key: app.full_access_key().to_string(),
+        count: count.clone(),
+    }))
+    .endpoint("nonprod:sandbox")
+    .unwrap()
+    .rest()
+    .unwrap();
+
+    // The expired JWT draws a 4014x from the server; the client renews via
+    // the callback and retries (RSC10)
+    let channel_name = format!("test-RSC10-jwt-{}", random_id());
+    let resp = client
+        .request("GET", &format!("/channels/{}", channel_name))
+        .send()
+        .await
+        .expect("RSC10: renewed after the expired JWT was rejected");
+    assert!(
+        (200..300).contains(&resp.status_code()),
+        "status={} callback_count={} error_code={:?} error_message={:?}",
+        resp.status_code(),
+        count.load(Ordering::SeqCst),
+        resp.error_code(),
+        resp.error_message()
+    );
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        2,
+        "RSC10: the callback ran once for the expired JWT and once to renew"
+    );
 }
 
 // UTS: rest/integration/RSA8/capability-restriction (native-token variant;
