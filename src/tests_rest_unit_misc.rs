@@ -386,13 +386,13 @@ fn tan2_annotation_summary_field() {
 }
 
 // ===============================================================
-// NONE-tagged tests — General depth gaps with no spec tag
+// General depth tests — spec-pointed where applicable
 // ===============================================================
 
 // --- Paginated result depth ---
 
 #[tokio::test]
-async fn none_paginated_single_item() -> Result<()> {
+async fn tg3_paginated_single_item() -> Result<()> {
     let mock = MockHttpClient::with_handler(|_req| {
         MockResponse::json(200, &json!([{"name": "only", "data": "one"}]))
     });
@@ -408,7 +408,7 @@ async fn none_paginated_single_item() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_paginated_ten_items() -> Result<()> {
+async fn tg3_paginated_ten_items() -> Result<()> {
     let mock = MockHttpClient::with_handler(|_req| {
         let msgs: Vec<serde_json::Value> = (0..10)
             .map(|i| json!({"name": format!("msg{}", i), "data": "x"}))
@@ -427,7 +427,7 @@ async fn none_paginated_ten_items() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_paginated_error_response() {
+async fn ti2_paginated_error_response() {
     let mock = MockHttpClient::with_handler(|_req| {
         MockResponse::json(
             500,
@@ -445,7 +445,7 @@ async fn none_paginated_error_response() {
 }
 
 #[tokio::test]
-async fn none_paginated_auth_header_sent() -> Result<()> {
+async fn rsa11_paginated_auth_header_sent() -> Result<()> {
     let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
     let client = ClientOptions::new("appId.keyId:keySecret")
         .use_binary_protocol(false)
@@ -461,7 +461,7 @@ async fn none_paginated_auth_header_sent() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_paginated_url_contains_channel() -> Result<()> {
+async fn rsl2a_paginated_url_contains_channel() -> Result<()> {
     let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
     let client = ClientOptions::new("appId.keyId:keySecret")
         .use_binary_protocol(false)
@@ -477,7 +477,7 @@ async fn none_paginated_url_contains_channel() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_paginated_presence_url() -> Result<()> {
+async fn rsp3a_paginated_presence_url() -> Result<()> {
     let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
     let client = ClientOptions::new("appId.keyId:keySecret")
         .use_binary_protocol(false)
@@ -497,7 +497,7 @@ async fn none_paginated_presence_url() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_paginated_presence_history_url() -> Result<()> {
+async fn rsp4a_paginated_presence_history_url() -> Result<()> {
     let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
     let client = ClientOptions::new("appId.keyId:keySecret")
         .use_binary_protocol(false)
@@ -521,7 +521,7 @@ async fn none_paginated_presence_history_url() -> Result<()> {
 // --- Error depth ---
 
 #[test]
-fn none_error_new_sets_code_and_message() {
+fn ti1_error_new_sets_code_and_message() {
     let err = crate::error::ErrorInfo::new(
         crate::error::ErrorCode::NotFound.code(),
         "Resource not found",
@@ -532,7 +532,7 @@ fn none_error_new_sets_code_and_message() {
 }
 
 #[test]
-fn none_error_with_status_sets_all_fields() {
+fn ti1_error_with_status_sets_all_fields() {
     let err = crate::error::ErrorInfo::with_status(
         crate::error::ErrorCode::Forbidden.code(),
         403,
@@ -545,7 +545,7 @@ fn none_error_with_status_sets_all_fields() {
 }
 
 #[test]
-fn none_error_with_cause_preserves_source() {
+fn ti1_error_with_cause_preserves_source() {
     let inner = crate::error::ErrorInfo::new(0, "refused");
     let err = crate::error::ErrorInfo::with_cause(
         crate::error::ErrorCode::ConnectionFailed.code(),
@@ -560,7 +560,7 @@ fn none_error_with_cause_preserves_source() {
 }
 
 #[test]
-fn none_error_implements_display() {
+fn errorinfo_implements_display() {
     let err = crate::error::ErrorInfo::new(
         crate::error::ErrorCode::BadRequest.code(),
         "Invalid payload",
@@ -570,7 +570,7 @@ fn none_error_implements_display() {
 }
 
 #[test]
-fn none_error_implements_debug() {
+fn errorinfo_implements_debug() {
     let err = crate::error::ErrorInfo::new(
         crate::error::ErrorCode::InternalError.code(),
         "Server error",
@@ -580,7 +580,7 @@ fn none_error_implements_debug() {
 }
 
 #[test]
-fn none_error_implements_std_error() {
+fn errorinfo_implements_std_error() {
     let err =
         crate::error::ErrorInfo::new(crate::error::ErrorCode::Unauthorized.code(), "Unauthorized");
     // Verify it implements std::error::Error trait
@@ -588,7 +588,7 @@ fn none_error_implements_std_error() {
 }
 
 #[test]
-fn none_error_href_format() {
+fn ti5_error_href_format() {
     let err = crate::error::ErrorInfo::new(
         crate::error::ErrorCode::TokenExpired.code(),
         "Token expired",
@@ -600,7 +600,7 @@ fn none_error_href_format() {
 }
 
 #[test]
-fn none_error_deserialized_from_json_with_missing_fields() {
+fn ti2_error_deserialized_from_json_with_missing_fields() {
     let json_str = r#"{"code":40000,"message":"Bad request","href":""}"#;
     let err: crate::error::ErrorInfo = serde_json::from_str(json_str).unwrap();
     assert_eq!(err.code, Some(crate::error::ErrorCode::BadRequest.code()));
@@ -608,14 +608,14 @@ fn none_error_deserialized_from_json_with_missing_fields() {
 }
 
 #[test]
-fn none_error_deserialized_unknown_code() {
+fn ti2_error_deserialized_unknown_code() {
     let json_str = r#"{"code":99999,"message":"Unknown","href":""}"#;
     let err: crate::error::ErrorInfo = serde_json::from_str(json_str).unwrap();
     assert_eq!(err.code, Some(99999));
 }
 
 #[test]
-fn none_errorcode_roundtrip() {
+fn errorcode_roundtrip() {
     use crate::error::ErrorInfoCode;
     let code = ErrorCode::ChannelOperationFailed;
     assert_eq!(code.code(), 90000);
@@ -624,13 +624,13 @@ fn none_errorcode_roundtrip() {
 }
 
 #[test]
-fn none_errorcode_new_invalid_returns_none() {
+fn errorcode_new_invalid_returns_none() {
     let result = crate::error::ErrorCode::new(12345);
     assert!(result.is_none());
 }
 
 #[test]
-fn none_errorcode_display() {
+fn errorcode_display() {
     let code = crate::error::ErrorCode::TokenRevoked;
     let s = format!("{}", code);
     assert_eq!(s, "TokenRevoked");
@@ -639,7 +639,7 @@ fn none_errorcode_display() {
 // --- Protocol ErrorInfo depth ---
 
 #[test]
-fn none_protocol_errorinfo_all_fields() {
+fn ti1_protocol_errorinfo_all_fields() {
     let ei = crate::error::ErrorInfo {
         code: Some(40100),
         status_code: Some(401_u16),
@@ -654,7 +654,7 @@ fn none_protocol_errorinfo_all_fields() {
 }
 
 #[test]
-fn none_protocol_errorinfo_minimal() {
+fn ti1_protocol_errorinfo_minimal() {
     let ei = crate::error::ErrorInfo {
         code: None,
         status_code: None,
@@ -667,7 +667,7 @@ fn none_protocol_errorinfo_minimal() {
 }
 
 #[test]
-fn none_protocol_errorinfo_json_roundtrip() {
+fn ti2_protocol_errorinfo_json_roundtrip() {
     let ei = crate::error::ErrorInfo {
         code: Some(50000),
         status_code: Some(500_u16),
@@ -684,7 +684,7 @@ fn none_protocol_errorinfo_json_roundtrip() {
 }
 
 #[test]
-fn none_protocol_errorinfo_deserialized() {
+fn ti2_protocol_errorinfo_deserialized() {
     let json_str = r#"{"code":40160,"statusCode":403,"message":"Capability not permitted"}"#;
     let ei: crate::error::ErrorInfo = serde_json::from_str(json_str).unwrap();
     assert_eq!(ei.code, Some(40160));
@@ -694,34 +694,34 @@ fn none_protocol_errorinfo_deserialized() {
 // --- Presence action values ---
 
 #[test]
-fn none_presence_action_absent_value() {
+fn tp2_presence_action_absent_value() {
     assert_eq!(crate::rest::PresenceAction::Absent as u8, 0);
 }
 
 #[test]
-fn none_presence_action_present_value() {
+fn tp2_presence_action_present_value() {
     assert_eq!(crate::rest::PresenceAction::Present as u8, 1);
 }
 
 #[test]
-fn none_presence_action_enter_value() {
+fn tp2_presence_action_enter_value() {
     assert_eq!(crate::rest::PresenceAction::Enter as u8, 2);
 }
 
 #[test]
-fn none_presence_action_leave_value() {
+fn tp2_presence_action_leave_value() {
     assert_eq!(crate::rest::PresenceAction::Leave as u8, 3);
 }
 
 #[test]
-fn none_presence_action_update_value() {
+fn tp2_presence_action_update_value() {
     assert_eq!(crate::rest::PresenceAction::Update as u8, 4);
 }
 
 // --- TokenDetails depth ---
 
 #[test]
-fn none_token_details_minimal() {
+fn td2_token_details_minimal() {
     let td = crate::auth::TokenDetails {
         token: "minimal-token".to_string(),
         metadata: None,
@@ -732,13 +732,13 @@ fn none_token_details_minimal() {
 }
 
 #[test]
-fn none_token_details_from_token_constructor() {
+fn td2_token_details_from_token_constructor() {
     let td = crate::auth::TokenDetails::token("constructed-token".into());
     assert_eq!(td.token, "constructed-token");
 }
 
 #[test]
-fn none_token_details_full_metadata() {
+fn td1_token_details_full_metadata() {
     use crate::auth::{TokenDetails, TokenMetadata};
     use chrono::Utc;
     let now = Utc::now();
@@ -760,7 +760,7 @@ fn none_token_details_full_metadata() {
 }
 
 #[test]
-fn none_token_details_json_deserialize_no_client_id() {
+fn td7_token_details_json_deserialize_no_client_id() {
     let json_str = r#"{"token":"tok1","expires":1700000000000,"issued":1699999000000,"capability":"{\"*\":[\"*\"]}"}"#;
     let td: crate::auth::TokenDetails = serde_json::from_str(json_str).unwrap();
     assert_eq!(td.token, "tok1");
@@ -770,7 +770,7 @@ fn none_token_details_json_deserialize_no_client_id() {
 // --- HTTP request depth ---
 
 #[tokio::test]
-async fn none_http_get_method() -> Result<()> {
+async fn rsc19f_http_get_method() -> Result<()> {
     let mock = MockHttpClient::new();
     mock.queue_response(MockResponse::json(200, &json!([])));
     let client = ClientOptions::new("appId.keyId:keySecret")
@@ -784,7 +784,7 @@ async fn none_http_get_method() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_http_post_method() -> Result<()> {
+async fn rsc19f_http_post_method() -> Result<()> {
     let mock = MockHttpClient::new();
     mock.queue_response(MockResponse::json(201, &json!({})));
     let client = ClientOptions::new("appId.keyId:keySecret")
@@ -804,7 +804,7 @@ async fn none_http_post_method() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_http_404_response_is_error() {
+async fn hp4_http_404_response_is_error() {
     let mock = MockHttpClient::with_handler(|_req| {
         MockResponse::json(
             404,
@@ -833,7 +833,7 @@ async fn none_http_404_response_is_error() {
 }
 
 #[tokio::test]
-async fn none_http_500_response_is_error() {
+async fn ti2_http_500_response_is_error() {
     let mock = MockHttpClient::with_handler(|_req| {
         MockResponse::json(
             500,
@@ -854,7 +854,7 @@ async fn none_http_500_response_is_error() {
 }
 
 #[tokio::test]
-async fn none_http_delete_method() -> Result<()> {
+async fn rsc19f_http_delete_method() -> Result<()> {
     let mock = MockHttpClient::new();
     mock.queue_response(MockResponse::json(200, &json!({})));
     let client = ClientOptions::new("appId.keyId:keySecret")
@@ -869,7 +869,7 @@ async fn none_http_delete_method() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_http_patch_method() -> Result<()> {
+async fn rsc19f_http_patch_method() -> Result<()> {
     let mock = MockHttpClient::new();
     mock.queue_response(MockResponse::json(200, &json!({})));
     let client = ClientOptions::new("appId.keyId:keySecret")
@@ -889,7 +889,7 @@ async fn none_http_patch_method() -> Result<()> {
 // --- REST auth depth ---
 
 #[tokio::test]
-async fn none_rest_basic_auth_header_format() -> Result<()> {
+async fn rsa11_rest_basic_auth_header_format() -> Result<()> {
     let mock =
         MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([1234567890000_i64])));
     let client = mock_client(mock);
@@ -913,7 +913,7 @@ async fn none_rest_basic_auth_header_format() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_rest_token_auth_bearer_header() -> Result<()> {
+async fn rsa3b_rest_token_auth_bearer_header() -> Result<()> {
     let mock =
         MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([1234567890000_i64])));
     let client = ClientOptions::with_token("my-test-token".to_string())
@@ -939,21 +939,21 @@ async fn none_rest_token_auth_bearer_header() -> Result<()> {
 // --- Channel name depth ---
 
 #[test]
-fn none_channel_name_with_unicode() {
+fn rsn3a_channel_name_with_unicode() {
     let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
     let channel = client.channels().get("channel-\u{1F600}-emoji");
     assert_eq!(channel.name, "channel-\u{1F600}-emoji");
 }
 
 #[test]
-fn none_channel_name_empty_string() {
+fn rsn3a_channel_name_empty_string() {
     let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
     let channel = client.channels().get("");
     assert_eq!(channel.name, "");
 }
 
 #[test]
-fn none_channel_name_with_slashes() {
+fn rsn3a_channel_name_with_slashes() {
     let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
     let channel = client.channels().get("namespace/sub/channel");
     assert_eq!(channel.name, "namespace/sub/channel");
@@ -962,7 +962,7 @@ fn none_channel_name_with_slashes() {
 // --- Data enum depth ---
 
 #[test]
-fn none_data_string_variant() {
+fn tm2d_data_string_variant() {
     let d = crate::rest::Data::String("hello".to_string());
     match d {
         crate::rest::Data::String(s) => assert_eq!(s, "hello"),
@@ -971,7 +971,7 @@ fn none_data_string_variant() {
 }
 
 #[test]
-fn none_data_json_variant() {
+fn tm2d_data_json_variant() {
     let d = crate::rest::Data::JSON(json!({"key": 42}));
     match d {
         crate::rest::Data::JSON(v) => assert_eq!(v["key"], 42),
@@ -980,7 +980,7 @@ fn none_data_json_variant() {
 }
 
 #[test]
-fn none_data_binary_variant() {
+fn tm2d_data_binary_variant() {
     let d = crate::rest::Data::Binary(serde_bytes::ByteBuf::from(vec![0x01u8, 0x02, 0x03]));
     match &d {
         crate::rest::Data::Binary(v) => assert_eq!(v.as_ref(), &[0x01u8, 0x02, 0x03]),
@@ -991,7 +991,7 @@ fn none_data_binary_variant() {
 // --- Message default depth ---
 
 #[test]
-fn none_message_default_fields() {
+fn tm2_message_default_fields() {
     let msg = crate::rest::Message::default();
     assert!(msg.id.is_none());
     assert!(msg.name.is_none());
@@ -1004,7 +1004,7 @@ fn none_message_default_fields() {
 }
 
 #[test]
-fn none_message_json_omits_null_fields() {
+fn rsl1e_message_json_omits_null_fields() {
     let msg = crate::rest::Message {
         id: Some("msg-1".to_string()),
         ..Default::default()
@@ -1019,20 +1019,20 @@ fn none_message_json_omits_null_fields() {
 // --- ClientOptions depth ---
 
 #[test]
-fn none_client_options_tls_default_true() {
+fn to3d_client_options_tls_default_true() {
     let opts = ClientOptions::new("appId.keyId:keySecret");
     assert!(opts.tls);
 }
 
 #[test]
-fn none_client_options_idempotent_default_true() {
+fn to3n_client_options_idempotent_default_true() {
     let opts = ClientOptions::new("appId.keyId:keySecret");
     // TO3n: defaults to true for >= 1.2
     assert!(opts.idempotent_rest_publishing);
 }
 
 #[test]
-fn none_client_options_with_environment() {
+fn to3k1_client_options_with_environment() {
     let opts = ClientOptions::new("appId.keyId:keySecret")
         .environment("sandbox")
         .unwrap();
@@ -1047,7 +1047,7 @@ fn none_client_options_with_environment() {
 // --- Revoke tokens depth ---
 
 #[tokio::test]
-async fn none_revoke_tokens_single_target() -> Result<()> {
+async fn rsa17c_revoke_tokens_single_target() -> Result<()> {
     let mock = MockHttpClient::with_handler(|_req| {
         MockResponse::json(
             200,
@@ -1073,7 +1073,7 @@ async fn none_revoke_tokens_single_target() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_revoke_tokens_fails_with_token_auth() {
+async fn rsa17d_revoke_tokens_fails_with_token_auth() {
     let mock = MockHttpClient::new();
     let client = ClientOptions::with_token("some-token".to_string())
         .rest_with_mock(mock)
@@ -1092,7 +1092,7 @@ async fn none_revoke_tokens_fails_with_token_auth() {
 // ===============================================================
 
 #[tokio::test]
-async fn none_time_endpoint_path() -> Result<()> {
+async fn rsc16_time_endpoint_path() -> Result<()> {
     let mock = MockHttpClient::with_handler(|req| {
         assert_eq!(req.url.path(), "/time");
         MockResponse::json(200, &json!([1700000000000_i64]))
@@ -1104,7 +1104,7 @@ async fn none_time_endpoint_path() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_time_uses_get_method() -> Result<()> {
+async fn rsc16_time_uses_get_method() -> Result<()> {
     let mock = MockHttpClient::with_handler(|req| {
         assert_eq!(req.method, "GET");
         MockResponse::json(200, &json!([1700000000000_i64]))
@@ -1119,11 +1119,11 @@ async fn none_time_uses_get_method() -> Result<()> {
 // ===============================================================
 
 // ===============================================================
-// Additional NONE tests — misc depth
+// Additional misc depth tests
 // ===============================================================
 
 #[tokio::test]
-async fn none_publish_json_array_data() -> Result<()> {
+async fn rsl4d3_publish_json_array_data() -> Result<()> {
     let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
     let client = ClientOptions::new("appId.keyId:keySecret")
         .use_binary_protocol(false)
@@ -1146,7 +1146,7 @@ async fn none_publish_json_array_data() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_publish_empty_string_data() -> Result<()> {
+async fn rsl4d2_publish_empty_string_data() -> Result<()> {
     let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
     let client = ClientOptions::new("appId.keyId:keySecret")
         .use_binary_protocol(false)
@@ -1167,7 +1167,7 @@ async fn none_publish_empty_string_data() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_publish_empty_binary_data() -> Result<()> {
+async fn rsl4d1_publish_empty_binary_data() -> Result<()> {
     let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
     let client = ClientOptions::new("appId.keyId:keySecret")
         .use_binary_protocol(false)
@@ -1189,7 +1189,7 @@ async fn none_publish_empty_binary_data() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_history_empty_result_returns_zero_items() -> Result<()> {
+async fn rsl2a_history_empty_result_returns_zero_items() -> Result<()> {
     let mock = MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([])));
     let client = ClientOptions::new("appId.keyId:keySecret")
         .use_binary_protocol(false)
@@ -1202,7 +1202,7 @@ async fn none_history_empty_result_returns_zero_items() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_history_500_error_propagated() {
+async fn ti2_history_500_error_propagated() {
     let mock = MockHttpClient::with_handler(|_req| {
         MockResponse::json(
             500,
@@ -1220,7 +1220,7 @@ async fn none_history_500_error_propagated() {
 }
 
 #[test]
-fn none_client_options_key_parsed() {
+fn rsc1a_client_options_key_parsed() {
     let opts = ClientOptions::new("myApp.myKey:mySecret");
     let client = opts.rest().unwrap();
     // Key was parsed correctly if auth() is available
@@ -1228,7 +1228,7 @@ fn none_client_options_key_parsed() {
 }
 
 #[test]
-fn none_client_options_token_parsed() {
+fn rsc1a_client_options_token_parsed() {
     let client = ClientOptions::with_token("my-token".to_string())
         .rest()
         .unwrap();
@@ -1236,7 +1236,7 @@ fn none_client_options_token_parsed() {
 }
 
 #[tokio::test]
-async fn none_multiple_channels_independent_history() -> Result<()> {
+async fn rsl2a_multiple_channels_independent_history() -> Result<()> {
     let mock = MockHttpClient::with_handler(|req| {
         if req.url.path().contains("channel-a") {
             MockResponse::json(200, &json!([{"name": "a1", "data": "da"}]))
@@ -1255,7 +1255,7 @@ async fn none_multiple_channels_independent_history() -> Result<()> {
 }
 
 #[tokio::test]
-async fn none_ably_agent_header_present() -> Result<()> {
+async fn rsc7d2_ably_agent_header_present() -> Result<()> {
     let mock =
         MockHttpClient::with_handler(|_req| MockResponse::json(200, &json!([1234567890000_i64])));
     let client = mock_client(mock);
@@ -1276,7 +1276,7 @@ async fn none_ably_agent_header_present() -> Result<()> {
 }
 
 #[test]
-fn none_rest_channels_get_different_names() {
+fn rsn3a_rest_channels_get_different_names() {
     let client = crate::Rest::new("appId.keyId:keySecret").unwrap();
     let ch1 = client.channels().get("alpha");
     let ch2 = client.channels().get("beta");
@@ -1286,7 +1286,7 @@ fn none_rest_channels_get_different_names() {
 }
 
 #[test]
-fn none_errorcode_connection_codes() {
+fn ti3_errorcode_connection_codes() {
     use crate::error::ErrorInfoCode;
     assert_eq!(ErrorCode::ConnectionFailed.code(), 80000);
     assert_eq!(ErrorCode::ConnectionSuspended.code(), 80002);
@@ -1295,7 +1295,7 @@ fn none_errorcode_connection_codes() {
 }
 
 #[test]
-fn none_errorcode_channel_codes() {
+fn ti3_errorcode_channel_codes() {
     use crate::error::ErrorInfoCode;
     assert_eq!(ErrorCode::ChannelOperationFailed.code(), 90000);
     assert_eq!(
@@ -1309,7 +1309,7 @@ fn none_errorcode_channel_codes() {
 }
 
 #[tokio::test]
-async fn none_publish_multiple_sequential() -> Result<()> {
+async fn rsl1b_publish_multiple_sequential() -> Result<()> {
     let mock = MockHttpClient::with_handler(|_req| MockResponse::empty(201));
     let client = ClientOptions::new("appId.keyId:keySecret")
         .use_binary_protocol(false)
@@ -1325,20 +1325,20 @@ async fn none_publish_multiple_sequential() -> Result<()> {
 }
 
 #[test]
-fn none_presence_action_debug_repr() {
+fn tp2_presence_action_debug_repr() {
     let action = crate::rest::PresenceAction::Enter;
     let dbg = format!("{:?}", action);
     assert_eq!(dbg, "Enter");
 }
 
 #[test]
-fn none_data_null_default() {
+fn tm2d_data_null_default() {
     let msg = crate::rest::Message::default();
     assert!(matches!(msg.data, crate::rest::Data::None));
 }
 
 #[test]
-fn none_token_metadata_capability_wildcard() {
+fn td5_token_metadata_capability_wildcard() {
     use crate::auth::TokenMetadata;
     use chrono::Utc;
     let meta = TokenMetadata {
