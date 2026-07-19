@@ -155,49 +155,26 @@ extern "C" fn teardown_sandbox_app() {
 }
 
 /// Blocking DELETE /apps/{app_id} with basic key auth; returns the HTTP
-/// status. Plain std TcpStream + native-tls, safe inside atexit.
+/// status. ureq is purely blocking (no async runtime), so it is safe to
+/// call inside an atexit handler.
 fn delete_sandbox_app(
     app_id: &str,
     key_name: &str,
     key_secret: &str,
 ) -> std::result::Result<u16, String> {
-    use std::io::{Read, Write};
-    let fail = |m: String| m;
-    let host = SANDBOX_URL
-        .strip_prefix("https://")
-        .expect("SANDBOX_URL is https");
-    let timeout = std::time::Duration::from_secs(10);
-    let addr = format!("{}:443", host);
-    let stream = std::net::TcpStream::connect_timeout(
-        &std::net::ToSocketAddrs::to_socket_addrs(&addr)
-            .map_err(|e| fail(format!("resolve: {e}")))?
-            .next()
-            .ok_or_else(|| fail("no address".into()))?,
-        timeout,
-    )
-    .map_err(|e| fail(format!("connect: {e}")))?;
-    let _ = stream.set_read_timeout(Some(timeout));
-    let _ = stream.set_write_timeout(Some(timeout));
-    let connector = native_tls::TlsConnector::new().map_err(|e| fail(format!("tls: {e}")))?;
-    let mut tls = connector
-        .connect(host, stream)
-        .map_err(|e| fail(format!("tls connect: {e}")))?;
     let auth = base64::encode(format!("{}:{}", key_name, key_secret));
-    let request = format!(
-        "DELETE /apps/{} HTTP/1.1\r\nHost: {}\r\nAuthorization: Basic {}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
-        app_id, host, auth
-    );
-    tls.write_all(request.as_bytes())
-        .map_err(|e| fail(format!("write: {e}")))?;
-    let mut response = String::new();
-    let _ = tls.read_to_string(&mut response); // close-notify quirks: parse what we got
-    let status = response
-        .strip_prefix("HTTP/1.1 ")
-        .or_else(|| response.strip_prefix("HTTP/1.0 "))
-        .and_then(|r| r.get(..3))
-        .and_then(|c| c.parse::<u16>().ok())
-        .ok_or_else(|| fail(format!("unparseable response: {:.60}", response)))?;
-    Ok(status)
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+    match agent
+        .delete(&format!("{}/apps/{}", SANDBOX_URL, app_id))
+        .set("Authorization", &format!("Basic {}", auth))
+        .call()
+    {
+        Ok(resp) => Ok(resp.status()),
+        Err(ureq::Error::Status(status, _)) => Ok(status),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 pub(crate) fn random_id() -> String {

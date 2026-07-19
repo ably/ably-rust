@@ -21,11 +21,11 @@ Older recorded deferrals from R5/R6: sandbox app teardown after integration runs
 ## Progress
 
 - [x] Sandbox app teardown (2026-07-19): get_sandbox() registers a
-  libc::atexit handler on first provision; the handler issues a raw
-  HTTP/1.1 DELETE /apps/{appId} over std TcpStream + native-tls with basic
-  key auth. NO async runtime inside the handler — reqwest's blocking client
-  spins one up and aborts the process at exit (verified the hard way); raw
-  TLS is the only reliable shape there. Failures degrade gracefully (apps
+  libc::atexit handler on first provision; the handler issues a blocking
+  DELETE /apps/{appId} via ureq with basic key auth. NO async runtime may
+  exist inside the handler — reqwest's blocking client spins one up and
+  aborts the process at exit (verified the hard way); ureq is purely
+  blocking (threads + sockets), so it is safe there. Failures degrade gracefully (apps
   are autodelete-labelled). Verified live: "sandbox teardown: deleted app
   _tmp_uWevcQ (204)".
 - [ ] Dedup per-file mock_client/get_mock helpers (12 files x ~3 each)
