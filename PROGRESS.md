@@ -802,3 +802,19 @@ This pass added:
   replaces the per-op oneshot-bridge tasks for presence/annotation ops;
   raw 91004/91005 replaced with ErrorCode variants. Suite identical
   before/after (1371/0/28 incl. serial live+proxy).
+
+### TASK-10 Test-suite housekeeping — DONE (2026-07-19)
+- Sandbox teardown: get_sandbox() registers a libc::atexit handler; the
+  handler DELETEs /apps/{appId} via ureq (purely blocking — reqwest's
+  blocking client starts a tokio runtime and ABORTS inside atexit).
+  Verified live (204 at exit).
+- Helper dedup: the mock_client/get_mock/mock_client_json trio (hash-
+  identical across 12 files) extracted to test_support.rs.
+- The 71 none_-prefixed tests renamed to spec-pointed names (65 verified
+  IDs from features.md; 6 pure-Rust-mechanics tests named plainly).
+- Matrix regen sweep: caught 6 regressions from stale generator OVERRIDES
+  (tasks 2/3/5 had updated uts_coverage.txt but not the generator) and one
+  rename-induced auto-match drift; OVERRIDES fixed and pinned — regen is
+  now byte-identical to the curated matrix (1120 IDs, 0 unresolved).
+  Policy note: converting a matrix exclusion must update the generator's
+  OVERRIDES in the same change.

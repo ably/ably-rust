@@ -1,7 +1,7 @@
 ---
 id: TASK-10
 title: Test-suite housekeeping sweep
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-12 13:23'
 labels:
@@ -28,9 +28,16 @@ Older recorded deferrals from R5/R6: sandbox app teardown after integration runs
   blocking (threads + sockets), so it is safe there. Failures degrade gracefully (apps
   are autodelete-labelled). Verified live: "sandbox teardown: deleted app
   _tmp_uWevcQ (204)".
-- [ ] Dedup per-file mock_client/get_mock helpers (12 files x ~3 each)
-- [ ] Rename none_/hp_ legacy prefixes (71 fns, all in
-  tests_rest_unit_misc.rs; each needs its spec ID identified AND the
-  matching uts_coverage.txt mappings updated)
-- [ ] Matrix regen sweep (full serial run -> tools/uts_coverage_generate.py
-  -> review diff); do AFTER the renames
+- [x] Dedup helpers (2026-07-19): the hash-identical mock_client/get_mock/
+  mock_client_json trio from 12 files now lives once in test_support.rs
+- [x] Renamed the 71 none_ tests (2026-07-19): 65 matched to verified spec
+  IDs against features.md; 6 pure-Rust-mechanics tests named plainly (no
+  fake IDs). None were referenced by the matrix. (No hp_ fns remained.)
+- [x] Matrix regen sweep (2026-07-19): full serial run (1371/0/28) ->
+  generator -> diff review caught 6 regressions, root-caused to stale
+  OVERRIDES in tools/uts_coverage_generate.py (tasks 2/3/5 updated the
+  matrix but not the generator's dispositions) plus one auto-match drift
+  from the renames (RSP4a/history-returns-paginated-1 — pinned to the
+  verified test). OVERRIDES fixed; regen is now byte-identical to the
+  curated file. LESSON: when converting a matrix exclusion, update the
+  generator's OVERRIDES in the same change.

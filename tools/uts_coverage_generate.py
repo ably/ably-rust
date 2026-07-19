@@ -169,12 +169,16 @@ OVERRIDES = {
     "realtime/proxy/RTN23a/heartbeat-starvation-reconnect-0": "proxy_rtn23a_transport_failure_reconnects_with_resume",
     # ---- TASK-12: exclusions ----
     "rest/unit/REC2b/fallback-hosts-use-default-0": "!! deprecated fallbackHostsUseDefault is deliberately not exposed (as REC2a1)",
-    "rest/unit/REC3/connectivity-check-validation-0": "!! connectivity check not implemented (TASK-5: RTN17j)",
-    "rest/unit/REC3a/default-connectivity-check-url-0": "!! connectivity check not implemented (TASK-5: RTN17j)",
-    "rest/unit/REC3b/custom-connectivity-check-url-0": "!! connectivity check not implemented (TASK-5: RTN17j)",
+    "rest/unit/REC3/connectivity-check-validation-0": "rec3_connectivity_check_validation",  # TASK-5
+    "rest/unit/REC3a/default-connectivity-check-url-0": "rec3a_default_connectivity_check_url",  # TASK-5
+    "rest/unit/REC3b/custom-connectivity-check-url-0": "rec3b_custom_connectivity_check_url",  # TASK-5
     # ---- rest: exclusions ----
-    "rest/unit/TM2s1/version-defaults-from-message-0": "!! version defaulting deferred (recorded; ignored test exists)",
-    "rest/unit/TP5/presence-message-size-0": "!! PresenceMessage::size() deferred (recorded; ignored test exists)",
+    "rest/unit/TM2s1/version-defaults-from-message-0": "tm2s2_version_timestamp_defaults_to_message_timestamp",  # TASK-3
+    "rest/unit/TP5/presence-message-size-0": "tp5_presence_message_size",  # TASK-2
+    # Pinned: the TASK-10 rename of none_paginated_presence_history_url to an
+    # rsp4a_ name made the auto-matcher prefer it (it only asserts the URL);
+    # this ID is about history RETURNING paginated items.
+    "rest/unit/RSP4a/history-returns-paginated-1": "rsp4a_presence_history_returns_action_types",
     "rest/unit/RSP1b/same-instance-returned-0": "!! n/a in Rust: presence() returns a value-type accessor, instance identity is not observable",
     "rest/unit/REC2a1/fallback-hosts-conflicts-use-default-0": "!! deprecated fallbackHostsUseDefault is deliberately not exposed; the conflict cannot arise",
 }
