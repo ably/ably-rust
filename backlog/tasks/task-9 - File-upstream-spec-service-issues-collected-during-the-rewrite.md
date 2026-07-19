@@ -1,7 +1,7 @@
 ---
 id: TASK-9
 title: File upstream spec/service issues collected during the rewrite
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-12 13:23'
 labels:
@@ -20,8 +20,24 @@ Flags recorded in PROGRESS.md that need filing against ably/specification and/or
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each of the 6 items filed (or confirmed already known) with links recorded in this task
+- [x] #1 Each of the 6 items filed (or confirmed already known) with links recorded in this task
 <!-- AC:END -->
+
+## Resolution (2026-07-19)
+
+- Items 2, 3, 6 (+ the RSA7c wildcard class): spec PR
+  https://github.com/ably/specification/pull/507
+- Items 4, 5: already fixed upstream on specification@main — no action
+- Item 1: service issue https://github.com/ably/realtime/issues/8555
+  (root cause: frontdoor marshalCommon embedded-field shadowing not honoured
+  by vmihailenco/msgpack; see notes below)
+
+Follow-ups NOT part of this task's AC, noted for pickup:
+- After spec PR #507 merges: re-derive our rtp15c / rtp8j-wildcard tests to
+  the new spec shapes; drop the stale "unit spec contradicts" comment in
+  rtn15h1_disconnected_token_error_without_renewal_fails (task-10 scope).
+- Optional ably-js follow-up PR (re-translate RTP15c, add the missing 40171
+  assertion) once #507 merges.
 
 ## Re-evaluation against specification@main (2da26476-era, 2026-07-19)
 
