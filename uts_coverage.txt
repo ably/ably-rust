@@ -583,6 +583,7 @@ rest/integration/RSC24/empty-channel-presence-2 => rsc24_batch_presence
 rest/integration/RSC24/restricted-key-channel-failure-1 => rsc24_restricted_key_failure
 rest/integration/RSC6/stats-returns-result-0 => rsc6_stats_returns_paginated_result
 rest/integration/RSC6/stats-with-parameters-1 => rsc6_stats_with_parameters
+rest/integration/RSC6/stats-flattened-entries-2 => rsc6_stats_flattened_entries
 rest/integration/RSH1a/push-publish-clientid-0 => rsh1a_push_publish_rejects_invalid_recipient
 rest/integration/RSH1a/push-publish-invalid-recipient-1 => rsh1a_push_publish_rejects_invalid_recipient
 rest/integration/RSH1b1/get-unknown-device-error-0 => rsh1b1_get_unknown_device_returns_error

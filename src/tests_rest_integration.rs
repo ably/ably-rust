@@ -227,6 +227,109 @@ async fn rsc6_stats_returns_paginated_result() {
     let _ = result.items();
 }
 
+/// Inject known statistics into the sandbox via the authenticated `POST /stats`
+/// endpoint (specification G3). The body uses the *ingestion* shape (deeply
+/// nested per-type), distinct from the flattened `entries` shape returned by a
+/// read. `X-Ably-Version: 6` is required for the server to accept the request
+/// and, on read-back, to return the flattened API.
+async fn inject_stats(key: &str, fixtures: &serde_json::Value) {
+    let (name, secret) = key.split_once(':').expect("key format");
+    let resp = reqwest::Client::new()
+        .post(format!("{}/stats", SANDBOX_URL))
+        .header("X-Ably-Version", "6")
+        .basic_auth(name, Some(secret))
+        .json(fixtures)
+        .send()
+        .await
+        .expect("stats injection request failed");
+    assert!(
+        resp.status().is_success(),
+        "stats injection failed: {}",
+        resp.status()
+    );
+}
+
+// TS12 - stats() returns the flattened entries API (RSC6b4)
+//
+// Injects known datapoints for a fixed past interval, reads them back, and
+// asserts the flattened round-trip: the ingested `inbound.realtime.messages`
+// metrics surface under the `messages.inbound.realtime.messages.*` entries
+// keys, alongside intervalId/unit/schema/appId. A read that silently fell back
+// to the deprecated deep API (missing `X-Ably-Version: 6`, or an over-permissive
+// `entries` deserialization) would yield empty entries and fail here.
+//
+// UTS: rest/integration/RSC6/stats-flattened-entries-2
+#[tokio::test]
+async fn rsc6_stats_flattened_entries() {
+    use chrono::{Datelike, Utc};
+
+    let app = get_sandbox().await;
+    // A fixed interval in the previous year: stable, complete (never "in
+    // progress"), and untouched by the live traffic other tests generate.
+    let year = Utc::now().year() - 1;
+    let fixtures = serde_json::json!([
+        { "intervalId": format!("{year}-02-03:15:03"),
+          "inbound":  { "realtime": { "messages": { "count": 50, "data": 5000 } } },
+          "outbound": { "realtime": { "messages": { "count": 20, "data": 2000 } } } },
+        { "intervalId": format!("{year}-02-03:15:04"),
+          "inbound":  { "realtime": { "messages": { "count": 60, "data": 6000 } } },
+          "outbound": { "realtime": { "messages": { "count": 10, "data": 1000 } } } },
+        { "intervalId": format!("{year}-02-03:15:05"),
+          "inbound":  { "realtime": { "messages": { "count": 70, "data": 7000 } } },
+          "outbound": { "realtime": { "messages": { "count": 40, "data": 4000 } } } },
+    ]);
+    inject_stats(app.full_access_key(), &fixtures).await;
+
+    let start = format!("{year}-02-03:15:03");
+    let end = format!("{year}-02-03:15:05");
+    let client = sandbox_client(app.full_access_key());
+
+    // Injected stats can lag briefly; poll until all three intervals appear.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let items = loop {
+        let items = client
+            .stats()
+            .forwards()
+            .params(&[("start", start.as_str()), ("end", end.as_str())])
+            .send()
+            .await
+            .unwrap()
+            .items()
+            .to_vec();
+        if items.len() == 3 || std::time::Instant::now() >= deadline {
+            break items;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+
+    assert_eq!(items.len(), 3, "expected 3 injected minute datapoints");
+
+    for (i, item) in items.iter().enumerate() {
+        assert_eq!(item.interval_id, format!("{year}-02-03:15:0{}", i + 3));
+        assert_eq!(item.unit, crate::stats::StatsIntervalGranularity::Minute);
+        assert!(item.schema.is_some(), "schema (TS12s) should be present");
+        assert!(item.app_id.is_some(), "appId (TS12t) should be present");
+        assert!(item.interval_time().is_some(), "intervalId parses (TS12p)");
+    }
+
+    let entry = |key: &str| -> f64 {
+        items
+            .iter()
+            .map(|s| s.entries.get(key).copied().unwrap_or(0.0))
+            .sum()
+    };
+    assert_eq!(
+        entry("messages.inbound.realtime.messages.count"),
+        50.0 + 60.0 + 70.0,
+        "flattened inbound message counts"
+    );
+    assert_eq!(
+        entry("messages.outbound.realtime.messages.count"),
+        20.0 + 10.0 + 40.0,
+        "flattened outbound message counts"
+    );
+}
+
 // UTS: rest/integration/RSC6/stats-with-parameters-1
 #[tokio::test]
 async fn rsc6_stats_with_parameters() {
