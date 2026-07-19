@@ -565,7 +565,7 @@ impl ClientOptions {
         let inner = rest::RestInner {
             opts: self,
             http_client: client,
-            auth_state: std::sync::Mutex::new(rest::AuthState {
+            auth_state: std::sync::Mutex::new(auth::AuthState {
                 cached_token,
                 saved_token_params: None,
                 saved_auth_options: None,

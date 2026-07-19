@@ -35,6 +35,7 @@ pub(crate) mod presence;
 pub mod protocol;
 pub mod rest;
 pub mod stats;
+mod token_request;
 pub(crate) mod transport;
 
 // Realtime modules

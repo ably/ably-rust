@@ -20,13 +20,13 @@ use rand::Rng;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::Instant;
 
-use crate::auth::Credential;
+use crate::auth::{AuthHeader, Credential};
 use crate::error::{ErrorCode, ErrorInfo, Result};
 use crate::protocol::{
     action, ChannelMode, ChannelState, ChannelStateChange, ConnectionDetails, ConnectionEvent,
     ConnectionState, ConnectionStateChange, ProtocolMessage,
 };
-use crate::rest::{AuthHeader, Format, Rest};
+use crate::rest::{Format, Rest};
 use crate::transport::{Transport, TransportConnection, TransportEvent};
 
 pub(crate) type Generation = u64;
