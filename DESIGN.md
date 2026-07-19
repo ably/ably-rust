@@ -34,7 +34,10 @@ src/
   error.rs            -- ErrorInfo, ErrorCode, Result
   options.rs          -- ClientOptions builder
   rest.rs             -- Rest client, REST Channel/Presence/Push, PublishBuilder
-  auth.rs             -- Auth, TokenParams, TokenDetails, TokenRequest, AuthCallback
+  auth.rs             -- durable auth core: state, types (incl. Key/basic auth),
+                         header resolution, token acquisition, authURL, revocation
+  token_request.rs    -- the (deprecatable) Ably native token mechanism:
+                         requestToken exchange + Key signing
   http.rs             -- request pipeline, pagination (PaginatedResult), Response
   http_client.rs      -- pub(crate) HttpClient trait + reqwest impl
   realtime.rs         -- Realtime + Connection handles
