@@ -29,7 +29,6 @@ pub mod crypto;
 pub mod error;
 pub mod http;
 pub(crate) mod http_client;
-pub(crate) mod json;
 pub mod options;
 pub(crate) mod presence;
 pub mod protocol;
@@ -60,7 +59,7 @@ pub use protocol::{
     ConnectionStateChange,
 };
 pub use rest::{Annotation, AnnotationAction, MessageAction};
-pub use rest::{Data, Message, PresenceAction, PresenceMessage, Rest};
+pub use rest::{Data, Extras, Message, PresenceAction, PresenceMessage, Rest};
 
 // REST unit tests
 #[cfg(test)]

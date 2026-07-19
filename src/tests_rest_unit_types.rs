@@ -1244,7 +1244,10 @@ fn tm2e_rest_message_encoding_serde() -> Result<()> {
 // ---------------------------------------------------------------
 #[test]
 fn tm2g_channel_message_extras() {
-    let extras = json!({"push": {"notification": {"title": "Hello"}}});
+    let extras = json!({"push": {"notification": {"title": "Hello"}}})
+        .as_object()
+        .unwrap()
+        .clone();
     let msg = crate::Message {
         id: None,
         name: Some("push-event".to_string()),
@@ -1510,7 +1513,7 @@ fn tp3i_presence_message_extras() -> Result<()> {
     let mut extras_map = serde_json::Map::new();
     extras_map.insert("ref".to_string(), json!({"type": "com.example"}));
     let pm = rest::PresenceMessage {
-        extras: Some(serde_json::Value::Object(extras_map.clone())),
+        extras: Some(extras_map.clone()),
         action: Some(rest::PresenceAction::Present),
         ..Default::default()
     };
@@ -1824,7 +1827,7 @@ fn tm_message_all_fields_set() {
         encoding: None,
         client_id: Some("sender-1".to_string()),
         connection_id: Some("conn-99".to_string()),
-        extras: Some(json!({"key": "value"})),
+        extras: json!({"key": "value"}).as_object().cloned(),
         serial: Some("serial-1".to_string()),
         version: Some(json!("version-1")),
         action: None,
@@ -2087,7 +2090,7 @@ fn tp5_presence_message_size() {
     let msg3 = PresenceMessage {
         client_id: Some("u".into()),
         data: Data::Binary(vec![0u8; 4].into()),
-        extras: Some(serde_json::json!({"ref": true})),
+        extras: serde_json::json!({"ref": true}).as_object().cloned(),
         ..Default::default()
     };
     assert_eq!(msg3.size(), 1 + 4 + r#"{"ref":true}"#.len() as u64);

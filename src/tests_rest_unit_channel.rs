@@ -298,7 +298,7 @@ async fn rsl1j_all_message_attributes_transmitted() -> Result<()> {
         .rest_with_mock(mock)
         .unwrap();
 
-    let mut extras = crate::json::Map::new();
+    let mut extras = crate::rest::Extras::new();
     extras.insert(
         "headers".to_string(),
         serde_json::json!({"some": "metadata"}),
@@ -3279,7 +3279,7 @@ async fn rsl1j_extras_headers_depth() -> Result<()> {
         .use_binary_protocol(false)
         .rest_with_mock(mock)
         .unwrap();
-    let mut extras = crate::json::Map::new();
+    let mut extras = crate::rest::Extras::new();
     extras.insert("headers".to_string(), json!({"x-custom": "value"}));
     client
         .channels()
@@ -3303,7 +3303,7 @@ async fn rsl1j_extras_ref_depth() -> Result<()> {
         .use_binary_protocol(false)
         .rest_with_mock(mock)
         .unwrap();
-    let mut extras = crate::json::Map::new();
+    let mut extras = crate::rest::Extras::new();
     extras.insert(
         "ref".to_string(),
         json!({"type": "com.example.ref", "timeserial": "abc@123"}),

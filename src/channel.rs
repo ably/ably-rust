@@ -739,8 +739,10 @@ impl<'a> RealtimePublishBuilder<'a> {
         self.message.client_id = Some(client_id.into());
         self
     }
+    /// Set the message `extras` (RSL6a2). `extras` must be a JSON object; a
+    /// non-object value is ignored (extras is defined as a map).
     pub fn extras(mut self, extras: serde_json::Value) -> Self {
-        self.message.extras = Some(extras);
+        self.message.extras = extras.as_object().cloned();
         self
     }
     /// RTL6i2: publish an array of Message objects (replaces the single

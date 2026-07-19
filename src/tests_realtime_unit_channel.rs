@@ -7523,7 +7523,9 @@ fn delta_msg(id: &str, data: rest::Data, encoding: &str, from: &str) -> rest::Me
         id: Some(id.to_string()),
         data,
         encoding: Some(encoding.to_string()),
-        extras: Some(serde_json::json!({"delta": {"from": from, "format": "vcdiff"}})),
+        extras: serde_json::json!({"delta": {"from": from, "format": "vcdiff"}})
+            .as_object()
+            .cloned(),
         ..Default::default()
     }
 }

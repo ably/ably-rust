@@ -1236,7 +1236,7 @@ pub struct PublishBuilder<'a> {
     id: Option<String>,
     name: Option<String>,
     data: Data,
-    extras: Option<serde_json::Map<String, serde_json::Value>>,
+    extras: Option<Extras>,
     client_id: Option<String>,
     params: Option<Vec<(String, String)>>,
     messages: Option<Vec<Message>>,
@@ -1269,7 +1269,7 @@ impl<'a> PublishBuilder<'a> {
         self
     }
 
-    pub fn extras(mut self, extras: serde_json::Map<String, serde_json::Value>) -> Self {
+    pub fn extras(mut self, extras: Extras) -> Self {
         self.extras = Some(extras);
         self
     }
@@ -1318,7 +1318,7 @@ impl<'a> PublishBuilder<'a> {
                 name: self.name,
                 data: self.data,
                 client_id: self.client_id,
-                extras: self.extras.map(serde_json::Value::Object),
+                extras: self.extras,
                 ..Default::default()
             }],
         };
@@ -1406,7 +1406,7 @@ pub(crate) fn message_size(msg: &Message) -> u64 {
     (name + client_id + extras_size(msg.extras.as_ref()) + data_size(&msg.data)) as u64
 }
 
-fn extras_size(extras: Option<&serde_json::Value>) -> usize {
+fn extras_size(extras: Option<&Extras>) -> usize {
     extras
         .map(|e| serde_json::to_string(e).map(|s| s.len()).unwrap_or(0))
         .unwrap_or(0)
@@ -1802,7 +1802,7 @@ pub struct Annotation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoding: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub extras: Option<serde_json::Value>,
+    pub extras: Option<Extras>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub serial: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1810,6 +1810,11 @@ pub struct Annotation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<i64>,
 }
+
+/// A message's `extras` (RSL6a2/TM2i): an opaque JSON **object** — push,
+/// headers, delta, ref, and any future keys. Always a map; open to arbitrary
+/// and unknown keys, so it stays forward-compatible without a typed schema.
+pub type Extras = serde_json::Map<String, serde_json::Value>;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1829,7 +1834,7 @@ pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub extras: Option<serde_json::Value>,
+    pub extras: Option<Extras>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<MessageAction>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2097,7 +2102,7 @@ pub struct PresenceMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub extras: Option<serde_json::Value>,
+    pub extras: Option<Extras>,
 }
 
 impl PresenceMessage {
