@@ -63,6 +63,8 @@ pub use rest::{Data, Message, PresenceAction, PresenceMessage, Rest};
 
 // REST unit tests
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod tests_rest_unit_auth;
 #[cfg(test)]
 mod tests_rest_unit_channel;

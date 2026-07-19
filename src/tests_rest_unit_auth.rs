@@ -60,25 +60,7 @@ use crate::{ClientOptions, Result};
 
 // (duplicate imports removed)
 
-/// Helper to create a Rest client with a mock HTTP backend.
-fn mock_client(mock: MockHttpClient) -> crate::Rest {
-    ClientOptions::new("appId.keyId:keySecret")
-        .rest_with_mock(mock)
-        .unwrap()
-}
-
-/// Helper to get captured requests from a client with a mock backend.
-fn get_mock(_client: &crate::Rest) -> &MockHttpClient {
-    _client.inner.mock_handle.as_ref().unwrap()
-}
-
-/// Create a mock REST client with JSON format (for tests that inspect request body).
-fn mock_client_json(mock: MockHttpClient) -> crate::Rest {
-    ClientOptions::new("appId.keyId:keySecret")
-        .use_binary_protocol(false)
-        .rest_with_mock(mock)
-        .unwrap()
-}
+use crate::test_support::{get_mock, mock_client, mock_client_json};
 
 // ========================================================================
 // Phase 9: Realtime Auth Tests
