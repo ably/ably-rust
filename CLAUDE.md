@@ -10,12 +10,15 @@ These are the same value. The versioning scheme changed from decimal (e.g. "1.2"
 
 ## Test baseline
 
-1287 pass / 0 fail / 61 ignored (post stage 5.8, 2026-06-12). THE SUITE IS FULLY
-GREEN — any failure after a change is a regression. Every ignore carries an
-explicit recorded-deferral reason. Integration: 62 pass / 15 ignored against the live nonprod
-sandbox; proxy: 8/8 via uts-proxy. Run integration/proxy with --test-threads=1
-(shared sandbox app; flaky in parallel). If any tests_rest_*/tests_proxy test fails
-after a change, something regressed.
+1363 pass / 0 fail / 30 ignored (full serial run; post TASK-4 6f546b2, verified
+2026-07-19). THE SUITE IS FULLY GREEN — any failure after a change is a
+regression. Every ignore carries an explicit recorded-deferral reason.
+Split: unit 1238 pass / 28 ignored (~7s, parallel OK); live integration + proxy
+125 pass / 2 ignored (~165s) across tests_rest_integration,
+tests_realtime_integration, tests_proxy and tests_proxy_realtime. Run
+integration/proxy with --test-threads=1 (shared sandbox app; flaky in parallel).
+If any tests_rest_*/tests_realtime_integration/tests_proxy* test fails after a
+change, something regressed.
 
 Run tests: `cargo test 2>&1 | tail -5`
 
@@ -25,8 +28,8 @@ Tests mirror the UTS (Universal Test Specification) directory structure:
 - `tests_rest_unit_*.rs` — REST unit tests (mocked HTTP)
 - `tests_rest_integration.rs` — REST integration tests (nonprod sandbox)
 - `tests_realtime_unit_*.rs` — Realtime unit tests (mocked WebSocket)
-- `tests_realtime_integration.rs` — Realtime integration tests [planned]
-- `tests_proxy.rs` — proxy integration tests (uts-proxy, auto-downloaded)
+- `tests_realtime_integration.rs` — Realtime integration tests (nonprod sandbox)
+- `tests_proxy.rs`, `tests_proxy_realtime.rs` — proxy integration tests (uts-proxy, auto-downloaded)
 
 Filter by category: `cargo test tests_rest_unit` or `cargo test tests_realtime_unit`.
 

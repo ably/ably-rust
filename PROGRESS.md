@@ -679,3 +679,89 @@ This pass added:
 - Suite: 1300 pass / 0 fail / 41 ignored; clippy clean (default + tracing
   feature).
 
+### TASK-11 Integration Traceability — DONE (2026-07-13, 0369a29)
+- Matrix now spans rest+realtime, unit+integration: 1120 IDs — 1056 mapped,
+  66 excluded with reasons, 0 unresolved; objects/ and docs/ dispositioned
+  via `!area` lines. The ratchet (tests_uts_coverage.rs) scans all four
+  areas.
+- New test files: tests_realtime_integration.rs (13 live-sandbox tests) and
+  tests_proxy_realtime.rs (28 uts-proxy fault-injection tests over the real
+  WebSocket transport).
+- SDK fixes the new tests forced:
+  - RTL15b: SYNC no longer updates the channel serial — the sync cursor is
+    not a channel serial, and sending it back in a reattach ATTACH (RTL4c1)
+    was rejected by the server ("Unable to parse channel params").
+  - RTN15h1: DISCONNECTED token error with a non-renewable token now fails
+    the connection with 40171 (was pass-through 40142), server error kept
+    as cause (TI1). Unit-spec conflict recorded in TASK-9 (item 6).
+  - RTN19a: typed PendingPayload — resends reconstruct the same
+    ProtocolMessage kind (MESSAGE/PRESENCE/ANNOTATION) instead of
+    pre-serialized JSON.
+- Test-infra fixes: uts-proxy spawns with null stdio (inherited stdout held
+  test pipes open); randomized proxy port base + session-create retry
+  (orphaned sessions from panicked tests hold ports on the daemon);
+  fast reconnect cycles asserted via broadcast recorder
+  (await_states_in_order) because await_state's coalescing watch misses
+  ms-fast transients; coverage generator considers every module a bare fn
+  name appears in.
+- Suite: 1342 pass / 0 fail / 41 ignored (full serial run).
+
+### TASK-12 Verified Claim-Set Mappings — DONE (2026-07-14, 26f1239)
+- The generator's score-0 fallback claimed spec variants by listing every
+  same-token test without verifying any covered the variant; the class had
+  grown to 31 IDs. Each dispositioned by reading the spec variant and the
+  candidate test: 17 tightened to the single verified covering test, 10 new
+  tests written, 4 excluded with reasons (fallbackHostsUseDefault
+  deliberately not exposed; connectivity check is TASK-5 scope). The
+  fallback now emits `?? UNRESOLVED` with the candidate list, so the class
+  cannot reappear. Matrix: 1052 mapped / 70 excluded / 0 unresolved.
+- SDK bugs the tightened tests forced out:
+  - Annotations skipped RSL4 data encoding on publish (REST and realtime)
+    and RSL6 decoding on receipt/list — a JSON payload went out as a raw
+    object instead of a string with encoding "json"
+    (RTAN1a/RSAN1c3/RTAN4b1).
+  - A connect-time 40102 IncompatibleCredentials (token clientId vs
+    configured clientId) was retried forever; per RSA15c it is terminal —
+    the connection now transitions to FAILED.
+- Notable new tests: rtl10b_until_attach_bounded_by_attach_point proves the
+  fromSerial attach bound behaviorally against the live sandbox (the unit
+  mock cannot see the HTTP layer until TASK-5, and the uts-proxy strips
+  query strings from its http_request log);
+  rtp5f_suspended_maintains_presence_map drives a real connection into
+  SUSPENDED via a 1ms connectionStateTtl.
+
+### TASK-1 JWT Integration Tests — DONE (2026-07-14, 3d1eeec)
+- generate_jwt() in tests_rest_integration.rs mints Ably-shaped HS256 JWTs
+  (kid=keyName, x-ably-clientId). rsa8_jwt_token_auth,
+  rsa8_auth_callback_jwt and rsc10_token_renewal_with_expired_jwt replace
+  their ignored stubs; the matrix maps their IDs to the real tests (they
+  were auto-matched to plausible-but-wrong ones).
+- GOTCHA: an "expired" JWT needs iat in the past too — with iat=now and
+  exp<now the server computes a negative ttl and rejects the JWT as
+  malformed (400/40003) rather than expired (401/40142), which never
+  exercises RSC10 renewal.
+- Suite: 1354 pass / 0 fail / 38 ignored.
+
+### TASK-4 RTN16 Connection Recovery — DONE (2026-07-14, 6f546b2)
+- A new client instance can recover a previous instance's connection:
+  ClientOptions::recover(key) (malformed keys log an error and connect
+  fresh, RTN16f1); Connection::create_recovery_key() — loop-command
+  snapshot serializing connectionKey + msgSerial + attached channels'
+  serials (ably-js JSON format, unicode-safe), None in
+  CLOSING/CLOSED/FAILED/SUSPENDED or before the first connection
+  (RTN16g/g1/g2).
+- The recover query param goes on the first connect attempt only, mutually
+  exclusive with resume (RTN16k). msgSerial seeds from the key and survives
+  a clean recovery CONNECTED; a recovery failure resets it per RTN15c7
+  (RTN16f). Channel serials seed ChannelCtx creation so the first ATTACH
+  carries them (RTN16j/RTL4c1). No new locks: everything lives in the
+  loop-owned state.
+- Tests: 6 UTS unit IDs + RTC1c; proxy RTN16d (real-sandbox recovery
+  preserves connectionId, rotates the key) and RTN16l (failure -> fresh id
+  + 80008, still CONNECTED); rtn16_live_recovery_proof kills a client
+  without a protocol CLOSE and shows the successor keeps the connectionId
+  and continues msgSerial 1->2. The 8 stale ignored recovery stubs deleted.
+- Matrix: 1120 IDs, 0 unresolved. Suite: 1363 pass / 0 fail / 30 ignored —
+  verified green again 2026-07-19 (fmt + clippy clean; unit 1238/0/28,
+  live integration + proxy serial 125/0/2).
+
