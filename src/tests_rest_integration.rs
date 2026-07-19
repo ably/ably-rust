@@ -95,8 +95,109 @@ static SANDBOX: OnceCell<SandboxApp> = OnceCell::const_new();
 
 pub(crate) async fn get_sandbox() -> &'static SandboxApp {
     SANDBOX
-        .get_or_init(|| async { SandboxApp::provision().await })
+        .get_or_init(|| async {
+            let app = SandboxApp::provision().await;
+            register_sandbox_teardown(&app);
+            app
+        })
         .await
+}
+
+/// (app_id, key_name, key_secret) for the atexit teardown.
+static TEARDOWN_APP: std::sync::OnceLock<(String, String, String)> = std::sync::OnceLock::new();
+
+/// Arrange for the provisioned sandbox app to be deleted when the test
+/// process exits. The Rust test harness has no global teardown hook, so this
+/// registers a libc::atexit handler; by the time it runs every tokio runtime
+/// is gone, hence the blocking client in the handler.
+fn register_sandbox_teardown(app: &SandboxApp) {
+    let key = app.full_access_key();
+    let (key_name, key_secret) = key.split_once(':').expect("key format");
+    if TEARDOWN_APP
+        .set((
+            app.app_id.clone(),
+            key_name.to_string(),
+            key_secret.to_string(),
+        ))
+        .is_ok()
+    {
+        unsafe {
+            libc::atexit(teardown_sandbox_app);
+        }
+    }
+}
+
+extern "C" fn teardown_sandbox_app() {
+    let Some((app_id, key_name, key_secret)) = TEARDOWN_APP.get() else {
+        return;
+    };
+    // Raw HTTP/1.1 over native-tls: no async runtime may be started inside an
+    // atexit handler (reqwest's blocking client aborts the process here), and
+    // a panic would abort too — so everything is explicit error handling.
+    match delete_sandbox_app(app_id, key_name, key_secret) {
+        Ok(status) if (200..300).contains(&status) => {
+            eprintln!("sandbox teardown: deleted app {} ({})", app_id, status);
+        }
+        Ok(status) => {
+            eprintln!(
+                "sandbox teardown: DELETE /apps/{} returned {} (app is autodelete-labelled; \
+                 the sandbox reaps it eventually)",
+                app_id, status
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "sandbox teardown: DELETE /apps/{} errored: {} (app is autodelete-labelled)",
+                app_id, e
+            );
+        }
+    }
+}
+
+/// Blocking DELETE /apps/{app_id} with basic key auth; returns the HTTP
+/// status. Plain std TcpStream + native-tls, safe inside atexit.
+fn delete_sandbox_app(
+    app_id: &str,
+    key_name: &str,
+    key_secret: &str,
+) -> std::result::Result<u16, String> {
+    use std::io::{Read, Write};
+    let fail = |m: String| m;
+    let host = SANDBOX_URL
+        .strip_prefix("https://")
+        .expect("SANDBOX_URL is https");
+    let timeout = std::time::Duration::from_secs(10);
+    let addr = format!("{}:443", host);
+    let stream = std::net::TcpStream::connect_timeout(
+        &std::net::ToSocketAddrs::to_socket_addrs(&addr)
+            .map_err(|e| fail(format!("resolve: {e}")))?
+            .next()
+            .ok_or_else(|| fail("no address".into()))?,
+        timeout,
+    )
+    .map_err(|e| fail(format!("connect: {e}")))?;
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    let connector = native_tls::TlsConnector::new().map_err(|e| fail(format!("tls: {e}")))?;
+    let mut tls = connector
+        .connect(host, stream)
+        .map_err(|e| fail(format!("tls connect: {e}")))?;
+    let auth = base64::encode(format!("{}:{}", key_name, key_secret));
+    let request = format!(
+        "DELETE /apps/{} HTTP/1.1\r\nHost: {}\r\nAuthorization: Basic {}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        app_id, host, auth
+    );
+    tls.write_all(request.as_bytes())
+        .map_err(|e| fail(format!("write: {e}")))?;
+    let mut response = String::new();
+    let _ = tls.read_to_string(&mut response); // close-notify quirks: parse what we got
+    let status = response
+        .strip_prefix("HTTP/1.1 ")
+        .or_else(|| response.strip_prefix("HTTP/1.0 "))
+        .and_then(|r| r.get(..3))
+        .and_then(|c| c.parse::<u16>().ok())
+        .ok_or_else(|| fail(format!("unparseable response: {:.60}", response)))?;
+    Ok(status)
 }
 
 pub(crate) fn random_id() -> String {
