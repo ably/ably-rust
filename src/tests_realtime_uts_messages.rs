@@ -1423,6 +1423,71 @@ fn logging_client(
     (client, lines)
 }
 
+// The service duplicates map keys in msgpack frames (`messages` in every
+// MESSAGE, `presence` in a SYNC with members) with byte-identical values —
+// ably/realtime#8555. The tolerant decode must recover both shapes. Frames
+// are built with rmpv (serde_json can't represent duplicate keys); key order
+// mirrors a captured live frame: the duplicate is appended after the
+// remaining fields, not adjacent to the first occurrence.
+#[test]
+fn tolerant_decode_recovers_service_duplicate_keys() {
+    use rmpv::Value;
+    let logger = ClientOptions::new("appId.keyId:keySecret").logger();
+    let s = |v: &str| Value::String(v.into());
+    let msg_entry = Value::Map(vec![
+        (s("name"), s("dup-probe")),
+        (s("data"), s("duplicate key capture")),
+    ]);
+
+    // MESSAGE: [action, id, channel, channelSerial, connectionId, messages,
+    // timestamp, messages] — as captured from the sandbox.
+    let mut frame = Vec::new();
+    rmpv::encode::write_value(
+        &mut frame,
+        &Value::Map(vec![
+            (s("action"), Value::from(15)),
+            (s("id"), s("conn-1:1")),
+            (s("channel"), s("dup-key-capture")),
+            (s("channelSerial"), s("serial-1")),
+            (s("connectionId"), s("conn-1")),
+            (s("messages"), Value::Array(vec![msg_entry.clone()])),
+            (s("timestamp"), Value::from(1784458011364u64)),
+            (s("messages"), Value::Array(vec![msg_entry])),
+        ]),
+    )
+    .unwrap();
+    let pm = crate::ws_transport::decode_msgpack_tolerant(&frame, &logger)
+        .expect("duplicate `messages` key must decode");
+    assert_eq!(pm.action, action::MESSAGE);
+    let msgs = pm.messages.as_deref().unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0].name.as_deref(), Some("dup-probe"));
+
+    // SYNC: the same frontdoor pattern duplicates `presence`.
+    let presence_entry = Value::Map(vec![
+        (s("action"), Value::from(1)),
+        (s("clientId"), s("member-1")),
+    ]);
+    let mut frame = Vec::new();
+    rmpv::encode::write_value(
+        &mut frame,
+        &Value::Map(vec![
+            (s("action"), Value::from(16)),
+            (s("channel"), s("dup-key-capture")),
+            (s("presence"), Value::Array(vec![presence_entry.clone()])),
+            (s("channelSerial"), s("serial:cursor")),
+            (s("presence"), Value::Array(vec![presence_entry])),
+        ]),
+    )
+    .unwrap();
+    let pm = crate::ws_transport::decode_msgpack_tolerant(&frame, &logger)
+        .expect("duplicate `presence` key must decode");
+    assert_eq!(pm.action, action::SYNC);
+    let members = pm.presence.as_deref().unwrap();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].client_id.as_deref(), Some("member-1"));
+}
+
 // Policy: an undecodable message entry logs at Error (never a silent discard)
 // Wire entries are typed, so a malformed entry can no longer survive past
 // transport decode — the discard happens (and must be logged) there.

@@ -98,12 +98,16 @@ impl TransportConnection for WsConnection {
     }
 }
 
-/// Decode a msgpack frame into a ProtocolMessage. The realtime service has
-/// been observed emitting DUPLICATE map keys in msgpack frames (e.g.
-/// `messages` twice in a MESSAGE); serde rejects those, so per RTF1
-/// (deserialization must be tolerant) we dedup keys — last occurrence wins —
-/// and retry. Re-encoding (rather than a JSON round-trip) preserves binary
-/// payloads.
+/// Decode a msgpack frame into a ProtocolMessage. The realtime service emits
+/// DUPLICATE map keys in msgpack frames — `messages` twice in every MESSAGE,
+/// `presence` twice in a SYNC with non-empty presence — because frontdoor's
+/// embedded-field shadowing is honoured by encoding/json but not by its
+/// msgpack encoder (https://github.com/ably/realtime/issues/8555; the
+/// duplicate values are byte-identical, so last-wins is faithful). serde
+/// rejects duplicate fields, so per RTF1 (deserialization must be tolerant)
+/// we dedup keys — last occurrence wins — and retry. Re-encoding (rather
+/// than a JSON round-trip) preserves binary payloads. Remove this once the
+/// service fix is deployed to all clusters we support.
 pub(crate) fn decode_msgpack_tolerant(
     bytes: &[u8],
     logger: &crate::options::Logger,
