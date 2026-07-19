@@ -1,37 +1,50 @@
+use std::collections::HashMap;
+
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use serde::Deserialize;
 
-/// Ably Application statistics retrieved from [REST stats endpoint].
+/// Ably application statistics for a single interval (TS1/TS12), retrieved from
+/// the [REST stats endpoint].
 ///
-/// [REST stats endpoint]: https://docs.ably.io/rest-api/#stats
-#[derive(Debug, Default, Deserialize)]
+/// As of specification version 2.2 the old deeply-nested per-type structure is
+/// deprecated in favour of a flat `entries` map, so this type exposes the
+/// flattened API only.
+///
+/// [REST stats endpoint]: https://ably.com/docs/general/statistics
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Stats {
+    /// TS12a: the interval this datapoint covers, e.g. `"2024-01-01:00:00"`.
     pub interval_id: String,
-    pub unit: Unit,
-
-    pub all: Option<MessageTypes>,
-    pub inbound: Option<MessageTraffic>,
-    pub outbound: Option<MessageTraffic>,
-    pub persisted: Option<MessageTypes>,
-
-    pub connections: Option<ConnectionTypes>,
-    pub channels: Option<ResourceCount>,
-
-    pub api_requests: Option<RequestCount>,
-    pub token_requests: Option<RequestCount>,
-
-    pub push: Option<Push>,
-
-    pub xchg_producer: Option<XchgMessages>,
-    pub xchg_consumer: Option<XchgMessages>,
-
-    pub peak_rates: Option<Rates>,
+    /// TS12c: the granularity the stats are aggregated by. Taken from the JSON
+    /// `unit` field, not derived from `interval_id`.
+    pub unit: StatsIntervalGranularity,
+    /// TS12q: for an interval still in progress (e.g. the current month), the
+    /// last sub-interval included, in `yyyy-mm-dd:hh:mm` format.
+    pub in_progress: Option<String>,
+    /// TS12r: the flattened statistics entries, keyed by dotted metric path
+    /// (e.g. `"messages.all.all.count"`). The spec types the values as
+    /// integers; rate entries (e.g. `"peakRates.messages"`) are fractional, so
+    /// they are represented as `f64`.
+    pub entries: HashMap<String, f64>,
+    /// TS12s: the JSON schema URI for this datapoint.
+    pub schema: Option<String>,
+    /// TS12t: the id of the Ably application these stats are for.
+    pub app_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+impl Stats {
+    /// TS12p: the interval start time, parsed from `interval_id`. Returns
+    /// `None` if the id is not a recognised interval format.
+    pub fn interval_time(&self) -> Option<DateTime<Utc>> {
+        parse_interval_id(&self.interval_id)
+    }
+}
+
+/// TS12c: the period stats are aggregated by.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(Default)]
-pub enum Unit {
+pub enum StatsIntervalGranularity {
     #[default]
     Minute,
     Hour,
@@ -39,125 +52,49 @@ pub enum Unit {
     Month,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct MessageCount {
-    pub count: f64,
-    pub data: f64,
-    pub failed: f64,
-    pub refused: f64,
+/// Parse an Ably stats interval id into its start time. The format depends on
+/// the granularity: `yyyy-mm` (month), `yyyy-mm-dd` (day), `yyyy-mm-dd:hh`
+/// (hour), or `yyyy-mm-dd:hh:mm` (minute).
+fn parse_interval_id(id: &str) -> Option<DateTime<Utc>> {
+    let mut parts = id.split(':');
+    let date_part = parts.next()?;
+    // Missing hour/minute segments default to 0; a present-but-unparsable
+    // segment fails the whole parse.
+    let hour: u32 = match parts.next() {
+        Some(h) => h.parse().ok()?,
+        None => 0,
+    };
+    let minute: u32 = match parts.next() {
+        Some(m) => m.parse().ok()?,
+        None => 0,
+    };
+
+    let date = if date_part.matches('-').count() == 1 {
+        // `yyyy-mm` — the start of the month.
+        NaiveDate::parse_from_str(&format!("{date_part}-01"), "%Y-%m-%d").ok()?
+    } else {
+        NaiveDate::parse_from_str(date_part, "%Y-%m-%d").ok()?
+    };
+    let naive = date.and_hms_opt(hour, minute, 0)?;
+    Some(Utc.from_utc_datetime(&naive))
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct ResourceCount {
-    pub peak: f64,
-    pub min: f64,
-    pub mean: f64,
-    pub opened: f64,
-    pub failed: f64,
-    pub refused: f64,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct RequestCount {
-    pub failed: f64,
-    pub refused: f64,
-    pub succeeded: f64,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct MessageTypes {
-    pub all: MessageCount,
-    pub messages: MessageCount,
-    pub presence: MessageCount,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct ConnectionTypes {
-    pub all: ResourceCount,
-    pub plain: ResourceCount,
-    pub tls: ResourceCount,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct MessageTraffic {
-    pub all: MessageTypes,
-    pub realtime: MessageTypes,
-    pub rest: MessageTypes,
-    pub webhook: MessageTypes,
-    pub push: MessageTypes,
-    pub external_queue: MessageTypes,
-    pub shared_queue: MessageTypes,
-    pub http_event: MessageTypes,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct Push {
-    pub messages: f64,
-    pub notifications: PushNotifications,
-    pub direct_publishes: f64,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct PushNotifications {
-    pub invalid: f64,
-    pub attempted: PushTransportCount,
-    pub successful: PushTransportCount,
-    pub failed: PushNotificationFailures,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct PushTransportCount {
-    pub total: f64,
-    pub gcm: f64,
-    pub fcm: f64,
-    pub apns: f64,
-    pub web: f64,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct PushNotificationFailures {
-    pub retriable: PushTransportCount,
-    pub final_: PushTransportCount,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct XchgMessages {
-    pub all: MessageTypes,
-    pub producer_paid: MessageDirections,
-    pub consumer_paid: MessageDirections,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct MessageDirections {
-    pub all: MessageTypes,
-    pub inbound: MessageTraffic,
-    pub outbound: MessageTraffic,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct Rates {
-    pub messages: f64,
-    pub api_requests: f64,
-    pub token_requests: f64,
-    pub reactor: ReactorRates,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct ReactorRates {
-    pub http_event: f64,
-    pub amqp: f64,
+    #[test]
+    fn interval_time_parses_each_granularity() {
+        let cases = [
+            ("2024-03", (2024, 3, 1, 0, 0)),
+            ("2024-03-15", (2024, 3, 15, 0, 0)),
+            ("2024-03-15:09", (2024, 3, 15, 9, 0)),
+            ("2024-03-15:09:30", (2024, 3, 15, 9, 30)),
+        ];
+        for (id, (y, mo, d, h, mi)) in cases {
+            let t = parse_interval_id(id).unwrap_or_else(|| panic!("parse {id}"));
+            assert_eq!(t, Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap(), "{id}");
+        }
+        assert!(parse_interval_id("not-an-interval").is_none());
+    }
 }

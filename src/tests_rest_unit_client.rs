@@ -1483,24 +1483,26 @@ async fn rsc16_time_error_handling() -> Result<()> {
 #[tokio::test]
 async fn rsc6a_stats_returns_paginated_result() -> Result<()> {
     let mock = MockHttpClient::new();
+    // TS12: the flattened stats shape — intervalId, unit, and a flat `entries`
+    // map (plus optional schema/appId), not the deprecated nested per-type
+    // structure.
     mock.queue_response(MockResponse::json(
         200,
         &json!([
             {
                 "intervalId": "2024-01-01:00:00",
                 "unit": "hour",
-                "all": {
-                    "messages": {"count": 100.0, "data": 5000.0},
-                    "all": {"count": 100.0, "data": 5000.0}
+                "schema": "https://schemas.ably.com/json/app-stats-0.0.1.json",
+                "appId": "app123",
+                "entries": {
+                    "messages.all.all.count": 100,
+                    "messages.all.all.data": 5000
                 }
             },
             {
                 "intervalId": "2024-01-01:01:00",
                 "unit": "hour",
-                "all": {
-                    "messages": {"count": 150.0, "data": 7500.0},
-                    "all": {"count": 150.0, "data": 7500.0}
-                }
+                "entries": { "messages.all.all.count": 150 }
             }
         ]),
     ));
@@ -1513,8 +1515,23 @@ async fn rsc6a_stats_returns_paginated_result() -> Result<()> {
     let page = client.stats().send().await?;
     let items = page.items();
     assert_eq!(items.len(), 2);
+    // TS12a/c
     assert_eq!(items[0].interval_id, "2024-01-01:00:00");
+    assert_eq!(items[0].unit, crate::stats::StatsIntervalGranularity::Hour);
     assert_eq!(items[1].interval_id, "2024-01-01:01:00");
+    // TS12r: flattened entries
+    assert_eq!(items[0].entries.get("messages.all.all.count"), Some(&100.0));
+    assert_eq!(items[0].entries.get("messages.all.all.data"), Some(&5000.0));
+    assert_eq!(items[1].entries.get("messages.all.all.count"), Some(&150.0));
+    // TS12s/t
+    assert_eq!(items[0].app_id.as_deref(), Some("app123"));
+    assert!(items[0].schema.is_some());
+    // TS12p: intervalTime parsed from intervalId
+    use chrono::TimeZone as _;
+    assert_eq!(
+        items[0].interval_time(),
+        chrono::Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).single()
+    );
 
     let reqs = get_mock(&client).captured_requests();
     assert_eq!(reqs[0].method, "GET");
