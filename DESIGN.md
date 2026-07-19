@@ -14,8 +14,15 @@ src/
   rest.rs             -- Rest client, REST Channel, Presence, Push, PublishBuilder
   auth.rs             -- Auth, TokenParams, TokenDetails, TokenRequest, AuthCallback
   http.rs             -- RequestBuilder, PaginatedRequestBuilder, PaginatedResult, Response
-  realtime.rs         -- Realtime client, Connection
-  channel.rs          -- RealtimeChannel, Channels (realtime), RealtimePresence
+  realtime.rs         -- Realtime client, Connection (handles)
+  channel.rs          -- RealtimeChannel, Channels (realtime), RealtimePresence (handles)
+  connection/         -- the single connection event loop (owns all realtime state)
+    mod.rs            -- loop core, ConnectionCtx/ChannelCtx state, connect cycle,
+                         transports, timers, command/protocol dispatch, DeltaDecoder
+    channel_arm.rs    -- channel lifecycle, connection-state effects, inbound
+                         MESSAGE + RTL18/19/20 delta decoding
+    presence_arm.rs   -- presence/annotation ops, RTP11 get, inbound PRESENCE/SYNC
+    publish_arm.rs    -- RTL6 publish pipeline, RTN19a resend, ACK/NACK
   protocol.rs         -- pub(crate) wire types; pub state enums re-exported via lib.rs
   transport.rs        -- pub(crate) Transport trait
   http_client.rs      -- pub(crate) HttpClient trait
@@ -1574,6 +1581,31 @@ the public callback API wraps a receiver + spawned dispatch task). `enter/update
 leave` are `PresenceAction` commands: sent as protocol messages with ACK repliers,
 and recorded in the internal map per RTP17 on ACK.
 
+## 9a. Delta decoding (RTL18–RTL21, PC3)
+
+Delta/vcdiff decoding is bundled, not a user-supplied plugin: the crate
+depends on `vcdiff-decode` (published from `ably/vcdiff-rust`) and calls it
+directly. An internal seam `connection::DeltaDecoder` (an `Arc<dyn Fn(delta,
+base) -> Result<Vec<u8>, String>>`) wraps `vcdiff::decode` in production and is
+overridable behind `#[cfg(test)]` (a `ClientOptions` field) so the RTL18/19/20
+bookkeeping can be unit-tested with an injected mock — the real decoding is
+covered by `vcdiff-decode`'s own conformance suite.
+
+`ChannelCtx` stores the RTL19 base payload (wire form, `String` or `Binary`,
+after base64 but before json/utf-8) and the RTL20 last-message id; both are
+cleared on any transition out of ATTACHED. `ChannelCtx::decode_message`
+(channel arm) does RTL19a (base64 first), the RTL20 `extras.delta.from` vs
+stored-id check, PC3a (string base → utf-8 bytes), the `vcdiff::decode` call,
+RTL19c (the direct result becomes the new base), then the standard RSL6 chain
+for residual steps. On a decode failure or id mismatch it returns a 40018
+error; `handle_message_action` then runs RTL18 recovery: log (RTL18a), discard
++ stop (RTL18b), and re-attach from the *previous* message's channelSerial into
+ATTACHING with reason 40018 (RTL18c). A second delta arriving mid-recovery is
+dropped by the RTL17 not-ATTACHED guard, so only one recovery runs at a time.
+No new locks; the decoder handle is cloned out of the loop before the channel
+borrow. Delta mode is requested via the existing channel-option params
+(`delta = vcdiff`); the SDK never generates deltas (receive-only).
+
 ## 10. Invariants (each holds by construction of §1)
 
 1. Every state transition (connection and channel) is decided by exactly one
@@ -1731,9 +1763,10 @@ Prose does not survive implementation pressure; these mechanisms do:
    carries a compact, imperative statement of the invariants with a pointer here.
    Any change to the contract requires changing this document first, with
    explicit human approval, before any code.
-3. **Per-stage conformance line.** Every Phase 5 stage's PROGRESS.md entry must
-   state: lock inventory unchanged (conformance test passing), tests derived
-   from UTS (with adopted/superseded counts for the stage's ported-test range).
+3. **Per-change conformance line.** Every change's commit message / backlog
+   task notes must state: lock inventory unchanged (conformance test passing),
+   tests derived from UTS (with adopted/superseded counts where tests were
+   ported).
 4. **Design-change-before-code rule.** If an implementation step appears to need
    a new sync primitive, a new task with shared state, or loop-bypassing access,
    work STOPS on that step; the change is proposed as a DESIGN.md edit and

@@ -2686,7 +2686,7 @@ async fn rtp15c_enter_client_no_side_effects() {
     let p0 = pm[0].message.presence_json();
     // (adapted: with unidentified auth the main identity also enters via
     // enter_client, so clientId is present — RTP8j vs RTP15c upstream
-    // conflict is flagged in PROGRESS.md)
+    // conflict, filed as ably/specification#507 / task-9)
     assert_eq!(p0[0]["clientId"], "main-client");
     // Second: enterClient() — explicit clientId
     let p1 = pm[1].message.presence_json();

@@ -50,9 +50,11 @@ This avoids `as_any()` downcasting on the `HttpClient` trait. The handle is retr
 - **RSC1b**: Empty token string must be rejected at client construction time.
 - **RSC18**: Basic auth (API key without token auth) over non-TLS must be rejected.
 
-## Phased implementation
+## Implementation status
 
-See `DESIGN.md` for the API surface and the plan in `.claude/plans/noble-strolling-marble.md` for phase tracking. `PROGRESS.md` tracks what's done per phase (all phases COMPLETE as of 2026-06-12).
+The rewrite is COMPLETE (all REST + realtime phases). `DESIGN.md` is the API
+surface and the binding design contract; ongoing work is tracked in
+`backlog/tasks/` (see "Work management" below).
 
 ## Engineering policies (BINDING — added 2026-06-12 after review)
 
@@ -78,10 +80,9 @@ definition of done for ALL subsequent work:
 ## Work management (Backlog.md)
 
 Subsequent work is managed with the Backlog.md CLI (tasks live in `backlog/tasks/`;
-full agent guide appended at the bottom of this file). The deferred-work backlog
-(JWT tests, RTN16 recovery, RTN17j, delta/vcdiff, push LocalDevice, RTN20, upstream
-issue filing, housekeeping) is loaded as TASK-1..TASK-10 — start there, not from
-PROGRESS.md prose. `backlog` resolves via the repo `.tool-versions`
+full agent guide appended at the bottom of this file). Each task file carries its
+own implementation notes; those, plus the git history, are the record of what was
+done. `backlog` resolves via the repo `.tool-versions`
 (`nodejs 22.11.0 .npm`); use `backlog task list --plain` / `backlog board`.
 When completing a task that un-ignores tests, also convert the corresponding
 `uts_coverage.txt` exclusions (see tools/uts_coverage_generate.py).
