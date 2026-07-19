@@ -36,8 +36,9 @@ Follow-ups NOT part of this task's AC, noted for pickup:
 - After spec PR #507 merges: re-derive our rtp15c / rtp8j-wildcard tests to
   the new spec shapes; drop the stale "unit spec contradicts" comment in
   rtn15h1_disconnected_token_error_without_renewal_fails (task-10 scope).
-- Optional ably-js follow-up PR (re-translate RTP15c, add the missing 40171
-  assertion) once #507 merges.
+- ably-js re-translation work: FILED as https://github.com/ably/ably-js/issues/2265
+  (blocked on #507 merging; covers the 40171 assertion, RTP15c two-client
+  shape, RTP8j wildcard-token setup, comment refreshes, RSP5g unblock note).
 
 ## Re-evaluation against specification@main (2da26476-era, 2026-07-19)
 
