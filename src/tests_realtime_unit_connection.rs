@@ -2248,6 +2248,184 @@ async fn rtn17j_fallback_hosts_random_order() {
     );
 }
 
+// UTS: rest/unit/REC3/connectivity-check-validation-0
+// The connectivity check requires a successful GET whose body contains
+// "yes"; anything else — wrong body, empty body, HTTP error, network
+// error — means "not connected".
+#[tokio::test]
+async fn rec3_connectivity_check_validation() {
+    use crate::mock_http::{MockHttpClient, MockResponse};
+    use crate::mock_ws::MockWebSocket;
+    use crate::realtime::Realtime;
+    use std::sync::Arc;
+
+    let cases: Vec<(MockResponse, bool)> = vec![
+        (MockResponse::text(200, "yes"), true),
+        (MockResponse::text(200, "no"), false),
+        (MockResponse::text(200, ""), false),
+        (MockResponse::text(404, "Not Found"), false),
+        (MockResponse::network_error(), false),
+    ];
+    for (i, (response, expected)) in cases.into_iter().enumerate() {
+        let mock_ws = MockWebSocket::with_handler(|_| {});
+        let transport = Arc::new(crate::mock_ws::MockTransport::new(mock_ws.inner()));
+        let resp = std::sync::Mutex::new(Some(response));
+        let mock_http =
+            MockHttpClient::with_handler(move |_req| resp.lock().unwrap().take().unwrap());
+        let opts = ClientOptions::new("appId.keyId:keySecret").auto_connect(false);
+        let client = Realtime::with_mocks(&opts, transport, mock_http).unwrap();
+        assert_eq!(
+            client.connection.check_connectivity().await,
+            expected,
+            "case {i}"
+        );
+    }
+}
+
+// UTS: rest/unit/REC3a/default-connectivity-check-url-0
+#[tokio::test]
+async fn rec3a_default_connectivity_check_url() {
+    use crate::mock_http::{MockHttpClient, MockResponse};
+    use crate::mock_ws::MockWebSocket;
+    use crate::realtime::Realtime;
+    use std::sync::Arc;
+
+    let mock_ws = MockWebSocket::with_handler(|_| {});
+    let transport = Arc::new(crate::mock_ws::MockTransport::new(mock_ws.inner()));
+    let mock_http = MockHttpClient::with_handler(|_req| MockResponse::text(200, "yes"));
+    let handle = mock_http.clone();
+    let opts = ClientOptions::new("appId.keyId:keySecret").auto_connect(false);
+    let client = Realtime::with_mocks(&opts, transport, mock_http).unwrap();
+
+    assert!(client.connection.check_connectivity().await);
+    let reqs = handle.captured_requests();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].method, "GET");
+    assert_eq!(
+        reqs[0].url.as_str(),
+        "https://internet-up.ably-realtime.com/is-the-internet-up.txt"
+    );
+}
+
+// UTS: rest/unit/REC3b/custom-connectivity-check-url-0
+#[tokio::test]
+async fn rec3b_custom_connectivity_check_url() {
+    use crate::mock_http::{MockHttpClient, MockResponse};
+    use crate::mock_ws::MockWebSocket;
+    use crate::realtime::Realtime;
+    use std::sync::Arc;
+
+    let mock_ws = MockWebSocket::with_handler(|_| {});
+    let transport = Arc::new(crate::mock_ws::MockTransport::new(mock_ws.inner()));
+    let mock_http = MockHttpClient::with_handler(|_req| MockResponse::text(200, "yes"));
+    let handle = mock_http.clone();
+    let opts = ClientOptions::new("appId.keyId:keySecret")
+        .auto_connect(false)
+        .connectivity_check_url("https://custom.example.com/connectivity");
+    let client = Realtime::with_mocks(&opts, transport, mock_http).unwrap();
+
+    assert!(client.connection.check_connectivity().await);
+    let reqs = handle.captured_requests();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(
+        reqs[0].url.as_str(),
+        "https://custom.example.com/connectivity"
+    );
+    assert!(reqs
+        .iter()
+        .all(|r| r.url.host_str() != Some("internet-up.ably-realtime.com")));
+}
+
+// UTS: realtime/unit/RTN17j/connectivity-check-before-fallback-0
+// A failure necessitating fallback first probes the connectivity check URL;
+// with internet confirmed ("yes"), the fallback attempt proceeds.
+#[tokio::test]
+async fn rtn17j_connectivity_check_before_fallback() {
+    use crate::mock_http::{MockHttpClient, MockResponse};
+    use crate::mock_ws::MockWebSocket;
+    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::realtime::{await_state, Realtime};
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    };
+
+    let attempt = Arc::new(AtomicU32::new(0));
+    let att = attempt.clone();
+    let mock_ws = MockWebSocket::with_handler(move |pending| {
+        if att.fetch_add(1, Ordering::SeqCst) == 0 {
+            pending.respond_with_refused();
+        } else {
+            pending.respond_with_success(ProtocolMessage::connected("connId", "connKey"));
+        }
+    });
+    let transport = Arc::new(crate::mock_ws::MockTransport::new(mock_ws.inner()));
+    let mock_http = MockHttpClient::with_handler(|req| {
+        if req.url.as_str().contains("internet-up") {
+            MockResponse::text(200, "yes")
+        } else {
+            MockResponse::network_error()
+        }
+    });
+    let handle = mock_http.clone();
+    let mut opts = ClientOptions::new("appId.keyId:keySecret").auto_connect(false);
+    opts.fallback_hosts = Some(vec!["fallback-a.example.com".to_string()]);
+    let client = Realtime::with_mocks(&opts, transport, mock_http).unwrap();
+
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    // The probe ran, as a GET to the connectivity check URL
+    let checks: Vec<_> = handle
+        .captured_requests()
+        .into_iter()
+        .filter(|r| r.url.as_str().contains("internet-up"))
+        .collect();
+    assert!(
+        !checks.is_empty(),
+        "connectivity check must run before fallback"
+    );
+    assert_eq!(checks[0].method, "GET");
+    // And the connection proceeded to the fallback host
+    assert!(attempt.load(Ordering::SeqCst) >= 2);
+    client.close();
+}
+
+// RTN17j: without internet (probe fails), the fallback hosts are pointless —
+// the client skips them and enters the retry state (DISCONNECTED).
+#[tokio::test]
+async fn rtn17j_no_internet_skips_fallback() {
+    use crate::mock_http::{MockHttpClient, MockResponse};
+    use crate::mock_ws::MockWebSocket;
+    use crate::protocol::ConnectionState;
+    use crate::realtime::{await_state, Realtime};
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    };
+
+    let attempt = Arc::new(AtomicU32::new(0));
+    let att = attempt.clone();
+    let mock_ws = MockWebSocket::with_handler(move |pending| {
+        att.fetch_add(1, Ordering::SeqCst);
+        pending.respond_with_refused();
+    });
+    let transport = Arc::new(crate::mock_ws::MockTransport::new(mock_ws.inner()));
+    let mock_http = MockHttpClient::with_handler(|_req| MockResponse::network_error());
+    let mut opts = ClientOptions::new("appId.keyId:keySecret").auto_connect(false);
+    opts.fallback_hosts = Some(vec!["fallback-a.example.com".to_string()]);
+    let client = Realtime::with_mocks(&opts, transport, mock_http).unwrap();
+
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Disconnected, 5000).await);
+    assert_eq!(
+        attempt.load(Ordering::SeqCst),
+        1,
+        "no fallback attempt without internet"
+    );
+    client.close();
+}
+
 // UTS: realtime/unit/connection/heartbeat_test.md — RTN23b
 #[tokio::test]
 async fn rtn23b_heartbeat_timeout_calculation() {

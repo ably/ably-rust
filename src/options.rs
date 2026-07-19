@@ -44,6 +44,8 @@ pub struct ClientOptions {
     pub(crate) primary_host: String,
     /// The REC2 fallback domains, resolved at build time.
     pub(crate) resolved_fallback_hosts: Vec<String>,
+    /// REC3: the RTN17j internet connectivity check URL.
+    pub(crate) connectivity_check_url: String,
     pub(crate) port: u32,
     pub(crate) tls_port: u32,
     pub(crate) echo_messages: bool,
@@ -227,6 +229,12 @@ impl ClientOptions {
         self
     }
 
+    /// REC3b: override the RTN17j internet connectivity check URL.
+    pub fn connectivity_check_url(mut self, url: impl Into<String>) -> Self {
+        self.connectivity_check_url = url.into();
+        self
+    }
+
     pub fn http_max_retry_count(mut self, count: usize) -> Self {
         self.http_max_retry_count = count;
         self
@@ -369,6 +377,7 @@ impl ClientOptions {
             realtime_host: self.realtime_host.clone(),
             primary_host: self.primary_host.clone(),
             resolved_fallback_hosts: self.resolved_fallback_hosts.clone(),
+            connectivity_check_url: self.connectivity_check_url.clone(),
             port: self.port,
             tls_port: self.tls_port,
             echo_messages: self.echo_messages,
@@ -589,6 +598,8 @@ impl ClientOptions {
             disconnected_retry_timeout: Duration::from_secs(15),
             suspended_retry_timeout: Duration::from_secs(30),
             channel_retry_timeout: Duration::from_secs(15),
+            connectivity_check_url: "https://internet-up.ably-realtime.com/is-the-internet-up.txt"
+                .to_string(),
             http_open_timeout: Duration::from_secs(4),
             http_request_timeout: Duration::from_secs(10),
             realtime_request_timeout: Duration::from_secs(10),

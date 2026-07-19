@@ -294,6 +294,30 @@ impl Rest {
         }
     }
 
+    /// RTN17j/REC3: probe the connectivity check URL. A viable internet
+    /// connection means the GET succeeds and the body contains "yes". The
+    /// request is unauthenticated and unattributed (WP6d) — a plain GET to
+    /// an absolute, non-Ably URL, bypassing the request pipeline.
+    pub(crate) async fn check_connectivity(&self) -> bool {
+        let request = crate::http_client::HttpRequest {
+            method: "GET".to_string(),
+            url: self.inner.opts.connectivity_check_url.clone(),
+            headers: Vec::new(),
+            body: None,
+        };
+        match tokio::time::timeout(
+            self.inner.opts.http_request_timeout,
+            self.inner.http_client.execute(request),
+        )
+        .await
+        {
+            Ok(Ok(resp)) if (200..300).contains(&resp.status) => {
+                String::from_utf8_lossy(&resp.body).contains("yes")
+            }
+            _ => false,
+        }
+    }
+
     /// RTN17e: remember a fallback host that the realtime connection
     /// succeeded on, so REST requests prefer it too (RSC15f semantics).
     pub(crate) fn cache_fallback_host(&self, host: &str) {

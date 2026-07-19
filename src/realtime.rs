@@ -33,18 +33,51 @@ impl Realtime {
         Self::with_transport(options, transport)
     }
 
-    /// Test injection: a realtime client over a mock transport.
-    #[cfg_attr(not(test), allow(dead_code))] // test injection
+    /// Test injection: a realtime client over a mock transport. The embedded
+    /// Rest gets a default mock HTTP client that answers the RTN17j
+    /// connectivity check with "yes" and fails everything else loudly — unit
+    /// tests must never touch the network. Tests that need specific HTTP
+    /// behaviour use `with_mocks`.
+    #[cfg(test)]
     pub(crate) fn with_mock(
         options: &ClientOptions,
         transport: Arc<dyn Transport>,
     ) -> Result<Self> {
-        Self::with_transport(options, transport)
+        let connectivity_url = options.connectivity_check_url.clone();
+        let http_mock = crate::mock_http::MockHttpClient::with_handler(move |req| {
+            if req.url.as_str() == connectivity_url {
+                crate::mock_http::MockResponse::text(200, "yes")
+            } else {
+                crate::mock_http::MockResponse::network_error()
+            }
+        });
+        Self::with_mocks(options, transport, http_mock)
+    }
+
+    /// Test injection: a realtime client over a mock transport AND a mock
+    /// HTTP client for the embedded Rest (token requests, RTN17j
+    /// connectivity checks, RTL10 history, ...).
+    #[cfg(test)]
+    pub(crate) fn with_mocks(
+        options: &ClientOptions,
+        transport: Arc<dyn Transport>,
+        http_mock: crate::mock_http::MockHttpClient,
+    ) -> Result<Self> {
+        let rest = options.clone_for_realtime().rest_with_mock(http_mock)?;
+        Self::with_transport_rest(options, transport, rest)
     }
 
     fn with_transport(options: &ClientOptions, transport: Arc<dyn Transport>) -> Result<Self> {
-        let auto_connect = options.auto_connect;
         let rest = options.clone_for_realtime().rest()?;
+        Self::with_transport_rest(options, transport, rest)
+    }
+
+    fn with_transport_rest(
+        options: &ClientOptions,
+        transport: Arc<dyn Transport>,
+        rest: crate::rest::Rest,
+    ) -> Result<Self> {
+        let auto_connect = options.auto_connect;
         // RSA4a1: a literal token with no renewal means gets a warning —
         // when it expires the connection cannot recover by itself
         {
@@ -67,6 +100,7 @@ impl Realtime {
             snapshot_rx,
             events_tx,
             logger: rest.inner.opts.logger(),
+            rest: rest.clone(),
         };
         let realtime = Self {
             connection,
@@ -152,6 +186,7 @@ pub struct Connection {
     pub(crate) snapshot_rx: watch::Receiver<ConnectionSnapshot>,
     pub(crate) events_tx: broadcast::Sender<ConnectionStateChange>,
     pub(crate) logger: crate::options::Logger,
+    pub(crate) rest: crate::rest::Rest,
 }
 
 impl Connection {
@@ -213,6 +248,13 @@ impl Connection {
             .send(LoopInput::Cmd(Command::CreateRecoveryKey { reply }))
             .ok()?;
         rx.await.ok().flatten()
+    }
+
+    /// REC3/RTN17j: probe the internet connectivity check URL. Returns true
+    /// when the GET succeeds and the response body contains "yes". This is
+    /// the same probe the connection manager runs before host fallback.
+    pub async fn check_connectivity(&self) -> bool {
+        self.rest.check_connectivity().await
     }
 
     /// RTN13: heartbeat ping over the live connection; resolves with the
@@ -283,6 +325,7 @@ impl Clone for Connection {
             snapshot_rx: self.snapshot_rx.clone(),
             events_tx: self.events_tx.clone(),
             logger: self.logger.clone(),
+            rest: self.rest.clone(),
         }
     }
 }

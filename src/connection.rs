@@ -49,6 +49,11 @@ pub(crate) enum LoopInput {
         generation: Generation,
         result: Result<String>,
     },
+    /// RTN17j: outcome of a spawned connectivity-check probe.
+    Connectivity {
+        generation: Generation,
+        up: bool,
+    },
 }
 
 pub(crate) enum TransportInput {
@@ -644,6 +649,12 @@ struct ConnectionCtx {
 
     /// RTN17: hosts remaining to try in the current connect cycle.
     connect_hosts: Vec<String>,
+    /// RTN17j: the connectivity check has already run (and passed) this
+    /// connect cycle — later fallback steps in the cycle skip the probe.
+    connectivity_checked: bool,
+    /// RTN17j: the failure that triggered an in-flight connectivity probe,
+    /// reported if the probe finds no internet (or the cycle exhausts).
+    pending_fallback_error: Option<ErrorInfo>,
     /// RTN17: the host of the current attempt/connection.
     current_host: Option<String>,
     /// RTN15b: the connection key used for resume on reconnects.
@@ -1530,6 +1541,7 @@ impl ConnectionCtx {
         use rand::seq::SliceRandom;
         fallbacks.shuffle(&mut rand::thread_rng());
         self.connect_hosts = fallbacks;
+        self.connectivity_checked = false;
         let primary = opts.primary_host.clone();
         self.start_connect_to(primary);
     }
@@ -1546,6 +1558,58 @@ impl ConnectionCtx {
             true
         } else {
             false
+        }
+    }
+
+    /// RTN17f/RTN17j: handle a failure that qualifies for host fallback.
+    /// Before the first fallback attempt of a connect cycle, probe the REC3
+    /// connectivity check URL from a spawned task (the loop never awaits
+    /// I/O) to distinguish "Ably unreachable" (try the fallbacks) from "no
+    /// internet" (skip them and enter the RTN14 retry state).
+    fn fallback_or_retry(&mut self, err: Option<ErrorInfo>) {
+        if self.connect_hosts.is_empty() {
+            self.enter_retry_state(err);
+            return;
+        }
+        if self.connectivity_checked {
+            if !self.try_next_host() {
+                self.enter_retry_state(err);
+            }
+            return;
+        }
+        self.connectivity_checked = true;
+        // No attempt is in flight while the probe runs; the probe task owns
+        // the timeout (Rest::check_connectivity) and always posts a result.
+        self.connect_deadline = None;
+        self.pending_fallback_error = err;
+        self.logger().minor(|| {
+            "RTN17j: probing the connectivity check URL before host fallback".to_string()
+        });
+        let generation = self.generation;
+        let rest = self.rest.clone();
+        let input_tx = self.input_tx.clone();
+        tokio::spawn(async move {
+            let up = rest.check_connectivity().await;
+            let _ = input_tx.send(LoopInput::Connectivity { generation, up });
+        });
+    }
+
+    /// RTN17j: the connectivity probe finished. With internet confirmed the
+    /// fallback cycle proceeds; without it the fallbacks are pointless — the
+    /// original failure enters the RTN14 retry state directly.
+    fn handle_connectivity(&mut self, up: bool) {
+        let err = self.pending_fallback_error.take();
+        if up {
+            if !self.try_next_host() {
+                self.enter_retry_state(err);
+            }
+        } else {
+            self.logger().major(|| {
+                "RTN17j: connectivity check failed — no viable internet connection, \
+                 skipping host fallback"
+                    .to_string()
+            });
+            self.enter_retry_state(err);
         }
     }
 
@@ -2042,10 +2106,8 @@ impl ConnectionCtx {
                     return;
                 }
                 // RTN17f: a host-unreachable failure tries the next fallback
-                // within the same CONNECTING phase
-                if !self.try_next_host() {
-                    self.enter_retry_state(Some(err));
-                }
+                // within the same CONNECTING phase (after the RTN17j probe)
+                self.fallback_or_retry(Some(err));
             }
         }
     }
@@ -2080,9 +2142,7 @@ impl ConnectionCtx {
                         "Connection to server unexpectedly closed",
                     );
                     self.drop_transport();
-                    if !self.try_next_host() {
-                        self.enter_retry_state(Some(err));
-                    }
+                    self.fallback_or_retry(Some(err));
                 }
                 _ => {}
             },
@@ -2327,10 +2387,11 @@ impl ConnectionCtx {
                 .map(|s| (500..=504).contains(&s))
                 .unwrap_or(false);
             self.drop_transport();
-            if is_5xx && self.try_next_host() {
-                return;
+            if is_5xx {
+                self.fallback_or_retry(pm.error);
+            } else {
+                self.enter_retry_state(pm.error);
             }
-            self.enter_retry_state(pm.error);
         }
     }
 
@@ -2881,9 +2942,7 @@ impl ConnectionCtx {
                     "Connection attempt timed out",
                 );
                 // RTN17f: a timeout qualifies for fallback
-                if !self.try_next_host() {
-                    self.enter_retry_state(Some(err));
-                }
+                self.fallback_or_retry(Some(err));
             }
         }
 
@@ -3300,6 +3359,8 @@ pub(crate) fn spawn_connection_loop(
         generation: 0,
         writer: None,
         connect_hosts: Vec::new(),
+        connectivity_checked: false,
+        pending_fallback_error: None,
         current_host: None,
         resume_key: None,
         recover_key,
@@ -3347,6 +3408,11 @@ pub(crate) fn spawn_connection_loop(
                     Some(LoopInput::TokenReady { generation, result }) => {
                         if generation == ctx.generation {
                             ctx.handle_token_ready(result);
+                        }
+                    }
+                    Some(LoopInput::Connectivity { generation, up }) => {
+                        if generation == ctx.generation {
+                            ctx.handle_connectivity(up);
                         }
                     }
                     None => break,

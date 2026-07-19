@@ -39,6 +39,15 @@ impl MockResponse {
         }
     }
 
+    pub fn text(status: u16, body: &str) -> Self {
+        Self {
+            status,
+            headers: vec![("content-type".to_string(), "text/plain".to_string())],
+            body: body.as_bytes().to_vec(),
+            network_error: false,
+        }
+    }
+
     pub fn network_error() -> Self {
         Self {
             status: 0,

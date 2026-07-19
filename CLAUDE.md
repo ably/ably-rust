@@ -10,10 +10,10 @@ These are the same value. The versioning scheme changed from decimal (e.g. "1.2"
 
 ## Test baseline
 
-1364 pass / 0 fail / 30 ignored (full serial run; post 4f68017, verified
+1371 pass / 0 fail / 28 ignored (full serial run; post TASK-5, verified
 2026-07-19). THE SUITE IS FULLY GREEN — any failure after a change is a
 regression. Every ignore carries an explicit recorded-deferral reason.
-Split: unit 1239 pass / 28 ignored (~7s, parallel OK); live integration + proxy
+Split: unit 1246 pass / 26 ignored (~7s, parallel OK); live integration + proxy
 125 pass / 2 ignored (~165s) across tests_rest_integration,
 tests_realtime_integration, tests_proxy and tests_proxy_realtime. Run
 integration/proxy with --test-threads=1 (shared sandbox app; flaky in parallel).

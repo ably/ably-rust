@@ -367,7 +367,7 @@ realtime/unit/RTN17f1/disconnected-5xx-fallback-0 => rtn17f1_5xx_disconnected_tr
 realtime/unit/RTN17g/empty-fallback-set-error-0 => rtn17g_empty_fallback_set_no_retry
 realtime/unit/RTN17h/fallback-domains-from-rec2-0 => rtn17h_fallback_domains_from_default_set
 realtime/unit/RTN17i/prefer-primary-domain-0 => rtn17i_always_try_primary_first
-realtime/unit/RTN17j/connectivity-check-before-fallback-0 => rtn17j_fallback_hosts_random_order
+realtime/unit/RTN17j/connectivity-check-before-fallback-0 => rtn17j_connectivity_check_before_fallback
 realtime/unit/RTN17j/fallback-random-order-1 => rtn17j_fallback_hosts_random_order
 realtime/unit/RTN19a/resent-on-new-transport-0 => proxy_rtn19a_unacked_message_resent_on_resume
 realtime/unit/RTN19a2/new-serial-failed-resume-1 => rtn19a2_failed_resume_renumbers_serials
@@ -692,9 +692,9 @@ rest/unit/REC2c4/production-endpoint-fallback-domains-0 => rec2c4_non_5xx_does_n
 rest/unit/REC2c5/production-environment-fallback-domains-0 => rec2c5_environment_sets_fallback_domains
 rest/unit/REC2c6/custom-realtimehost-no-fallbacks-1 => rec2c6_custom_rest_host_no_fallbacks
 rest/unit/REC2c6/custom-resthost-no-fallbacks-0 => rec2c6_custom_rest_host_no_fallbacks
-rest/unit/REC3/connectivity-check-validation-0 !! connectivity check not implemented (TASK-5: RTN17j)
-rest/unit/REC3a/default-connectivity-check-url-0 !! connectivity check not implemented (TASK-5: RTN17j)
-rest/unit/REC3b/custom-connectivity-check-url-0 !! connectivity check not implemented (TASK-5: RTN17j)
+rest/unit/REC3/connectivity-check-validation-0 => rec3_connectivity_check_validation
+rest/unit/REC3a/default-connectivity-check-url-0 => rec3a_default_connectivity_check_url
+rest/unit/REC3b/custom-connectivity-check-url-0 => rec3b_custom_connectivity_check_url
 rest/unit/RSA1/token-auth-takes-precedence-0 => rsa1_token_auth_takes_precedence
 rest/unit/RSA10a/authorize-default-params-0 => rsa10a_authorize_obtains_token
 rest/unit/RSA10b/authorize-explicit-params-0 => rsa10b_authorize_with_explicit_token_params
