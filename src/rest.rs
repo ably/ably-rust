@@ -2448,7 +2448,7 @@ impl Message {
     /// serial (TM2s1) and `version.timestamp` from the TM2f timestamp
     /// (TM2s2), each only when set. Runs after TM2 field inheritance, so
     /// inherited timestamps participate.
-    fn default_version(&mut self) {
+    pub(crate) fn default_version(&mut self) {
         let serial = self.serial.clone();
         let timestamp = self.timestamp;
         if serial.is_none() && timestamp.is_none() && self.version.is_none() {

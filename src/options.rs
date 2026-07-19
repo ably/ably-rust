@@ -72,6 +72,10 @@ pub struct ClientOptions {
     /// RSC2: minimum severity that is emitted. Defaults to Error.
     pub(crate) log_level: LogLevel,
     pub(crate) log_handler: Option<LogHandler>,
+    /// TASK-7/RTL18: test-only override for the bundled vcdiff delta decoder.
+    /// Production always uses the real decoder; tests inject a mock.
+    #[cfg(test)]
+    pub(crate) delta_decoder: Option<crate::connection::DeltaDecoder>,
 }
 
 /// How the REC1 primary domain was determined — drives REC2c fallback derivation.
@@ -257,6 +261,13 @@ impl ClientOptions {
         self
     }
 
+    /// Test-only: inject a mock vcdiff delta decoder (RTL18/PC3 unit tests).
+    #[cfg(test)]
+    pub(crate) fn delta_decoder(mut self, decoder: crate::connection::DeltaDecoder) -> Self {
+        self.delta_decoder = Some(decoder);
+        self
+    }
+
     pub fn tls(mut self, v: bool) -> Self {
         self.tls = v;
         self
@@ -400,6 +411,8 @@ impl ClientOptions {
             http_client: None,
             log_level: self.log_level,
             log_handler: self.log_handler.clone(),
+            #[cfg(test)]
+            delta_decoder: self.delta_decoder.clone(),
         }
     }
 
@@ -613,6 +626,8 @@ impl ClientOptions {
             http_client: None,
             log_level: LogLevel::Error,
             log_handler: None,
+            #[cfg(test)]
+            delta_decoder: None,
         }
     }
 }

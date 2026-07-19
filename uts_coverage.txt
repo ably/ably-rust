@@ -88,8 +88,8 @@ realtime/proxy/RTN23a/heartbeat-starvation-reconnect-0 => proxy_rtn23a_transport
 realtime/proxy/RTP17i/reenter-after-disconnect-1 => proxy_rtp17i_reenter_after_real_disconnect
 realtime/proxy/RTP17i/reenter-on-non-resumed-0 => proxy_rtp17i_reenter_on_non_resumed_attached
 realtime/unit/DO2a/filter-attribute-0 => do2a_derive_options_filter_attribute
-realtime/unit/PC3/no-plugin-fails-1 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
-realtime/unit/PC3/vcdiff-plugin-decodes-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/unit/PC3/no-plugin-fails-1 !! N/A: vcdiff decoder is bundled, never absent (no 40019 state)
+realtime/unit/PC3/vcdiff-plugin-decodes-0 => pc3_vcdiff_decoder_called_with_utf8_base
 realtime/unit/RSA4a/token-error-no-renewal-0 => rsa4a_token_error_without_renewal_goes_failed
 realtime/unit/RSA4a1/non-renewable-token-logs-warning-0 => rsa4a1_non_renewable_token_logs_warning
 realtime/unit/RSA4a2/token-error-non-renewable-failed-0 => rsa4a2_expired_token_no_renewal
@@ -190,17 +190,17 @@ realtime/unit/RTL15b1/serial-cleared-suspended-1 => rtl15b1_channel_serial_clear
 realtime/unit/RTL16/set-options-updates-0 => rtl16_set_options_updates
 realtime/unit/RTL16a/triggers-reattach-0 => rtl16a_set_options_triggers_reattach
 realtime/unit/RTL17/no-delivery-when-not-attached-0 => rtl17_no_delivery_when_not_attached
-realtime/unit/RTL18/decode-failure-recovery-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
-realtime/unit/RTL18/single-recovery-at-time-1 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
-realtime/unit/RTL18c/recovery-completes-on-attached-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
-realtime/unit/RTL19a/base64-decoded-before-store-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
-realtime/unit/RTL19b/json-wire-form-base-1 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
-realtime/unit/RTL19b/stores-base-payload-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
-realtime/unit/RTL19c/delta-result-becomes-base-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/unit/RTL18/decode-failure-recovery-0 => rtl18_decode_failure_triggers_recovery
+realtime/unit/RTL18/single-recovery-at-time-1 => rtl18_single_recovery_at_a_time
+realtime/unit/RTL18c/recovery-completes-on-attached-0 => rtl18c_recovery_completes_on_attached
+realtime/unit/RTL19a/base64-decoded-before-store-0 => rtl19a_base64_decoded_before_store
+realtime/unit/RTL19b/json-wire-form-base-1 => rtl19b_json_encoded_stores_wire_form_base
+realtime/unit/RTL19b/stores-base-payload-0 => rtl19b_non_delta_stores_base_payload
+realtime/unit/RTL19c/delta-result-becomes-base-0 => rtl19c_delta_result_becomes_base
 realtime/unit/RTL2/filtered-event-subscription-0 => rtl2_filtered_event_subscription
-realtime/unit/RTL20/last-id-updated-on-decode-1 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
-realtime/unit/RTL20/mismatched-id-triggers-recovery-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
-realtime/unit/RTL21/ascending-index-order-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/unit/RTL20/last-id-updated-on-decode-1 => rtl20_last_message_id_updated_after_decode
+realtime/unit/RTL20/mismatched-id-triggers-recovery-0 => rtl20_mismatched_id_triggers_recovery
+realtime/unit/RTL21/ascending-index-order-0 => rtl21_messages_decoded_in_ascending_index_order
 realtime/unit/RTL22a/filter-matching-clientid-2 => rtl22_message_filters
 realtime/unit/RTL22a/filter-matching-name-0 => rtl22_message_filters
 realtime/unit/RTL22a/filter-matching-ref-timeserial-1 => rtl22_message_filters

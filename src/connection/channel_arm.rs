@@ -52,6 +52,13 @@ impl ChannelCtx {
         ) {
             self.channel_serial = None;
         }
+        // RTL19: any move out of ATTACHED invalidates the stored delta base —
+        // the server resends a fresh non-delta after (re)attach. Clearing on
+        // ATTACHING also covers the RTL18c recovery re-attach.
+        if to != ChannelState::Attached {
+            self.delta_base_payload = None;
+            self.delta_last_message_id = None;
+        }
         // RTP5a: DETACHED/FAILED clear both presence maps and fail queued
         // presence ops + deferred gets (RTL11); RTP5f: SUSPENDED keeps the
         // map but the sync state is no longer authoritative
@@ -164,6 +171,110 @@ impl ChannelCtx {
             }
             sub.sender.send(msg.clone()).is_ok()
         });
+    }
+
+    /// RTL18/RTL19/RTL20/PC3: decode one inbound message, applying vcdiff
+    /// delta decoding against the stored base payload when the encoding has a
+    /// vcdiff step. On success the decoded message is returned and the stored
+    /// base payload (RTL19) and last-message id (RTL20) are updated. Returns
+    /// `Err` — always code 40018 — when RTL18 recovery is required (a decode
+    /// failure or an RTL20 delta-reference id mismatch); the caller discards
+    /// the message (RTL18b) and re-attaches (RTL18c).
+    pub(crate) fn decode_message(
+        &mut self,
+        mut msg: crate::rest::Message,
+        decoder: &DeltaDecoder,
+    ) -> std::result::Result<crate::rest::Message, ErrorInfo> {
+        use crate::rest::Data;
+        let recover = |m: String| {
+            ErrorInfo::new(ErrorCode::VcdiffDecodeFailure.code(), format!("RTL18: {m}"))
+        };
+
+        let mut data = std::mem::take(&mut msg.data);
+        let mut parts: Vec<String> = msg
+            .encoding
+            .take()
+            .map(|e| {
+                e.split('/')
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // RTL19a: an outermost base64 step is decoded first, for delta and
+        // non-delta messages alike, before any base-payload bookkeeping.
+        if parts.last().map(|s| s == "base64").unwrap_or(false) {
+            let bytes = match &data {
+                Data::String(s) => {
+                    base64::decode(s).map_err(|e| recover(format!("base64 decode: {e}")))?
+                }
+                Data::Binary(b) => b.to_vec(),
+                _ => return Err(recover("base64 step on non-string data".into())),
+            };
+            data = Data::Binary(serde_bytes::ByteBuf::from(bytes));
+            parts.pop();
+        }
+
+        if parts.last().map(|s| s == "vcdiff").unwrap_or(false) {
+            // RTL20: the delta reference id must match the stored last id.
+            let from = delta_from(&msg);
+            if from.as_deref() != self.delta_last_message_id.as_deref() {
+                return Err(recover(format!(
+                    "RTL20: delta reference id {:?} does not match stored id {:?}",
+                    from, self.delta_last_message_id
+                )));
+            }
+            let base = self
+                .delta_base_payload
+                .as_ref()
+                .ok_or_else(|| recover("no base payload available for delta".into()))?;
+            // PC3a: a string base is UTF-8 encoded to binary before decode.
+            let base_bytes: Vec<u8> = match base {
+                Data::String(s) => s.as_bytes().to_vec(),
+                Data::Binary(b) => b.to_vec(),
+                _ => {
+                    return Err(recover(
+                        "stored base payload is not string or binary".into(),
+                    ))
+                }
+            };
+            let delta_bytes: Vec<u8> = match &data {
+                Data::Binary(b) => b.to_vec(),
+                Data::String(s) => s.clone().into_bytes(),
+                _ => return Err(recover("delta payload is not binary".into())),
+            };
+            let decoded = decoder(&delta_bytes, &base_bytes)
+                .map_err(|e| recover(format!("vcdiff decode failed: {e}")))?;
+            // RTL19c: the direct vcdiff result becomes the new base payload,
+            // before any further decoding steps.
+            self.delta_base_payload =
+                Some(Data::Binary(serde_bytes::ByteBuf::from(decoded.clone())));
+            data = Data::Binary(serde_bytes::ByteBuf::from(decoded));
+            parts.pop();
+        } else {
+            // RTL19b: for a non-delta message the base payload is the wire
+            // form AFTER base64 (RTL19a) but BEFORE json/utf-8 decoding.
+            self.delta_base_payload = Some(data.clone());
+        }
+
+        // Remaining steps (utf-8, json, cipher) via the standard chain (RSL6).
+        let remaining = if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("/"))
+        };
+        let (d, e) = crate::rest::decode_data(data, remaining, self.options.cipher.as_ref());
+        msg.data = d;
+        msg.encoding = e;
+
+        // RTL20: store this message's id as the last received id.
+        if let Some(id) = &msg.id {
+            self.delta_last_message_id = Some(id.clone());
+        }
+        // TM2s: version defaulting (otherwise done inside decode_with_cipher).
+        msg.default_version();
+        Ok(msg)
     }
 
     /// RTP1/RTP19a: apply an ATTACHED frame's HAS_PRESENCE flag. With the
@@ -649,14 +760,25 @@ impl ConnectionCtx {
     /// A MESSAGE from the server: TM2 field population, RSL6 decode with the
     /// channel cipher, RTL17 attached-only delivery, subscriber dispatch (§8).
     pub(crate) fn handle_message_action(&mut self, pm: ProtocolMessage) {
-        self.update_channel_serial(&pm);
         let Some(name) = pm.channel.clone() else {
             return;
         };
+        // RTL18c: recovery re-attaches from the serial of the message BEFORE
+        // the one that failed, so capture the current serial before RTL15b
+        // advances it to this ProtocolMessage's serial.
+        let prev_serial = self
+            .channels
+            .get(&name)
+            .and_then(|c| c.channel_serial.clone());
+        self.update_channel_serial(&pm);
+        let rtt = self.rest.inner.opts.realtime_request_timeout;
+        let decoder = self.delta_decoder.clone();
         let Some(ch) = self.channels.get_mut(&name) else {
             return;
         };
-        // RTL17: messages are only delivered while ATTACHED
+        // RTL17: messages are only delivered while ATTACHED. This also means a
+        // delta arriving mid-recovery (channel ATTACHING) is dropped, so a
+        // second decode failure cannot start a second recovery (RTL18 single).
         if ch.state != ChannelState::Attached {
             ch.logger.minor(|| {
                 format!(
@@ -666,7 +788,10 @@ impl ConnectionCtx {
             });
             return;
         }
+        // RTL21: decode in ascending array order; a delta may reference the
+        // message immediately before it in the same ProtocolMessage.
         let wire = pm.messages.clone().unwrap_or_default();
+        let mut recovery: Option<ErrorInfo> = None;
         for (index, mut msg) in wire.into_iter().enumerate() {
             // TM2a: id defaults to protocolMessage.id + ":" + index
             if msg.id.is_none() {
@@ -682,10 +807,34 @@ impl ConnectionCtx {
             if msg.timestamp.is_none() {
                 msg.timestamp = pm.timestamp;
             }
-            // RSL6: decode/decrypt with the channel cipher (also applies
-            // the TM2s version defaulting, after the inheritance above)
-            msg.decode_with_cipher(ch.options.cipher.as_ref());
-            ch.deliver(&msg);
+            // RSL6/RTL18/RTL19/RTL20: decode (delta-aware) with the channel
+            // cipher; a failure requires RTL18 recovery.
+            match ch.decode_message(msg, &decoder) {
+                Ok(decoded) => ch.deliver(&decoded),
+                Err(reason) => {
+                    // RTL18b: discard the failed message and stop processing
+                    // the rest of this ProtocolMessage.
+                    recovery = Some(reason);
+                    break;
+                }
+            }
+        }
+        if let Some(reason) = recovery {
+            // RTL18a: log the failure at Error.
+            ch.logger.error(|| {
+                format!(
+                    "RTL18: vcdiff decode failed on channel '{}': {} — recovering",
+                    name, reason
+                )
+            });
+            // RTL18c: re-attach from the previous message's channelSerial,
+            // transitioning to ATTACHING with the 40018 reason and awaiting
+            // the server's ATTACHED.
+            ch.channel_serial = prev_serial;
+            ch.op_deadline = Some(Instant::now() + rtt);
+            ch.transition(ChannelState::Attaching, Some(reason), false, false);
+            let attach = attach_message(ch);
+            self.send_protocol(attach);
         }
     }
     /// RTL15b: MESSAGE/PRESENCE/ANNOTATION carrying a channelSerial update the
@@ -703,6 +852,16 @@ impl ConnectionCtx {
 }
 
 /// RTL4c/RTL4c1/RTL4k/RTL4l/RTL4j: build the ATTACH message for a channel.
+/// RTL20: the delta reference id from a message's `extras.delta.from`, if any.
+fn delta_from(msg: &crate::rest::Message) -> Option<String> {
+    msg.extras
+        .as_ref()?
+        .get("delta")?
+        .get("from")?
+        .as_str()
+        .map(String::from)
+}
+
 pub(super) fn attach_message(ch: &ChannelCtx) -> ProtocolMessage {
     let mut msg = ProtocolMessage::new(action::ATTACH);
     msg.channel = Some(ch.name.clone());

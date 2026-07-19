@@ -31,6 +31,19 @@ use crate::transport::{Transport, TransportConnection, TransportEvent};
 
 pub(crate) type Generation = u64;
 
+/// RTL18/PC3: the vcdiff delta decoder — `(delta, base) -> decoded`, matching
+/// the VD2 `decode(delta, base)` interface. Bundled: production always uses
+/// `vcdiff::decode`; tests inject a mock via `ClientOptions` (behind
+/// `#[cfg(test)]`). Wrapping it in an `Arc` keeps the decode path uniform and
+/// lets it be cloned out of the loop before borrowing a channel.
+pub(crate) type DeltaDecoder =
+    Arc<dyn Fn(&[u8], &[u8]) -> std::result::Result<Vec<u8>, String> + Send + Sync>;
+
+/// The production decoder: the bundled `vcdiff-decode` crate.
+pub(crate) fn default_delta_decoder() -> DeltaDecoder {
+    Arc::new(|delta: &[u8], base: &[u8]| vcdiff::decode(base, delta).map_err(|e| e.to_string()))
+}
+
 mod channel_arm;
 mod presence_arm;
 mod publish_arm;
@@ -390,6 +403,12 @@ struct ChannelCtx {
     presence: PresenceCtx,
     /// RTAN4: annotation subscribers.
     annotation_subscribers: Vec<AnnotationSubscriber>,
+    /// RTL19: base payload of the most recent message (wire form, String or
+    /// Binary), used to decode subsequent vcdiff deltas.
+    delta_base_payload: Option<crate::rest::Data>,
+    /// RTL20: id of the most recent message, checked against a delta's
+    /// `extras.delta.from`.
+    delta_last_message_id: Option<String>,
     snapshot_tx: watch::Sender<ChannelSnapshot>,
     events_tx: broadcast::Sender<ChannelStateChange>,
     logger: crate::options::Logger,
@@ -445,6 +464,8 @@ struct QueuedPresenceOp {
 struct ConnectionCtx {
     rest: Rest,
     transport_factory: Arc<dyn Transport>,
+    /// RTL18/PC3: the bundled vcdiff delta decoder (test-overridable).
+    delta_decoder: DeltaDecoder,
 
     state: ConnectionState,
     id: Option<String>,
@@ -995,6 +1016,8 @@ impl ConnectionCtx {
                         subscribers: Vec::new(),
                         presence: PresenceCtx::default(),
                         annotation_subscribers: Vec::new(),
+                        delta_base_payload: None,
+                        delta_last_message_id: None,
                         snapshot_tx,
                         events_tx,
                         logger,
@@ -2002,9 +2025,24 @@ pub(crate) fn spawn_connection_loop(
         None => (None, 0, std::collections::HashMap::new()),
     };
 
+    let delta_decoder = {
+        #[cfg(test)]
+        {
+            rest.inner
+                .opts
+                .delta_decoder
+                .clone()
+                .unwrap_or_else(default_delta_decoder)
+        }
+        #[cfg(not(test))]
+        {
+            default_delta_decoder()
+        }
+    };
     let mut ctx = ConnectionCtx {
         rest,
         transport_factory,
+        delta_decoder,
         state: ConnectionState::Initialized,
         id: None,
         key: None,

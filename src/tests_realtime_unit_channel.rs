@@ -7486,72 +7486,759 @@ async fn rtl28_get_message_calls_rest() -> Result<()> {
     Ok(())
 }
 
-// --- Ignored RTL stubs ---
+// ============================================================================
+// Delta / vcdiff decoding (RTL18-RTL21, PC3) — UTS
+// uts/realtime/unit/channels/channel_delta_decoding.md
+//
+// The bundled vcdiff-decode crate does the real decoding (its own conformance
+// suite proves that); these tests exercise the SDK-side RTL18/19/20/21
+// bookkeeping and recovery with an injected mock decoder, exactly as ably-js
+// tests the same IDs. The mock is a pass-through (`decode(delta, base) =>
+// delta`), a recording variant, or a failing variant.
+// ============================================================================
 
-#[tokio::test]
-#[ignore = "delta/vcdiff not implemented"]
-async fn rtl18a_delta_base64_decode() -> Result<()> {
-    Ok(())
+fn passthrough_decoder() -> crate::connection::DeltaDecoder {
+    std::sync::Arc::new(|delta: &[u8], _base: &[u8]| Ok(delta.to_vec()))
 }
 
-#[tokio::test]
-#[ignore = "delta/vcdiff not implemented"]
-async fn rtl18a_delta_chained_decode() -> Result<()> {
-    Ok(())
+// The production default decoder is the bundled vcdiff-decode crate (real
+// VCDIFF decoding is covered by that crate's own conformance suite; the SDK
+// bookkeeping below uses injected mocks). This confirms the default is wired
+// to the real decoder and maps its errors to String — a malformed delta is
+// rejected rather than silently accepted.
+#[test]
+fn default_delta_decoder_is_the_real_vcdiff_crate() {
+    let decoder = crate::connection::default_delta_decoder();
+    let err = decoder(b"not-a-vcdiff-delta", b"base payload").unwrap_err();
+    assert!(!err.is_empty(), "error is surfaced as a message");
 }
 
-#[tokio::test]
-#[ignore = "delta/vcdiff not implemented"]
-async fn rtl19_delta_message_ordering() -> Result<()> {
-    Ok(())
+fn failing_decoder() -> crate::connection::DeltaDecoder {
+    std::sync::Arc::new(|_delta: &[u8], _base: &[u8]| Err("simulated decode failure".to_string()))
 }
 
-#[tokio::test]
-#[ignore = "delta/vcdiff not implemented"]
-async fn rtl19_delta_ordering_recovery() -> Result<()> {
-    Ok(())
+/// A delta message: binary/utf-8 delta payload with an extras.delta.from ref.
+fn delta_msg(id: &str, data: rest::Data, encoding: &str, from: &str) -> rest::Message {
+    rest::Message {
+        id: Some(id.to_string()),
+        data,
+        encoding: Some(encoding.to_string()),
+        extras: Some(serde_json::json!({"delta": {"from": from, "format": "vcdiff"}})),
+        ..Default::default()
+    }
 }
 
-#[tokio::test]
-#[ignore = "delta/vcdiff not implemented"]
-async fn rtl20_delta_recovery() -> Result<()> {
-    Ok(())
+/// A plain non-delta message.
+fn plain_msg(id: &str, data: rest::Data, encoding: Option<&str>) -> rest::Message {
+    rest::Message {
+        id: Some(id.to_string()),
+        data,
+        encoding: encoding.map(String::from),
+        ..Default::default()
+    }
 }
 
-#[tokio::test]
-#[ignore = "delta/vcdiff not implemented"]
-async fn rtl20_delta_recovery_reattach() -> Result<()> {
-    Ok(())
+fn bin(s: &str) -> rest::Data {
+    rest::Data::Binary(serde_bytes::ByteBuf::from(s.as_bytes().to_vec()))
 }
 
-#[tokio::test]
-#[ignore = "delta/vcdiff not implemented"]
-async fn pc2_vcdiff_decode() -> Result<()> {
-    Ok(())
+/// Connect a client (with the given delta decoder) and attach a channel.
+async fn delta_attached(
+    decoder: crate::connection::DeltaDecoder,
+    channel_name: &str,
+) -> (
+    crate::realtime::Realtime,
+    crate::mock_ws::MockWebSocket,
+    std::sync::Arc<crate::channel::RealtimeChannel>,
+) {
+    use crate::mock_ws::MockWebSocket;
+    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::realtime::{await_state, Realtime};
+
+    let mock = MockWebSocket::with_handler(|pc| {
+        pc.respond_with_success(ProtocolMessage::connected("conn-1", "key-1"));
+    });
+    let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
+    let opts = ClientOptions::new("appId.keyId:keySecret")
+        .auto_connect(false)
+        .delta_decoder(decoder);
+    let client = Realtime::with_mock(&opts, transport).unwrap();
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
+
+    let channel = client
+        .channels
+        .get_with_options(
+            channel_name,
+            crate::channel::RealtimeChannelOptions {
+                attach_on_subscribe: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let ch = channel.clone();
+    let t = tokio::spawn(async move { ch.attach().await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let conns = mock.active_connections();
+    let conn = conns.last().unwrap();
+    conn.send_to_client(ProtocolMessage {
+        action: action::ATTACHED,
+        channel: Some(channel_name.to_string()),
+        ..ProtocolMessage::new(action::ATTACHED)
+    });
+    t.await.unwrap().unwrap();
+    (client, mock, channel)
 }
 
-#[tokio::test]
-#[ignore = "delta/vcdiff not implemented"]
-async fn pc3_delta_plugin_e2e_1() -> Result<()> {
-    Ok(())
+fn send_message_pm(
+    conn: &crate::mock_ws::MockConnection,
+    channel: &str,
+    pm_id: &str,
+    channel_serial: Option<&str>,
+    messages: Vec<rest::Message>,
+) {
+    use crate::protocol::{action, ProtocolMessage};
+    conn.send_to_client(ProtocolMessage {
+        action: action::MESSAGE,
+        channel: Some(channel.to_string()),
+        id: Some(pm_id.to_string()),
+        channel_serial: channel_serial.map(String::from),
+        messages: Some(messages),
+        ..ProtocolMessage::new(action::MESSAGE)
+    });
 }
 
-#[tokio::test]
-#[ignore = "delta/vcdiff not implemented"]
-async fn pc3_delta_plugin_e2e_2() -> Result<()> {
-    Ok(())
+fn drain_messages(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<rest::Message>,
+) -> Vec<rest::Message> {
+    let mut out = Vec::new();
+    while let Ok(m) = rx.try_recv() {
+        out.push(m);
+    }
+    out
 }
 
+// UTS: realtime/unit/RTL21/ascending-index-order-0
 #[tokio::test]
-#[ignore = "delta/vcdiff not implemented"]
-async fn pc3_delta_plugin_e2e_3() -> Result<()> {
-    Ok(())
+async fn rtl21_messages_decoded_in_ascending_index_order() {
+    let (client, mock, channel) = delta_attached(passthrough_decoder(), "test-rtl21").await;
+    let (_id, mut rx) = channel.subscribe();
+    let conns = mock.active_connections();
+    let conn = conns.last().unwrap();
+
+    // msg-0 non-delta base; msg-1 delta from serial:0; msg-2 delta from
+    // serial:1 — only decodes if processed in array order.
+    send_message_pm(
+        conn,
+        "test-rtl21",
+        "serial:0",
+        None,
+        vec![
+            plain_msg("serial:0", rest::Data::String("first message".into()), None),
+            delta_msg(
+                "serial:1",
+                bin("second message"),
+                "utf-8/vcdiff",
+                "serial:0",
+            ),
+            delta_msg("serial:2", bin("third message"), "utf-8/vcdiff", "serial:1"),
+        ],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let got = drain_messages(&mut rx);
+    assert_eq!(got.len(), 3);
+    assert_eq!(got[0].data, rest::Data::String("first message".into()));
+    assert_eq!(got[1].data, rest::Data::String("second message".into()));
+    assert_eq!(got[2].data, rest::Data::String("third message".into()));
+    client.close();
 }
 
+// UTS: realtime/unit/RTL19b/stores-base-payload-0
 #[tokio::test]
-#[ignore = "delta/vcdiff not implemented"]
-async fn pc3_delta_plugin_e2e_4() -> Result<()> {
-    Ok(())
+async fn rtl19b_non_delta_stores_base_payload() {
+    let (client, mock, channel) = delta_attached(passthrough_decoder(), "test-rtl19b").await;
+    let (_id, mut rx) = channel.subscribe();
+    let conns = mock.active_connections();
+    let conn = conns.last().unwrap();
+
+    send_message_pm(
+        conn,
+        "test-rtl19b",
+        "msg-1:0",
+        None,
+        vec![plain_msg(
+            "msg-1:0",
+            rest::Data::String("base payload".into()),
+            None,
+        )],
+    );
+    send_message_pm(
+        conn,
+        "test-rtl19b",
+        "msg-2:0",
+        None,
+        vec![delta_msg(
+            "msg-2:0",
+            bin("updated payload"),
+            "utf-8/vcdiff",
+            "msg-1:0",
+        )],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let got = drain_messages(&mut rx);
+    assert_eq!(got.len(), 2);
+    assert_eq!(got[0].data, rest::Data::String("base payload".into()));
+    assert_eq!(got[1].data, rest::Data::String("updated payload".into()));
+    client.close();
+}
+
+// UTS: realtime/unit/RTL19b/json-wire-form-base-1
+#[tokio::test]
+async fn rtl19b_json_encoded_stores_wire_form_base() {
+    let (client, mock, channel) = delta_attached(passthrough_decoder(), "test-rtl19b-json").await;
+    let (_id, mut rx) = channel.subscribe();
+    let conns = mock.active_connections();
+    let conn = conns.last().unwrap();
+
+    // Non-delta json message: subscriber sees the parsed object, but the base
+    // payload stored for delta decoding is the wire-form JSON string.
+    let json_string = r#"{"foo":"bar","count":1}"#;
+    send_message_pm(
+        conn,
+        "test-rtl19b-json",
+        "msg-1:0",
+        None,
+        vec![plain_msg(
+            "msg-1:0",
+            rest::Data::String(json_string.into()),
+            Some("json"),
+        )],
+    );
+    // Delta computed against the JSON string base; decoded then utf-8'd to the
+    // new JSON string, delivered as-is (no json step in the delta encoding).
+    let new_json_string = r#"{"foo":"baz","count":2}"#;
+    send_message_pm(
+        conn,
+        "test-rtl19b-json",
+        "msg-2:0",
+        None,
+        vec![delta_msg(
+            "msg-2:0",
+            bin(new_json_string),
+            "utf-8/vcdiff",
+            "msg-1:0",
+        )],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let got = drain_messages(&mut rx);
+    assert_eq!(got.len(), 2);
+    assert!(
+        matches!(&got[0].data, rest::Data::JSON(v) if v["foo"] == "bar" && v["count"] == 1),
+        "first message parsed to JSON object, got {:?}",
+        got[0].data
+    );
+    assert_eq!(got[1].data, rest::Data::String(new_json_string.into()));
+    client.close();
+}
+
+// UTS: realtime/unit/RTL19a/base64-decoded-before-store-0
+#[tokio::test]
+async fn rtl19a_base64_decoded_before_store() {
+    let (client, mock, channel) = delta_attached(passthrough_decoder(), "test-rtl19a").await;
+    let (_id, mut rx) = channel.subscribe();
+    let conns = mock.active_connections();
+    let conn = conns.last().unwrap();
+
+    // Base payload is binary "Hello", sent base64-encoded.
+    let base_binary = vec![0x48u8, 0x65, 0x6c, 0x6c, 0x6f];
+    let base_b64 = base64::encode(&base_binary);
+    send_message_pm(
+        conn,
+        "test-rtl19a",
+        "msg-1:0",
+        None,
+        vec![plain_msg(
+            "msg-1:0",
+            rest::Data::String(base_b64),
+            Some("base64"),
+        )],
+    );
+    // Delta references the binary base; the delta payload itself is base64'd.
+    let new_binary = vec![0x57u8, 0x6f, 0x72, 0x6c, 0x64]; // "World"
+    let delta_b64 = base64::encode(&new_binary);
+    send_message_pm(
+        conn,
+        "test-rtl19a",
+        "msg-2:0",
+        None,
+        vec![delta_msg(
+            "msg-2:0",
+            rest::Data::String(delta_b64),
+            "vcdiff/base64",
+            "msg-1:0",
+        )],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let got = drain_messages(&mut rx);
+    assert_eq!(got.len(), 2);
+    assert_eq!(
+        got[0].data,
+        rest::Data::Binary(serde_bytes::ByteBuf::from(base_binary))
+    );
+    assert_eq!(
+        got[1].data,
+        rest::Data::Binary(serde_bytes::ByteBuf::from(new_binary))
+    );
+    client.close();
+}
+
+// UTS: realtime/unit/RTL19c/delta-result-becomes-base-0
+#[tokio::test]
+async fn rtl19c_delta_result_becomes_base() {
+    let (client, mock, channel) = delta_attached(passthrough_decoder(), "test-rtl19c").await;
+    let (_id, mut rx) = channel.subscribe();
+    let conns = mock.active_connections();
+    let conn = conns.last().unwrap();
+
+    send_message_pm(
+        conn,
+        "test-rtl19c",
+        "msg-1:0",
+        None,
+        vec![plain_msg(
+            "msg-1:0",
+            rest::Data::String("value-A".into()),
+            None,
+        )],
+    );
+    send_message_pm(
+        conn,
+        "test-rtl19c",
+        "msg-2:0",
+        None,
+        vec![delta_msg(
+            "msg-2:0",
+            bin("value-B"),
+            "utf-8/vcdiff",
+            "msg-1:0",
+        )],
+    );
+    // msg-3 references msg-2 — succeeds only because the base advanced to B.
+    send_message_pm(
+        conn,
+        "test-rtl19c",
+        "msg-3:0",
+        None,
+        vec![delta_msg(
+            "msg-3:0",
+            bin("value-C"),
+            "utf-8/vcdiff",
+            "msg-2:0",
+        )],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let got = drain_messages(&mut rx);
+    assert_eq!(got.len(), 3);
+    assert_eq!(got[0].data, rest::Data::String("value-A".into()));
+    assert_eq!(got[1].data, rest::Data::String("value-B".into()));
+    assert_eq!(got[2].data, rest::Data::String("value-C".into()));
+    client.close();
+}
+
+// UTS: realtime/unit/RTL20/last-id-updated-on-decode-1
+#[tokio::test]
+async fn rtl20_last_message_id_updated_after_decode() {
+    let (client, mock, channel) = delta_attached(passthrough_decoder(), "test-rtl20-id").await;
+    let (_id, mut rx) = channel.subscribe();
+    let conns = mock.active_connections();
+    let conn = conns.last().unwrap();
+
+    // Two messages in one PM — the stored last id must become serial:1.
+    send_message_pm(
+        conn,
+        "test-rtl20-id",
+        "serial:0",
+        None,
+        vec![
+            plain_msg("serial:0", rest::Data::String("first".into()), None),
+            plain_msg("serial:1", rest::Data::String("second".into()), None),
+        ],
+    );
+    // Delta referencing serial:1 (the last message) succeeds.
+    send_message_pm(
+        conn,
+        "test-rtl20-id",
+        "msg-2:0",
+        None,
+        vec![delta_msg(
+            "msg-2:0",
+            bin("third"),
+            "utf-8/vcdiff",
+            "serial:1",
+        )],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let got = drain_messages(&mut rx);
+    assert_eq!(got.len(), 3);
+    assert_eq!(got[0].data, rest::Data::String("first".into()));
+    assert_eq!(got[1].data, rest::Data::String("second".into()));
+    assert_eq!(got[2].data, rest::Data::String("third".into()));
+    client.close();
+}
+
+// UTS: realtime/unit/PC3/vcdiff-plugin-decodes-0
+#[tokio::test]
+async fn pc3_vcdiff_decoder_called_with_utf8_base() {
+    use std::sync::Mutex as StdMutex;
+    // Recording decoder captures (delta, base) and returns the delta.
+    type Calls = std::sync::Arc<StdMutex<Vec<(Vec<u8>, Vec<u8>)>>>;
+    let calls: Calls = std::sync::Arc::new(StdMutex::new(Vec::new()));
+    let calls_c = calls.clone();
+    let decoder: crate::connection::DeltaDecoder =
+        std::sync::Arc::new(move |delta: &[u8], base: &[u8]| {
+            calls_c
+                .lock()
+                .unwrap()
+                .push((delta.to_vec(), base.to_vec()));
+            Ok(delta.to_vec())
+        });
+
+    let (client, mock, channel) = delta_attached(decoder, "test-pc3").await;
+    let (_id, mut rx) = channel.subscribe();
+    let conns = mock.active_connections();
+    let conn = conns.last().unwrap();
+
+    send_message_pm(
+        conn,
+        "test-pc3",
+        "msg-1:0",
+        None,
+        vec![plain_msg(
+            "msg-1:0",
+            rest::Data::String("hello world".into()),
+            None,
+        )],
+    );
+    send_message_pm(
+        conn,
+        "test-pc3",
+        "msg-2:0",
+        None,
+        vec![delta_msg(
+            "msg-2:0",
+            bin("goodbye world"),
+            "utf-8/vcdiff",
+            "msg-1:0",
+        )],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let got = drain_messages(&mut rx);
+
+    let recorded = calls.lock().unwrap();
+    assert_eq!(recorded.len(), 1, "PC3: decoder called once");
+    // PC3a: the string base is UTF-8 encoded to binary before decode.
+    assert_eq!(recorded[0].1, b"hello world".to_vec());
+    assert_eq!(recorded[0].0, b"goodbye world".to_vec());
+    assert_eq!(got[1].data, rest::Data::String("goodbye world".into()));
+    client.close();
+}
+
+// UTS: realtime/unit/RTL20/mismatched-id-triggers-recovery-0
+#[tokio::test]
+async fn rtl20_mismatched_id_triggers_recovery() {
+    use crate::error::ErrorCode;
+    use crate::protocol::{action, ChannelState};
+
+    let (client, mock, channel) =
+        delta_attached(passthrough_decoder(), "test-rtl20-mismatch").await;
+    let mut changes = channel.on_state_change();
+    let conns = mock.active_connections();
+    let conn = conns.last().unwrap();
+
+    // Establish base with channelSerial serial-1.
+    send_message_pm(
+        conn,
+        "test-rtl20-mismatch",
+        "msg-1:0",
+        Some("serial-1"),
+        vec![plain_msg(
+            "msg-1:0",
+            rest::Data::String("base payload".into()),
+            None,
+        )],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    let attaches_before = mock
+        .client_messages()
+        .into_iter()
+        .filter(|m| m.message.action == action::ATTACH)
+        .count();
+
+    // Delta referencing the wrong id (msg-999:0) — mismatch → recovery.
+    send_message_pm(
+        conn,
+        "test-rtl20-mismatch",
+        "msg-2:0",
+        None,
+        vec![delta_msg(
+            "msg-2:0",
+            bin("new payload"),
+            "utf-8/vcdiff",
+            "msg-999:0",
+        )],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // RTL18c: transitioned to ATTACHING with a recovery ATTACH carrying the
+    // previous message's channelSerial, reason code 40018.
+    assert_eq!(channel.state(), ChannelState::Attaching);
+    let attaches: Vec<_> = mock
+        .client_messages()
+        .into_iter()
+        .filter(|m| m.message.action == action::ATTACH)
+        .collect();
+    assert!(attaches.len() > attaches_before);
+    assert_eq!(
+        attaches.last().unwrap().message.channel_serial.as_deref(),
+        Some("serial-1")
+    );
+    let mut recovered = false;
+    while let Ok(c) = changes.try_recv() {
+        if c.current == ChannelState::Attaching {
+            assert_eq!(
+                c.reason.and_then(|r| r.code),
+                Some(ErrorCode::VcdiffDecodeFailure.code())
+            );
+            recovered = true;
+        }
+    }
+    assert!(recovered, "an ATTACHING state change with reason 40018");
+    client.close();
+}
+
+// UTS: realtime/unit/RTL18/decode-failure-recovery-0 (RTL18a/b/c)
+#[tokio::test]
+async fn rtl18_decode_failure_triggers_recovery() {
+    use crate::error::ErrorCode;
+    use crate::protocol::{action, ChannelState};
+
+    let (client, mock, channel) = delta_attached(failing_decoder(), "test-rtl18").await;
+    let (_id, mut rx) = channel.subscribe();
+    let mut changes = channel.on_state_change();
+    let conns = mock.active_connections();
+    let conn = conns.last().unwrap();
+
+    send_message_pm(
+        conn,
+        "test-rtl18",
+        "msg-1:0",
+        Some("serial-100"),
+        vec![plain_msg(
+            "msg-1:0",
+            rest::Data::String("base payload".into()),
+            None,
+        )],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    assert_eq!(drain_messages(&mut rx).len(), 1);
+    let attaches_before = mock
+        .client_messages()
+        .into_iter()
+        .filter(|m| m.message.action == action::ATTACH)
+        .count();
+
+    // Delta whose decode throws (failing decoder).
+    send_message_pm(
+        conn,
+        "test-rtl18",
+        "msg-2:0",
+        Some("serial-200"),
+        vec![delta_msg(
+            "msg-2:0",
+            bin("fake-delta"),
+            "utf-8/vcdiff",
+            "msg-1:0",
+        )],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // RTL18b: the failed message was not delivered.
+    assert!(drain_messages(&mut rx).is_empty());
+    // RTL18c: ATTACHING + recovery ATTACH from serial-100 (the PREVIOUS serial).
+    assert_eq!(channel.state(), ChannelState::Attaching);
+    let attaches: Vec<_> = mock
+        .client_messages()
+        .into_iter()
+        .filter(|m| m.message.action == action::ATTACH)
+        .collect();
+    assert!(attaches.len() > attaches_before);
+    assert_eq!(
+        attaches.last().unwrap().message.channel_serial.as_deref(),
+        Some("serial-100")
+    );
+    let mut saw_40018 = false;
+    while let Ok(c) = changes.try_recv() {
+        if c.current == ChannelState::Attaching
+            && c.reason.and_then(|r| r.code) == Some(ErrorCode::VcdiffDecodeFailure.code())
+        {
+            saw_40018 = true;
+        }
+    }
+    assert!(saw_40018);
+    client.close();
+}
+
+// UTS: realtime/unit/RTL18c/recovery-completes-on-attached-0
+#[tokio::test]
+async fn rtl18c_recovery_completes_on_attached() {
+    use crate::protocol::{action, ChannelState, ProtocolMessage};
+
+    // Decoder fails on the first call, then behaves as pass-through.
+    let attempt = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let attempt_c = attempt.clone();
+    let decoder: crate::connection::DeltaDecoder =
+        std::sync::Arc::new(move |delta: &[u8], _base: &[u8]| {
+            if attempt_c.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                Err("simulated failure".to_string())
+            } else {
+                Ok(delta.to_vec())
+            }
+        });
+
+    let (client, mock, channel) = delta_attached(decoder, "test-rtl18c").await;
+    let (_id, mut rx) = channel.subscribe();
+    let conns = mock.active_connections();
+    let conn = conns.last().unwrap();
+
+    send_message_pm(
+        conn,
+        "test-rtl18c",
+        "msg-1:0",
+        Some("serial-1"),
+        vec![plain_msg(
+            "msg-1:0",
+            rest::Data::String("original base".into()),
+            None,
+        )],
+    );
+    // Delta fails on first decode → recovery → ATTACHING.
+    send_message_pm(
+        conn,
+        "test-rtl18c",
+        "msg-2:0",
+        Some("serial-2"),
+        vec![delta_msg(
+            "msg-2:0",
+            bin("bad-delta"),
+            "utf-8/vcdiff",
+            "msg-1:0",
+        )],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(channel.state(), ChannelState::Attaching);
+
+    // Server confirms the recovery ATTACH.
+    conn.send_to_client(ProtocolMessage {
+        action: action::ATTACHED,
+        channel: Some("test-rtl18c".to_string()),
+        ..ProtocolMessage::new(action::ATTACHED)
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(channel.state(), ChannelState::Attached);
+
+    // Fresh non-delta after recovery is delivered normally.
+    send_message_pm(
+        conn,
+        "test-rtl18c",
+        "msg-3:0",
+        Some("serial-3"),
+        vec![plain_msg(
+            "msg-3:0",
+            rest::Data::String("fresh after recovery".into()),
+            None,
+        )],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let got = drain_messages(&mut rx);
+    // The base and the post-recovery message; the failed delta was discarded.
+    assert_eq!(
+        got.first().unwrap().data,
+        rest::Data::String("original base".into())
+    );
+    assert_eq!(
+        got.last().unwrap().data,
+        rest::Data::String("fresh after recovery".into())
+    );
+    client.close();
+}
+
+// UTS: realtime/unit/RTL18/single-recovery-at-time-1
+#[tokio::test]
+async fn rtl18_single_recovery_at_a_time() {
+    use crate::protocol::{action, ChannelState};
+
+    let (client, mock, channel) = delta_attached(failing_decoder(), "test-rtl18-single").await;
+    let conns = mock.active_connections();
+    let conn = conns.last().unwrap();
+
+    send_message_pm(
+        conn,
+        "test-rtl18-single",
+        "msg-1:0",
+        Some("serial-1"),
+        vec![plain_msg(
+            "msg-1:0",
+            rest::Data::String("base".into()),
+            None,
+        )],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    let attaches_before = mock
+        .client_messages()
+        .into_iter()
+        .filter(|m| m.message.action == action::ATTACH)
+        .count();
+
+    // First failing delta → recovery (ATTACHING); the mock does not confirm,
+    // so recovery stays in progress.
+    send_message_pm(
+        conn,
+        "test-rtl18-single",
+        "msg-2:0",
+        None,
+        vec![delta_msg(
+            "msg-2:0",
+            bin("bad-1"),
+            "utf-8/vcdiff",
+            "msg-1:0",
+        )],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(channel.state(), ChannelState::Attaching);
+
+    // Second failing delta while ATTACHING — RTL17 drops it, no 2nd recovery.
+    send_message_pm(
+        conn,
+        "test-rtl18-single",
+        "msg-3:0",
+        None,
+        vec![delta_msg(
+            "msg-3:0",
+            bin("bad-2"),
+            "utf-8/vcdiff",
+            "msg-2:0",
+        )],
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let recovery_attaches = mock
+        .client_messages()
+        .into_iter()
+        .filter(|m| m.message.action == action::ATTACH)
+        .count()
+        - attaches_before;
+    assert_eq!(recovery_attaches, 1, "only one recovery ATTACH");
+    client.close();
 }
 
 // -- RTS3a: channels.get returns same --

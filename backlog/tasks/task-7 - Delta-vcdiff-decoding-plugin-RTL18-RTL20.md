@@ -1,7 +1,7 @@
 ---
 id: TASK-7
 title: Delta/vcdiff decoding plugin (RTL18-RTL20)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-12 13:23'
 labels:
@@ -55,3 +55,32 @@ Channels negotiating delta=vcdiff receive binary diffs needing an RFC 3284 decod
   supported/tested (19 fixtures). Confirm whether Ably's server-side delta
   encoder ever emits VCD_TARGET windows before relying on this in prod
   (capture real deltas and check the 0x02 win-indicator bit).
+
+## Implementation (2026-07-19)
+
+Bundled `vcdiff-decode` as a normal dependency (no user-facing plugin, per
+decision). Internal decoder seam `connection::DeltaDecoder` (an
+`Arc<dyn Fn(delta, base) -> Result<Vec<u8>, String>>`); production uses
+`default_delta_decoder()` = the real crate, tests inject a mock via a
+`#[cfg(test)]` ClientOptions field — mirroring how ably-js tests these IDs
+with a pass-through / recording / failing mock (no real fixtures needed;
+real decoding is covered by vcdiff-decode's own conformance suite).
+
+- `ChannelCtx::decode_message` (channel_arm.rs): RTL19a base64-first,
+  RTL19b/19c base-payload storage (wire form, before json/utf-8), RTL20
+  delta.from vs stored last-id check, PC3a string-base→utf8, then the
+  standard RSL6 chain for residual steps. Base + last-id cleared on any
+  transition out of ATTACHED (RTL19).
+- `handle_message_action` rewritten: RTL21 in-array order; on failure/
+  mismatch → RTL18a log 40018, RTL18b discard + stop, RTL18c re-attach from
+  the PREVIOUS message's channelSerial into ATTACHING with reason 40018.
+  RTL18 single-recovery falls out of the RTL17 not-ATTACHED drop.
+- ErrorCode::VcdiffDecodeFailure = 40018.
+- Negotiation needs no new API: `params: {delta: "vcdiff"}` via existing
+  channel-options params (attach_message already sends params).
+
+Tests: 12 new (11 UTS unit IDs + a fixture-free check that the production
+default is really wired to vcdiff-decode). PC3/no-plugin-fails (40019) is
+N/A — the decoder is bundled, never absent — dispositioned in the matrix.
+Integration IDs (delta_decoding_test.md) remain excluded (live sandbox).
+Suite: 1383/0/17 full serial (incl. live+proxy).

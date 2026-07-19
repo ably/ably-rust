@@ -200,6 +200,9 @@ pub enum ErrorCode {
     InvalidMessageDataOrEncoding = 40013,
     ResourceDisposed = 40014,
     InvalidDeviceID = 40015,
+    /// RTL18: a vcdiff delta could not be decoded (decode failure or RTL20
+    /// delta-reference id mismatch); triggers the RTL18c recovery re-attach.
+    VcdiffDecodeFailure = 40018,
     BatchError = 40020,
     InvalidPublishRequestUnspecified = 40030,
     InvalidPublishRequestInvalidClientSpecifiedID = 40031,

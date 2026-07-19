@@ -28,7 +28,6 @@ SPEC = REPO.parent / "specification" / "uts"
 
 # --- whole-file exclusions (future stages / recorded deferrals) ---
 EXCLUDE_FILES = {
-    "realtime/unit/channels/channel_delta_decoding.md": "delta/vcdiff decoding not planned (needs vcdiff plugin)",
     "realtime/unit/connection/network_change_test.md": "OS network-event detection not implemented (recorded deferral)",
     "rest/unit/push/push_channel_subscriptions.md": "push admin: LocalDevice not implemented (recorded deferral)",
     "rest/unit/push/push_channels.md": "push channels: LocalDevice not implemented (recorded deferral)",
@@ -48,6 +47,21 @@ OVERRIDES = {
     "realtime/unit/RTC16/close-method-0": "rtc8c_authorize_from_closed_reconnects",
     # ---- TASK-4: RTN16 recovery ----
     "realtime/unit/RTC1c/recover-option-0": "rtn16k_recover_param_first_connection_only",
+    # ---- TASK-7: delta/vcdiff decoding (bundled vcdiff-decode crate) ----
+    "realtime/unit/RTL21/ascending-index-order-0": "rtl21_messages_decoded_in_ascending_index_order",
+    "realtime/unit/RTL19b/stores-base-payload-0": "rtl19b_non_delta_stores_base_payload",
+    "realtime/unit/RTL19b/json-wire-form-base-1": "rtl19b_json_encoded_stores_wire_form_base",
+    "realtime/unit/RTL19a/base64-decoded-before-store-0": "rtl19a_base64_decoded_before_store",
+    "realtime/unit/RTL19c/delta-result-becomes-base-0": "rtl19c_delta_result_becomes_base",
+    "realtime/unit/RTL20/last-id-updated-on-decode-1": "rtl20_last_message_id_updated_after_decode",
+    "realtime/unit/RTL20/mismatched-id-triggers-recovery-0": "rtl20_mismatched_id_triggers_recovery",
+    "realtime/unit/RTL18/decode-failure-recovery-0": "rtl18_decode_failure_triggers_recovery",
+    "realtime/unit/RTL18/single-recovery-at-time-1": "rtl18_single_recovery_at_a_time",
+    "realtime/unit/RTL18c/recovery-completes-on-attached-0": "rtl18c_recovery_completes_on_attached",
+    "realtime/unit/PC3/vcdiff-plugin-decodes-0": "pc3_vcdiff_decoder_called_with_utf8_base",
+    # N/A: the vcdiff decoder is bundled (not a user-supplied plugin), so the
+    # "no plugin -> 40019 FAILED" state cannot arise in this SDK.
+    "realtime/unit/PC3/no-plugin-fails-1": "!! N/A: vcdiff decoder is bundled, never absent (no 40019 state)",
     # ---- realtime: exclusions ----
     "realtime/unit/RTC13/push-attribute-0": "!! push: LocalDevice not implemented (recorded deferral)",
     "realtime/unit/RTB1/suspended-channel-retry-delay-1": "rtl13b_failed_reattach_suspends_and_retries, rtb1a_backoff_coefficient_sequence",

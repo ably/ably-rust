@@ -818,3 +818,15 @@ This pass added:
   now byte-identical to the curated matrix (1120 IDs, 0 unresolved).
   Policy note: converting a matrix exclusion must update the generator's
   OVERRIDES in the same change.
+
+### TASK-7 Delta/vcdiff decoding (RTL18-RTL21, PC3) — DONE (2026-07-19)
+- Bundled the `vcdiff-decode` crate (no user plugin). Internal
+  `DeltaDecoder` seam: production = real crate, tests inject a mock (as
+  ably-js does — pass-through/recording/failing), so no real fixtures are
+  needed and real decoding stays covered by vcdiff-decode's own suite.
+- ChannelCtx::decode_message does RTL19a/19b/19c base-payload bookkeeping,
+  RTL20 id checks, PC3a string-base→utf8; handle_message_action does RTL21
+  ordering and RTL18a/b/c recovery (40018, re-attach from the previous
+  channelSerial). ErrorCode::VcdiffDecodeFailure = 40018.
+- 12 new tests; 11 unit matrix IDs mapped; PC3/no-plugin (40019) N/A
+  (bundled). Suite 1383/0/17 full serial.
