@@ -1,7 +1,7 @@
 ---
 id: TASK-3
 title: Implement TM2s1/TM2s2 Message.version defaulting
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-12 13:23'
 labels:

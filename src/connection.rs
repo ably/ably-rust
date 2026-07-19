@@ -1329,11 +1329,9 @@ impl ConnectionCtx {
             if msg.timestamp.is_none() {
                 msg.timestamp = pm.timestamp;
             }
-            // RSL6: decode/decrypt with the channel cipher
-            let (data, encoding) =
-                crate::rest::decode_data(msg.data, msg.encoding, ch.options.cipher.as_ref());
-            msg.data = data;
-            msg.encoding = encoding;
+            // RSL6: decode/decrypt with the channel cipher (also applies
+            // the TM2s version defaulting, after the inheritance above)
+            msg.decode_with_cipher(ch.options.cipher.as_ref());
             ch.deliver(&msg);
         }
     }

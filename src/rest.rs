@@ -2416,6 +2416,35 @@ impl Message {
             decode_data(std::mem::take(&mut self.data), self.encoding.take(), cipher);
         self.data = data;
         self.encoding = encoding;
+        self.default_version();
+    }
+
+    /// TM2s: a received message without a complete `version` gets one
+    /// initialized from its own fields — `version.serial` from the TM2r
+    /// serial (TM2s1) and `version.timestamp` from the TM2f timestamp
+    /// (TM2s2), each only when set. Runs after TM2 field inheritance, so
+    /// inherited timestamps participate.
+    fn default_version(&mut self) {
+        let serial = self.serial.clone();
+        let timestamp = self.timestamp;
+        if serial.is_none() && timestamp.is_none() && self.version.is_none() {
+            return;
+        }
+        let version = self
+            .version
+            .get_or_insert_with(|| serde_json::Value::Object(Default::default()));
+        if let Some(map) = version.as_object_mut() {
+            if !map.contains_key("serial") {
+                if let Some(s) = serial {
+                    map.insert("serial".into(), serde_json::Value::String(s));
+                }
+            }
+            if !map.contains_key("timestamp") {
+                if let Some(t) = timestamp {
+                    map.insert("timestamp".into(), t.into());
+                }
+            }
+        }
     }
 }
 

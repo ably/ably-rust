@@ -1104,7 +1104,7 @@ rest/unit/TM/null-missing-attributes-0 => tm_null_attributes_omitted
 rest/unit/TM2a/message-attributes-0 => tm2a_channel_message_id_attribute
 rest/unit/TM2j/action-and-serial-fields-0 => tm2j_tm2r_message_action_serial_fields
 rest/unit/TM2s/version-populated-from-wire-0 => tm2s_message_version_populated
-rest/unit/TM2s1/version-defaults-from-message-0 !! version defaulting deferred (recorded; ignored test exists)
+rest/unit/TM2s1/version-defaults-from-message-0 => tm2s2_version_timestamp_defaults_to_message_timestamp
 rest/unit/TM2u/annotations-defaults-empty-0 => tm2u_tm8a_message_annotations_default
 rest/unit/TM3/from-encoded-decodes-encoding-1 => tm3_from_encoded_all_fields
 rest/unit/TM3/from-encoded-deserialization-0 => tm3_from_encoded_all_fields

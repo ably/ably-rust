@@ -2020,16 +2020,18 @@ fn tk6_token_params_all_attributes() {
 // UTS: rest/unit/types/mutable_message_types.md
 // ========================================================================
 
+// UTS: rest/unit/TM2s1/version-defaults-from-message-0
 #[test]
-#[ignore = "version defaulting from message fields not yet implemented"]
 fn tm2s2_version_timestamp_defaults_to_message_timestamp() {
-    let msg: Message = serde_json::from_value(json!({
+    let mut msg: Message = serde_json::from_value(json!({
         "serial": "msg-serial-1",
         "timestamp": 1700000000000_i64,
         "name": "test",
         "data": "hello"
     }))
     .unwrap();
+    // Wire ingestion (the fromJson equivalent) is deserialize + decode
+    msg.decode();
 
     // When version is absent from wire, SDK should initialize it with
     // serial from TM2r and timestamp from TM2f
@@ -2043,6 +2045,34 @@ fn tm2s2_version_timestamp_defaults_to_message_timestamp() {
         version_obj.get("timestamp").and_then(|v| v.as_i64()),
         Some(1700000000000)
     );
+    // Other version fields stay absent
+    assert!(version_obj.get("clientId").is_none());
+    assert!(version_obj.get("description").is_none());
+    assert!(version_obj.get("metadata").is_none());
+
+    // A version received on the wire is not overwritten; missing subfields
+    // are still defaulted from the message (TM2s1/TM2s2 "if not received")
+    let mut msg2: Message = serde_json::from_value(json!({
+        "serial": "msg-serial-2",
+        "timestamp": 1700000000001_i64,
+        "version": {"serial": "version-serial-2"}
+    }))
+    .unwrap();
+    msg2.decode();
+    let v2 = msg2.version.as_ref().unwrap().as_object().unwrap();
+    assert_eq!(
+        v2.get("serial").and_then(|v| v.as_str()),
+        Some("version-serial-2")
+    );
+    assert_eq!(
+        v2.get("timestamp").and_then(|v| v.as_i64()),
+        Some(1700000000001)
+    );
+
+    // A message with neither serial nor timestamp gets no synthesized version
+    let mut msg3: Message = serde_json::from_value(json!({"name": "bare"})).unwrap();
+    msg3.decode();
+    assert!(msg3.version.is_none());
 }
 
 // ========================================================================
