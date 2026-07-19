@@ -765,3 +765,40 @@ This pass added:
   verified green again 2026-07-19 (fmt + clippy clean; unit 1238/0/28,
   live integration + proxy serial 125/0/2).
 
+
+### TASK-2 PresenceMessage::size (TP5) — DONE (2026-07-19, e3ab50b)
+- Same formula as TM6 minus name: clientId + JSON-stringified extras + data
+  lengths; Data/extras sizing shared with message_size via helpers.
+  tp5_presence_message_size un-ignored (3 variants); matrix mapped.
+
+### TASK-3 TM2s1/TM2s2 version defaulting — DONE (2026-07-19, 77fde00)
+- Message::default_version() in decode_with_cipher: a received message
+  without a complete version object gets version.serial from the TM2r
+  serial and version.timestamp from the TM2f timestamp (each only when set,
+  never overwriting received subfields). Realtime MESSAGE dispatch now uses
+  decode_with_cipher instead of an inline duplicate, so TM2a/c/f
+  inheritance still precedes defaulting. Matrix TM2s1 exclusion converted.
+
+### TASK-5 Dual mock injection + RTN17j — DONE (2026-07-19, 4207a10)
+- Realtime::with_mocks injects WS + HTTP mocks; with_mock embeds a default
+  HTTP mock (connectivity "yes", loud network-error otherwise). REC3
+  connectivityCheckUrl option (REC3a default, REC3b override);
+  Connection::check_connectivity() public probe (unauthenticated GET per
+  WP6d; true iff 2xx and body contains "yes").
+- RTN17j: every fallback-qualifying failure (RTN17f/f1) probes the
+  connectivity URL from a spawned generation-tagged task before the first
+  fallback attempt of the cycle; internet up proceeds to fallbacks, down
+  skips to the RTN14 retry state. Zero new locks. 5 new tests; REC3/a/b
+  exclusions converted; the RTN17j connectivity ID retargeted to the real
+  probe test. Suite: 1371 pass / 0 fail / 28 ignored.
+
+### TASK-14 connection.rs refactor — DONE (2026-07-19)
+- connection.rs (3,417 lines) split into connection/{mod,channel_arm,
+  presence_arm,publish_arm}.rs with the ownership model untouched — state
+  types stay in mod.rs, arms hold behaviour; the conformance ratchet scans
+  all four files at allowance 0. Duplicated RTP17i re-entry and
+  HAS_PRESENCE attach handling extracted to single helpers
+  (reenter_internal_members, apply_has_presence). PendingReply enum
+  replaces the per-op oneshot-bridge tasks for presence/annotation ops;
+  raw 91004/91005 replaced with ErrorCode variants. Suite identical
+  before/after (1371/0/28 incl. serial live+proxy).

@@ -26,7 +26,22 @@ const REALTIME_MODULES: &[(&str, &str, usize)] = &[
     ("presence.rs", include_str!("presence.rs"), 0),
     ("transport.rs", include_str!("transport.rs"), 0),
     ("protocol.rs", include_str!("protocol.rs"), 0),
-    ("connection.rs", include_str!("connection.rs"), 0),
+    ("connection/mod.rs", include_str!("connection/mod.rs"), 0),
+    (
+        "connection/channel_arm.rs",
+        include_str!("connection/channel_arm.rs"),
+        0,
+    ),
+    (
+        "connection/presence_arm.rs",
+        include_str!("connection/presence_arm.rs"),
+        0,
+    ),
+    (
+        "connection/publish_arm.rs",
+        include_str!("connection/publish_arm.rs"),
+        0,
+    ),
     ("ws_transport.rs", include_str!("ws_transport.rs"), 0),
 ];
 
