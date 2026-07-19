@@ -28,9 +28,10 @@ Channels negotiating delta=vcdiff receive binary diffs needing an RFC 3284 decod
   crate). Import path is `vcdiff` (explicit `[lib] name`): declare
   `vcdiff-decode = "1"`, write `use vcdiff::...`. (PR #2, merged.)
 - CONSUMPTION: `ably` publishes to crates.io, which forbids git deps in
-  published crates, so `ably` must depend on `vcdiff-decode` FROM crates.io
-  — i.e. the crate must be `cargo publish`ed before `ably` ships delta
-  support. (Publish is a manual release step, pending.)
+  published crates, so `ably` must depend on `vcdiff-decode` FROM crates.io.
+  PUBLISHED 2026-07-19 as `vcdiff-decode` v1.0.0
+  (https://crates.io/crates/vcdiff-decode) — dependency front unblocked;
+  declare `vcdiff-decode = "1"`.
 - Still to decide when implementing: bundled optional dep (`ably` +
   `vcdiff` feature) vs injectable plugin (app depends on vcdiff-decode and
   passes a decoder in, like ably-js/@ably/vcdiff-decoder). Either way the
