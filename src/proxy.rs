@@ -13,7 +13,9 @@ use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Mutex;
 
-const PROXY_VERSION: &str = "v0.1.0";
+const PROXY_VERSION: &str = "v0.3.0";
+/// PROXY_VERSION without the leading `v` — the release embeds it in asset names.
+const PROXY_VERSION_NUM: &str = "0.3.0";
 const PROXY_REPO: &str = "ably/uts-proxy";
 const DEFAULT_CONTROL_PORT: u16 = 9100;
 
@@ -21,20 +23,21 @@ static NEXT_PORT: std::sync::OnceLock<AtomicU16> = std::sync::OnceLock::new();
 static PROXY_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 static PROXY_ENSURED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// SHA256 checksums for each platform binary.
+/// SHA256 checksums for each platform binary (from the PROXY_VERSION release's
+/// checksums.txt).
 fn checksum(asset: &str) -> Option<&'static str> {
     match asset {
-        "uts-proxy_darwin_amd64.tar.gz" => {
-            Some("eb8abf5eec7f7137cf9e7cb6ab6f45fd162303c242b4567ab9e354c4b9a4a4ff")
+        "uts-proxy_0.3.0_darwin_amd64.tar.gz" => {
+            Some("1355526543c3022f87efb7f564f55200b78edc68d84c7dba2e49f63429e3b788")
         }
-        "uts-proxy_darwin_arm64.tar.gz" => {
-            Some("845da80af7d5b1daacbdf30b34aff6ca1b2bb88c708065bdc5d9a636baf32a1f")
+        "uts-proxy_0.3.0_darwin_arm64.tar.gz" => {
+            Some("a948f99b7daf9b3bffff742f6405637d40a79947389309eed5f87e59026de9a5")
         }
-        "uts-proxy_linux_amd64.tar.gz" => {
-            Some("79f444c23362cc277d163deb243dc16063c74665ff63b8bd3e56789b9d9610c7")
+        "uts-proxy_0.3.0_linux_amd64.tar.gz" => {
+            Some("de741ba21f3630fea4f59714d00585638d565005599ecd84179931eba248f280")
         }
-        "uts-proxy_linux_arm64.tar.gz" => {
-            Some("7357e4605f19451d83bb419ee959537d6e95ca74b766721eae006d4171371030")
+        "uts-proxy_0.3.0_linux_arm64.tar.gz" => {
+            Some("15b5ca87c40c2c4ff350c94af1911cea0ad6be5a2d890ba41029bc4b8bc52c61")
         }
         _ => None,
     }
@@ -51,7 +54,11 @@ fn asset_name() -> String {
     } else {
         "amd64"
     };
-    format!("uts-proxy_{}_{}.tar.gz", platform, arch)
+    // v0.2.0+ embeds the version in the asset name.
+    format!(
+        "uts-proxy_{}_{}_{}.tar.gz",
+        PROXY_VERSION_NUM, platform, arch
+    )
 }
 
 fn cache_dir() -> PathBuf {
