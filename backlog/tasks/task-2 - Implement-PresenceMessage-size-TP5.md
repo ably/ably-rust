@@ -1,7 +1,7 @@
 ---
 id: TASK-2
 title: 'Implement PresenceMessage::size() (TP5)'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-06-12 13:23'
 labels:

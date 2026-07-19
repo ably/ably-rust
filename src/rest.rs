@@ -1795,18 +1795,22 @@ pub(crate) fn idempotent_id_base() -> String {
 pub(crate) fn message_size(msg: &Message) -> u64 {
     let name = msg.name.as_deref().map(str::len).unwrap_or(0);
     let client_id = msg.client_id.as_deref().map(str::len).unwrap_or(0);
-    let extras = msg
-        .extras
-        .as_ref()
+    (name + client_id + extras_size(msg.extras.as_ref()) + data_size(&msg.data)) as u64
+}
+
+fn extras_size(extras: Option<&serde_json::Value>) -> usize {
+    extras
         .map(|e| serde_json::to_string(e).map(|s| s.len()).unwrap_or(0))
-        .unwrap_or(0);
-    let data = match &msg.data {
+        .unwrap_or(0)
+}
+
+fn data_size(data: &Data) -> usize {
+    match data {
         Data::String(s) => s.len(),
         Data::Binary(b) => b.len(),
         Data::JSON(v) => serde_json::to_string(v).map(|s| s.len()).unwrap_or(0),
         Data::None => 0,
-    };
-    (name + client_id + extras + data) as u64
+    }
 }
 
 /// Result of a REST publish (RSL1n/PBR2): one serial per published message,
@@ -2466,6 +2470,13 @@ impl PresenceMessage {
             self.connection_id.as_deref().unwrap_or(""),
             self.client_id.as_deref().unwrap_or("")
         )
+    }
+
+    /// TP5: the size of a presence message, calculated as for Message (TM6) —
+    /// the sum of its clientId, JSON-stringified extras, and data lengths.
+    pub fn size(&self) -> u64 {
+        let client_id = self.client_id.as_deref().map(str::len).unwrap_or(0);
+        (client_id + extras_size(self.extras.as_ref()) + data_size(&self.data)) as u64
     }
 
     /// Decode the presence message data according to the encoding chain (RSL6).

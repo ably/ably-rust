@@ -2050,17 +2050,35 @@ fn tm2s2_version_timestamp_defaults_to_message_timestamp() {
 // UTS: rest/unit/types/presence_message_types.md
 // ========================================================================
 
+// UTS: rest/unit/TP5/presence-message-size-0
 #[test]
-#[ignore = "PresenceMessage::size() not yet implemented"]
 fn tp5_presence_message_size() {
     // TP5: Size includes clientId + data + extras (same formula as TM6)
-    let _msg = PresenceMessage {
+    let msg = PresenceMessage {
         action: Some(PresenceAction::Enter),
         client_id: Some("user-1".into()),
         data: Data::String("hello".into()),
         ..Default::default()
     };
-    // When implemented: assert_eq!(msg.size(), 11); // "user-1" (6) + "hello" (5)
+    assert_eq!(msg.size(), 11); // "user-1" (6) + "hello" (5)
+
+    // Object data counts as its JSON-encoded length
+    let msg2 = PresenceMessage {
+        action: Some(PresenceAction::Enter),
+        client_id: Some("u".into()),
+        data: Data::JSON(serde_json::json!({"key": "value"})),
+        ..Default::default()
+    };
+    assert_eq!(msg2.size(), 1 + r#"{"key":"value"}"#.len() as u64);
+
+    // Extras count as their JSON-encoded length; binary data as byte length
+    let msg3 = PresenceMessage {
+        client_id: Some("u".into()),
+        data: Data::Binary(vec![0u8; 4].into()),
+        extras: Some(serde_json::json!({"ref": true})),
+        ..Default::default()
+    };
+    assert_eq!(msg3.size(), 1 + 4 + r#"{"ref":true}"#.len() as u64);
 }
 
 // UTS rest/unit/TG/next-on-last-page-3

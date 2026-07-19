@@ -1130,7 +1130,7 @@ rest/unit/TP3d/connectionid-from-protocol-message-0 => tp3d_presence_message_con
 rest/unit/TP3g/timestamp-from-protocol-message-0 => tp3g_presence_message_timestamp_from_json
 rest/unit/TP3h/member-key-combines-ids-0 => tp3h_member_key
 rest/unit/TP4/from-encoded-presence-0 => tp4_presence_message_from_json
-rest/unit/TP5/presence-message-size-0 !! PresenceMessage::size() deferred (recorded; ignored test exists)
+rest/unit/TP5/presence-message-size-0 => tp5_presence_message_size
 rest/unit/TRF2/failure-result-attributes-0 => trf2_failure_result_attributes
 rest/unit/TRS2/success-result-attributes-0 => trs2_success_result_attributes
 rest/unit/UDR2a/update-delete-result-fields-0 => udr2a_update_delete_result_fields
