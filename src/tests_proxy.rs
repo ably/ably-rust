@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crate::auth::{AuthCallback, AuthToken, TokenParams};
 use crate::error::Result;
 use crate::options::ClientOptions;
-use crate::proxy::{allocate_port, ProxySession, Rule};
+use crate::proxy::{ProxySession, Rule};
 use crate::rest::Rest;
 use crate::tests_rest_integration::{get_sandbox, random_id};
 
@@ -41,27 +41,15 @@ impl AuthCallback for SandboxTokenCallback {
 }
 
 pub(crate) async fn proxy_session(rules: Vec<Rule>) -> (ProxySession, u16) {
-    // Retry on a fresh port: sessions orphaned by panicked tests keep their
-    // port bound on the long-lived proxy daemon (409 Conflict on reuse).
-    let mut last_err = None;
-    for _ in 0..5 {
-        let port = allocate_port();
-        match ProxySession::create(
-            &ProxySession::proxy_base_url(),
-            "nonprod:sandbox",
-            port,
-            rules.clone(),
-        )
-        .await
-        {
-            Ok(session) => return (session, port),
-            Err(e) => last_err = Some(e),
-        }
-    }
-    panic!(
-        "failed to create proxy session — is the uts-proxy available?: {:?}",
-        last_err
-    );
+    // The proxy auto-assigns a free port per session, so there's no port to
+    // pre-allocate and no reuse conflict to retry around: sessions orphaned by
+    // panicked tests can no longer collide with a caller-chosen port.
+    let session =
+        ProxySession::create(&ProxySession::proxy_base_url(), "nonprod:sandbox", rules)
+            .await
+            .expect("failed to create proxy session — is the uts-proxy available?");
+    let port = session.proxy_port;
+    (session, port)
 }
 
 /// A client routed through the proxy with fallback enabled: the primary and

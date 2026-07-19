@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Mutex;
 
 const PROXY_VERSION: &str = "v0.3.0";
@@ -19,7 +18,6 @@ const PROXY_VERSION_NUM: &str = "0.3.0";
 const PROXY_REPO: &str = "ably/uts-proxy";
 const DEFAULT_CONTROL_PORT: u16 = 9100;
 
-static NEXT_PORT: std::sync::OnceLock<AtomicU16> = std::sync::OnceLock::new();
 static PROXY_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 static PROXY_ENSURED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -88,22 +86,6 @@ fn control_port() -> u16 {
 fn control_url() -> String {
     std::env::var("ABLY_PROXY_URL")
         .unwrap_or_else(|_| format!("http://localhost:{}", control_port()))
-}
-
-/// Allocate a unique port for a proxy session.
-///
-/// The base is randomized per process: the proxy daemon outlives test runs,
-/// and sessions orphaned by panicked tests keep their port bound — a fixed
-/// base would collide with them on every subsequent run.
-pub fn allocate_port() -> u16 {
-    let counter = NEXT_PORT.get_or_init(|| {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
-        AtomicU16::new(19100 + (nanos % 9900) as u16)
-    });
-    counter.fetch_add(1, Ordering::SeqCst)
 }
 
 /// Download the proxy binary if not already cached.
@@ -262,7 +244,8 @@ pub struct ProxySession {
     pub session_id: String,
     #[allow(dead_code)]
     pub proxy_host: String,
-    #[allow(dead_code)]
+    /// The port the proxy allocated for this session's listener; the SDK under
+    /// test connects here.
     pub proxy_port: u16,
     proxy_url: String,
     http_client: reqwest::Client,
@@ -272,14 +255,26 @@ pub struct ProxySession {
 struct CreateSessionResponse {
     #[serde(rename = "sessionId")]
     session_id: String,
+    proxy: ProxyInfo,
+}
+
+/// The `proxy` object in a create-session response: the listener the proxy
+/// bound for this session.
+#[derive(Debug, Deserialize)]
+struct ProxyInfo {
+    host: String,
+    port: u16,
 }
 
 impl ProxySession {
     /// Create a new proxy session, ensuring the proxy is running first.
+    ///
+    /// The proxy binds a free OS-assigned port for the session and reports it
+    /// in the response; the allocated port is available as
+    /// [`ProxySession::proxy_port`].
     pub async fn create(
         proxy_url: &str,
         endpoint: &str,
-        port: u16,
         rules: Vec<Rule>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Ensure proxy is running before creating a session
@@ -287,19 +282,19 @@ impl ProxySession {
 
         let http_client = reqwest::Client::new();
 
+        // `port` is omitted so the proxy auto-assigns a free port (uts-proxy
+        // >= v0.2.0), avoiding the TOCTOU race of the caller guessing one.
         let body = if endpoint == "nonprod:sandbox" {
             serde_json::json!({
                 "target": {
                     "realtimeHost": "sandbox.realtime.ably-nonprod.net",
                     "restHost": "sandbox.realtime.ably-nonprod.net"
                 },
-                "port": port,
                 "rules": rules,
             })
         } else {
             serde_json::json!({
                 "endpoint": endpoint,
-                "port": port,
                 "rules": rules,
             })
         };
@@ -320,8 +315,8 @@ impl ProxySession {
 
         Ok(Self {
             session_id: result.session_id,
-            proxy_host: "localhost".to_string(),
-            proxy_port: port,
+            proxy_host: result.proxy.host,
+            proxy_port: result.proxy.port,
             proxy_url: proxy_url.to_string(),
             http_client,
         })
