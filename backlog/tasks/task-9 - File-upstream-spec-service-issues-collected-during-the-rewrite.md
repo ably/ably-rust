@@ -81,3 +81,27 @@ first; (b) after PR merge: re-derive our rtp15c/rtp8j-wildcard tests to the
 new spec shapes and drop the stale "unit spec contradicts" comment in
 rtn15h1_disconnected_token_error_without_renewal_fails; (c) optional small
 ably-js follow-up PR (re-translate RTP15c, add 40171 assertion).
+
+ROOT CAUSE FOUND (2026-07-19), item 1 — Go frontdoor:
+`roles/frontdoor/protocol/protocol_message.go`, `marshalCommon`. For MESSAGE
+actions it encodes `struct { *Alias; Messages any }` where both the embedded
+Alias's `Messages` field and the outer `Messages` carry the tag
+`json:"messages,omitempty"` (MarshalMsgpack uses vmihailenco/msgpack v5.4.1
+with SetCustomStructTag("json")). encoding/json resolves the collision by
+depth (outer shadows embedded — one key); vmihailenco inlines embedded
+fields WITHOUT shadowing and emits BOTH — it even logs "msgpack: struct
+{...} already has field=messages" (greppable in frontdoor logs) but encodes
+anyway. JSON clean, msgpack duplicated — the exact observed symptom. The
+SYNC branch has the identical pattern with `presence` (duplicate whenever
+p.Presence is non-empty). Values are byte-identical (both fields reference
+p.Messages), so last-wins dedup is safe.
+- Standalone repro (v5.4.1): hexdump shows map header 0x84 with "messages"
+  twice; JSON has it once.
+- LIVE CAPTURE from sandbox: first MESSAGE frame received had top-level keys
+  [action id channel channelSerial connectionId messages timestamp messages];
+  raw frame + hexdump saved at
+  `/Users/paddy/data/worknew/dev/rust-experiments/duplicate-key-frame.{bin,hex}`.
+- Suggested fix: only apply the wrapper when it is needed (MessagesV3
+  non-empty for MESSAGE; p.Presence empty for SYNC) and encode the plain
+  Alias otherwise — the "only one populated" guarantee then makes omitempty
+  drop the embedded field, leaving exactly one key in both formats.
