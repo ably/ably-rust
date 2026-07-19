@@ -828,5 +828,9 @@ This pass added:
   RTL20 id checks, PC3a string-base→utf8; handle_message_action does RTL21
   ordering and RTL18a/b/c recovery (40018, re-attach from the previous
   channelSerial). ErrorCode::VcdiffDecodeFailure = 40018.
-- 12 new tests; 11 unit matrix IDs mapped; PC3/no-plugin (40019) N/A
-  (bundled). Suite 1383/0/17 full serial.
+- 12 new unit tests (11 UTS IDs) + 4 live integration tests
+  (delta_decoding_test.md): real server deltas decoded by the real bundled
+  crate end-to-end, no-param negotiation, and the full RTL18 decode-failure
+  recovery loop vs the sandbox. PC3/no-plugin (40019) and the live
+  id-mismatch case dispositioned N/A / covered-by-unit. Suite 1387/0/17
+  full serial (incl. live+proxy).

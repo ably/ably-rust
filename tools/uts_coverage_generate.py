@@ -31,7 +31,6 @@ EXCLUDE_FILES = {
     "realtime/unit/connection/network_change_test.md": "OS network-event detection not implemented (recorded deferral)",
     "rest/unit/push/push_channel_subscriptions.md": "push admin: LocalDevice not implemented (recorded deferral)",
     "rest/unit/push/push_channels.md": "push channels: LocalDevice not implemented (recorded deferral)",
-    "realtime/integration/delta_decoding_test.md": "delta/vcdiff decoding not planned (needs vcdiff plugin)",
     "rest/integration/push_channels.md": "push channels: LocalDevice not implemented (recorded deferral)",
 }
 
@@ -62,6 +61,16 @@ OVERRIDES = {
     # N/A: the vcdiff decoder is bundled (not a user-supplied plugin), so the
     # "no plugin -> 40019 FAILED" state cannot arise in this SDK.
     "realtime/unit/PC3/no-plugin-fails-1": "!! N/A: vcdiff decoder is bundled, never absent (no 40019 state)",
+    # ---- TASK-7: delta/vcdiff integration (live sandbox) ----
+    "realtime/integration/PC3/delta-decode-end-to-end-0": "pc3_delta_decode_end_to_end",
+    "realtime/integration/PC3/no-deltas-without-param-1": "pc3_no_deltas_without_param",
+    "realtime/integration/RTL18/recovery-decode-failure-1": "rtl18_recovery_after_decode_failure",
+    "realtime/integration/RTL19b/dissimilar-payloads-no-delta-0": "rtl19b_dissimilar_payloads",
+    # Covered by the RTL20 mismatch UNIT test; forcing a mismatch on a live
+    # channel would need an internal test hook to clear the stored last id.
+    "realtime/integration/RTL18/recovery-message-id-mismatch-0": "!! covered by unit rtl20_mismatched_id_triggers_recovery (live mismatch needs an internal test hook)",
+    # N/A: the vcdiff decoder is bundled (not a plugin), so no 40019 state.
+    "realtime/integration/PC3/no-plugin-causes-failed-2": "!! N/A: vcdiff decoder is bundled, never absent (no 40019 state)",
     # ---- realtime: exclusions ----
     "realtime/unit/RTC13/push-attribute-0": "!! push: LocalDevice not implemented (recorded deferral)",
     "realtime/unit/RTB1/suspended-channel-retry-delay-1": "rtl13b_failed_reattach_suspends_and_retries, rtb1a_backoff_coefficient_sequence",

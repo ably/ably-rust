@@ -82,5 +82,13 @@ real decoding is covered by vcdiff-decode's own conformance suite).
 Tests: 12 new (11 UTS unit IDs + a fixture-free check that the production
 default is really wired to vcdiff-decode). PC3/no-plugin-fails (40019) is
 N/A — the decoder is bundled, never absent — dispositioned in the matrix.
-Integration IDs (delta_decoding_test.md) remain excluded (live sandbox).
-Suite: 1383/0/17 full serial (incl. live+proxy).
+Integration (live sandbox, delta_decoding_test.md): 4 implemented and
+passing — pc3_delta_decode_end_to_end (real server deltas + the real
+bundled decoder; decode_count == n-1), pc3_no_deltas_without_param,
+rtl18_recovery_after_decode_failure (full recovery loop vs the real
+server), rtl19b_dissimilar_payloads. Excluded with reasons: the RTL18
+id-mismatch integration case (covered by the RTL20 unit test; a live
+mismatch needs an internal test hook) and PC3 no-plugin 40019 (N/A —
+bundled). The end-to-end test also confirms empirically that real Ably
+server deltas decode with our crate (the VCD_TARGET concern does not bite
+for these payloads). Suite: 1387/0/17 full serial (incl. live+proxy).

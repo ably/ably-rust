@@ -905,3 +905,283 @@ async fn rtn16_live_recovery_proof() {
     );
     b.close();
 }
+
+// ============================================================================
+// Delta / vcdiff decoding end-to-end (delta_decoding_test.md)
+//
+// These exercise the FULL pipeline the unit tests mock out: publish -> the
+// server generates a real vcdiff delta -> the bundled vcdiff-decode crate
+// decodes it -> the subscriber gets the original data. The counting/failing
+// decoders wrap or replace the real one via the test seam.
+// ============================================================================
+
+fn delta_test_data() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({"foo":"bar","count":1,"status":"active"}),
+        serde_json::json!({"foo":"bar","count":2,"status":"active"}),
+        serde_json::json!({"foo":"bar","count":2,"status":"inactive"}),
+        serde_json::json!({"foo":"bar","count":3,"status":"inactive"}),
+        serde_json::json!({"foo":"bar","count":3,"status":"active"}),
+    ]
+}
+
+fn delta_params() -> crate::channel::RealtimeChannelOptions {
+    crate::channel::RealtimeChannelOptions {
+        params: Some(
+            [("delta".to_string(), "vcdiff".to_string())]
+                .into_iter()
+                .collect(),
+        ),
+        ..Default::default()
+    }
+}
+
+// UTS: realtime/integration/PC3/delta-decode-end-to-end-0
+#[tokio::test]
+async fn pc3_delta_decode_end_to_end() {
+    let app = get_sandbox().await;
+    let decode_count = Arc::new(AtomicUsize::new(0));
+    let dc = decode_count.clone();
+    // Counting decoder wrapping the REAL bundled decoder: genuinely
+    // end-to-end (real server deltas + real decode) yet observable.
+    let decoder: crate::connection::DeltaDecoder = Arc::new(move |delta: &[u8], base: &[u8]| {
+        dc.fetch_add(1, Ordering::SeqCst);
+        vcdiff::decode(base, delta).map_err(|e| e.to_string())
+    });
+    let opts = live_opts(app.full_access_key()).delta_decoder(decoder);
+    let client = Realtime::new(&opts).unwrap();
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 10000).await);
+
+    let name = format!("delta-PC3-{}", random_id());
+    let ch = client
+        .channels
+        .get_with_options(&name, delta_params())
+        .unwrap();
+    let (_id, mut rx) = ch.subscribe();
+    assert!(await_channel_state(&ch, ChannelState::Attached, 10000).await);
+
+    let data = delta_test_data();
+    for (i, d) in data.iter().enumerate() {
+        ch.publish()
+            .name(&i.to_string())
+            .json(d.clone())
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let mut got = Vec::new();
+    for _ in 0..data.len() {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(15), rx.recv())
+            .await
+            .expect("delta message within 15s")
+            .unwrap();
+        got.push(msg);
+    }
+    // No RTL18 recovery reattach occurred.
+    assert_eq!(
+        ch.state(),
+        ChannelState::Attached,
+        "no decode-failure reattach"
+    );
+    for (i, d) in data.iter().enumerate() {
+        assert_eq!(got[i].name.as_deref(), Some(i.to_string().as_str()));
+        assert!(
+            matches!(&got[i].data, Data::JSON(v) if v == d),
+            "message {i} data mismatch: {:?}",
+            got[i].data
+        );
+    }
+    // The first message is a full payload; every later one is a delta.
+    assert_eq!(
+        decode_count.load(Ordering::SeqCst),
+        data.len() - 1,
+        "the real decoder was invoked once per delta"
+    );
+    client.close();
+}
+
+// UTS: realtime/integration/PC3/no-deltas-without-param-1
+#[tokio::test]
+async fn pc3_no_deltas_without_param() {
+    let app = get_sandbox().await;
+    let decode_count = Arc::new(AtomicUsize::new(0));
+    let dc = decode_count.clone();
+    let decoder: crate::connection::DeltaDecoder = Arc::new(move |delta: &[u8], base: &[u8]| {
+        dc.fetch_add(1, Ordering::SeqCst);
+        vcdiff::decode(base, delta).map_err(|e| e.to_string())
+    });
+    let opts = live_opts(app.full_access_key()).delta_decoder(decoder);
+    let client = Realtime::new(&opts).unwrap();
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 10000).await);
+
+    // Attach WITHOUT the delta param — the server must send full messages.
+    let name = format!("delta-no-param-{}", random_id());
+    let ch = client.channels.get(&name);
+    let (_id, mut rx) = ch.subscribe();
+    assert!(await_channel_state(&ch, ChannelState::Attached, 10000).await);
+
+    let data = delta_test_data();
+    for (i, d) in data.iter().enumerate() {
+        ch.publish()
+            .name(&i.to_string())
+            .json(d.clone())
+            .send()
+            .await
+            .unwrap();
+    }
+    let mut got = Vec::new();
+    for _ in 0..data.len() {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(15), rx.recv())
+            .await
+            .expect("message within 15s")
+            .unwrap();
+        got.push(msg);
+    }
+    for (i, d) in data.iter().enumerate() {
+        assert!(
+            matches!(&got[i].data, Data::JSON(v) if v == d),
+            "message {i}"
+        );
+    }
+    // No delta param -> no deltas -> the decoder was never called.
+    assert_eq!(decode_count.load(Ordering::SeqCst), 0);
+    client.close();
+}
+
+// UTS: realtime/integration/RTL18/recovery-decode-failure-1 (RTL18, RTL18c)
+#[tokio::test]
+async fn rtl18_recovery_after_decode_failure() {
+    let app = get_sandbox().await;
+    // A decoder that always fails: every delta triggers RTL18 recovery; after
+    // each reattach the server resends the next message as a full payload, so
+    // all messages are eventually delivered.
+    let decoder: crate::connection::DeltaDecoder =
+        Arc::new(|_delta: &[u8], _base: &[u8]| Err("forced decode failure".to_string()));
+    let opts = live_opts(app.full_access_key()).delta_decoder(decoder);
+    let client = Realtime::new(&opts).unwrap();
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 10000).await);
+
+    let name = format!("delta-recovery-{}", random_id());
+    let ch = client
+        .channels
+        .get_with_options(&name, delta_params())
+        .unwrap();
+    let mut changes = ch.on_state_change();
+    let (_id, mut rx) = ch.subscribe();
+    assert!(await_channel_state(&ch, ChannelState::Attached, 10000).await);
+
+    let data = delta_test_data();
+    for (i, d) in data.iter().enumerate() {
+        ch.publish()
+            .name(&i.to_string())
+            .json(d.clone())
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // Collect messages by name until all are seen (recovery may reattach and
+    // the server resend, so allow duplicates).
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    await_live("all delta messages after recovery", 30, || {
+        while let Ok(msg) = rx.try_recv() {
+            if let Some(n) = &msg.name {
+                seen.insert(n.clone());
+            }
+        }
+        seen.len() >= data.len()
+    })
+    .await;
+    for i in 0..data.len() {
+        assert!(
+            seen.contains(&i.to_string()),
+            "message {i} eventually delivered"
+        );
+    }
+
+    // RTL18c: at least one recovery to ATTACHING carrying error 40018.
+    let mut saw_40018 = false;
+    while let Ok(c) = changes.try_recv() {
+        if c.current == ChannelState::Attaching
+            && c.reason.and_then(|r| r.code)
+                == Some(crate::error::ErrorCode::VcdiffDecodeFailure.code())
+        {
+            saw_40018 = true;
+        }
+    }
+    assert!(saw_40018, "RTL18c: an ATTACHING recovery with reason 40018");
+    client.close();
+}
+
+// UTS: realtime/integration/RTL19b/dissimilar-payloads-no-delta-0
+#[tokio::test]
+async fn rtl19b_dissimilar_payloads() {
+    use rand::RngCore;
+    let app = get_sandbox().await;
+    let decode_count = Arc::new(AtomicUsize::new(0));
+    let dc = decode_count.clone();
+    let decoder: crate::connection::DeltaDecoder = Arc::new(move |delta: &[u8], base: &[u8]| {
+        dc.fetch_add(1, Ordering::SeqCst);
+        vcdiff::decode(base, delta).map_err(|e| e.to_string())
+    });
+    let opts = live_opts(app.full_access_key()).delta_decoder(decoder);
+    let client = Realtime::new(&opts).unwrap();
+    client.connect();
+    assert!(await_state(&client.connection, ConnectionState::Connected, 10000).await);
+
+    let name = format!("delta-dissimilar-{}", random_id());
+    let ch = client
+        .channels
+        .get_with_options(&name, delta_params())
+        .unwrap();
+    let (_id, mut rx) = ch.subscribe();
+    assert!(await_channel_state(&ch, ChannelState::Attached, 10000).await);
+
+    // Completely dissimilar 1KB random payloads: the server should send full
+    // messages (no useful delta). Whichever it chooses, decoding must succeed
+    // and no recovery reattach must occur.
+    let mut payloads = Vec::new();
+    for _ in 0..5 {
+        let mut buf = vec![0u8; 1024];
+        rand::thread_rng().fill_bytes(&mut buf);
+        payloads.push(buf);
+    }
+    for (i, p) in payloads.iter().enumerate() {
+        ch.publish()
+            .name(&i.to_string())
+            .binary(p.clone())
+            .send()
+            .await
+            .unwrap();
+    }
+    let mut got = Vec::new();
+    for _ in 0..payloads.len() {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(15), rx.recv())
+            .await
+            .expect("message within 15s")
+            .unwrap();
+        got.push(msg);
+    }
+    assert_eq!(
+        ch.state(),
+        ChannelState::Attached,
+        "no decode-failure reattach"
+    );
+    for (i, p) in payloads.iter().enumerate() {
+        assert!(
+            matches!(&got[i].data, Data::Binary(b) if b.as_ref() == p.as_slice()),
+            "payload {i} round-trips"
+        );
+    }
+    // Server behaviour is not asserted (it may or may not delta), only logged.
+    eprintln!(
+        "RTL19b: decoder called {} times for {} dissimilar messages",
+        decode_count.load(Ordering::SeqCst),
+        payloads.len()
+    );
+    client.close();
+}

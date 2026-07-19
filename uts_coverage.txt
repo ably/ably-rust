@@ -14,9 +14,9 @@
 !area objects/integration -- LiveObjects is not implemented in this SDK (out of scope)
 !area objects/unit -- LiveObjects is not implemented in this SDK (out of scope)
 
-realtime/integration/PC3/delta-decode-end-to-end-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
-realtime/integration/PC3/no-deltas-without-param-1 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
-realtime/integration/PC3/no-plugin-causes-failed-2 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/integration/PC3/delta-decode-end-to-end-0 => pc3_delta_decode_end_to_end
+realtime/integration/PC3/no-deltas-without-param-1 => pc3_no_deltas_without_param
+realtime/integration/PC3/no-plugin-causes-failed-2 !! N/A: vcdiff decoder is bundled, never absent (no 40019 state)
 realtime/integration/RSA4b/token-renewal-on-expiry-0 => rsa4b_token_renewal_on_expiry
 realtime/integration/RSA7/matching-clientid-succeeds-0 => rsa8_rsa9_rsa7_token_auth_connect
 realtime/integration/RSA7/mismatched-clientid-fails-1 => rsa7_mismatched_client_id_fails
@@ -31,9 +31,9 @@ realtime/integration/RTC8a/in-band-reauth-connected-0 => rtc8_authorize_live
 realtime/integration/RTC8c/authorize-initiates-connection-0 => rtc8_authorize_live
 realtime/integration/RTL10d/history-cross-client-0 => rtl10d_history_cross_client
 realtime/integration/RTL14/insufficient-capability-failed-0 => rtl14_insufficient_capability_publish_fails
-realtime/integration/RTL18/recovery-decode-failure-1 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
-realtime/integration/RTL18/recovery-message-id-mismatch-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
-realtime/integration/RTL19b/dissimilar-payloads-no-delta-0 !! delta/vcdiff decoding not planned (needs vcdiff plugin)
+realtime/integration/RTL18/recovery-decode-failure-1 => rtl18_recovery_after_decode_failure
+realtime/integration/RTL18/recovery-message-id-mismatch-0 !! covered by unit rtl20_mismatched_id_triggers_recovery (live mismatch needs an internal test hook)
+realtime/integration/RTL19b/dissimilar-payloads-no-delta-0 => rtl19b_dissimilar_payloads
 realtime/integration/RTL28/get-message-and-versions-0 => rtl32_rtl28_mutation_lifecycle_observed
 realtime/integration/RTL32/append-message-observed-2 => rtl32_rtl28_mutation_lifecycle_observed
 realtime/integration/RTL32/delete-message-observed-1 => rtl32_rtl28_mutation_lifecycle_observed
