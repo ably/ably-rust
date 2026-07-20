@@ -2815,10 +2815,113 @@ async fn rsl11b_url_encodes_serial() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-#[ignore = "delta/vcdiff not implemented"]
-async fn rsl6a3_vcdiff_decode() -> Result<()> {
-    Ok(())
+// RSL6a3 — msgpack ProtocolMessage binary interop fixtures.
+//
+// Despite the historical name, RSL6a3 has nothing to do with vcdiff/delta:
+// delta decoding is realtime-only (RSL6a applies deltas "in the case of a
+// realtime client"). This decodes a full msgpack-encoded `ProtocolMessage` and
+// its `Message` payload against the shared cross-SDK interop fixtures, then
+// round-trips it back through the msgpack wire form.
+//
+// UTS: rest/unit/encoding/msgpack_interop.md
+
+const MSGPACK_FIXTURES: &str =
+    include_str!("../submodules/ably-common/test-resources/msgpack_test_fixtures.json");
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MsgpackFixture {
+    name: String,
+    data: serde_json::Value,
+    num_repeat: usize,
+    #[serde(rename = "type")]
+    kind: String,
+    msgpack: String,
+}
+
+impl MsgpackFixture {
+    /// The decoded `data` the fixture's wire message is expected to yield.
+    fn expected(&self) -> crate::rest::Data {
+        use crate::rest::Data;
+        match self.kind.as_str() {
+            "string" => {
+                let s = self.data.as_str().expect("string fixture data");
+                let out = if self.num_repeat > 0 {
+                    s.repeat(self.num_repeat)
+                } else {
+                    s.to_string()
+                };
+                Data::String(out)
+            }
+            "binary" => {
+                let s = self.data.as_str().expect("binary fixture data is a string");
+                let raw = if self.num_repeat > 0 {
+                    s.repeat(self.num_repeat)
+                } else {
+                    s.to_string()
+                };
+                Data::Binary(serde_bytes::ByteBuf::from(raw.into_bytes()))
+            }
+            "jsonArray" | "jsonObject" => Data::JSON(self.data.clone()),
+            other => panic!("unknown fixture type {other}"),
+        }
+    }
+}
+
+fn msgpack_fixtures() -> Vec<MsgpackFixture> {
+    serde_json::from_str(MSGPACK_FIXTURES).expect("parse msgpack fixtures")
+}
+
+/// The fixtures carry a bespoke ProtocolMessage that holds only the `messages`
+/// array (no `action` — they exercise payload interop, not a full wire frame),
+/// so they are read through this minimal shape rather than the wire type.
+#[derive(serde::Deserialize)]
+struct FixtureProtocolMessage {
+    messages: Vec<crate::rest::Message>,
+}
+
+/// Base64-decode a fixture's msgpack ProtocolMessage, deserialize it, and
+/// decode its single message through the standard RSL6 pipeline.
+fn decode_fixture_message(f: &MsgpackFixture) -> crate::rest::Message {
+    let bytes = base64::decode(&f.msgpack).expect("base64 msgpack");
+    let pm: FixtureProtocolMessage =
+        rmp_serde::from_slice(&bytes).expect("deserialize ProtocolMessage");
+    let mut msg = pm.messages.into_iter().next().expect("one message");
+    msg.decode();
+    msg
+}
+
+#[test]
+fn rsl6a3_msgpack_fixtures_decode() {
+    for f in msgpack_fixtures() {
+        let msg = decode_fixture_message(&f);
+        assert_eq!(msg.data, f.expected(), "fixture {:?}: data", f.name);
+        assert_eq!(msg.encoding, None, "fixture {:?}: encoding consumed", f.name);
+    }
+}
+
+#[test]
+fn rsl6a3_msgpack_fixtures_round_trip() {
+    for f in msgpack_fixtures() {
+        let msg = decode_fixture_message(&f);
+        // Re-encode for the msgpack wire, wrap in a ProtocolMessage, serialize,
+        // then deserialize and decode again — the payload must survive.
+        let wire = msg.encode_for_wire(crate::rest::Format::MessagePack);
+        let mut pm = crate::protocol::ProtocolMessage::new(crate::protocol::action::MESSAGE);
+        pm.messages = Some(vec![wire]);
+        let bytes = rmp_serde::to_vec_named(&pm).expect("serialize ProtocolMessage");
+        let pm2: crate::protocol::ProtocolMessage =
+            rmp_serde::from_slice(&bytes).expect("re-deserialize ProtocolMessage");
+        let mut msg2 = pm2
+            .messages
+            .expect("ProtocolMessage.messages")
+            .into_iter()
+            .next()
+            .expect("one message");
+        msg2.decode();
+        assert_eq!(msg2.data, msg.data, "fixture {:?}: round-trip data", f.name);
+        assert_eq!(msg2.encoding, None, "fixture {:?}: round-trip encoding", f.name);
+    }
 }
 
 // -- RSN2: iterate through REST channels --
