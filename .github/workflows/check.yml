@@ -1,10 +1,10 @@
+name: Check
+
 on:
   pull_request:
   push:
     branches:
       - main
-
-name: Check
 
 jobs:
   check:
@@ -12,43 +12,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
-          submodules: 'recursive'
+          submodules: recursive
 
-      - name: Setup Rust Toolchain
-        uses: actions-rs/toolchain@v1
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
+          components: rustfmt, clippy
 
-      - name: Check Rust Version
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Rust version
         run: rustc -V
 
-      - name: cargo check
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
+      - name: Format
+        run: cargo fmt --all -- --check
 
-      - name: cargo test
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
 
-      - name: Install rustfmt
-        run: rustup component add rustfmt
-
-      - name: cargo fmt
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
-
-      - name: Install clippy
-        run: rustup component add clippy
-
-      - name: cargo clippy
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: -- -D warnings
+      # Unit suite + conformance ratchets only. The live sandbox and uts-proxy
+      # integration tests (tests_*_integration, tests_proxy*, and the network
+      # tests_realtime_uts_* modules) require network access and are run
+      # manually, not in CI.
+      - name: Test
+        run: cargo test --lib -- _unit_ design_conformance uts_coverage uts_channels_advanced
