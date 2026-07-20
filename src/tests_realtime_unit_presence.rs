@@ -40,10 +40,8 @@ use crate::options::LogLevel;
 #[allow(unused_imports)]
 use crate::presence::{LocalPresenceMap, PresenceMap};
 #[allow(unused_imports)]
-use crate::protocol::{
-    action, flags, ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionDetails,
-    ConnectionEvent, ConnectionState, ConnectionStateChange, ProtocolMessage, PublishResult,
-};
+use crate::protocol::{action, flags, ConnectionDetails, ProtocolMessage, PublishResult};
+use crate::{ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionEvent, ConnectionState, ConnectionStateChange};
 #[allow(unused_imports)]
 use crate::realtime::{Connection, Realtime, RealtimeAuth};
 #[allow(unused_imports)]
@@ -1616,7 +1614,8 @@ async fn setup_attached_channel_with_flags(
     std::sync::Arc<crate::channel::RealtimeChannel>,
 ) {
     use crate::mock_ws::{MockTransport, MockWebSocket};
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mut connected_msg = ProtocolMessage::connected("test-conn-id", "test-conn-key");
@@ -1779,7 +1778,8 @@ async fn rtp13_sync_complete_after_sync() {
 #[tokio::test]
 async fn rtp5b_attached_sends_queued_presence() {
     use crate::mock_ws::{MockTransport, MockWebSocket};
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -2539,7 +2539,8 @@ async fn rtp16a_presence_sent_when_attached() {
 #[tokio::test]
 async fn rtp16b_presence_queued_when_attaching() {
     use crate::mock_ws::{MockTransport, MockWebSocket};
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -3036,7 +3037,7 @@ async fn rtp17e_failed_reentry_emits_update() {
     let update = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             if let Ok(change) = state_rx.recv().await {
-                if change.event == crate::protocol::ChannelEvent::Update {
+                if change.event == crate::ChannelEvent::Update {
                     if let Some(ref reason) = change.reason {
                         if reason.code == Some(91004) {
                             return change;
@@ -3257,7 +3258,8 @@ async fn rtp4_50_members_enter_client_same_connection() {
 #[tokio::test]
 async fn rtp8d_enter_implicitly_attaches() {
     use crate::mock_ws::{MockTransport, MockWebSocket};
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -3279,7 +3281,7 @@ async fn rtp8d_enter_implicitly_attaches() {
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
 
     let channel = client.channels.get("test-rtp8d");
-    assert_eq!(channel.state(), crate::protocol::ChannelState::Initialized);
+    assert_eq!(channel.state(), crate::ChannelState::Initialized);
 
     // enter() on INITIALIZED channel triggers implicit attach
     let ch = channel.clone();
@@ -3287,7 +3289,7 @@ async fn rtp8d_enter_implicitly_attaches() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Channel should now be ATTACHING (implicit attach was triggered)
-    assert_eq!(channel.state(), crate::protocol::ChannelState::Attaching);
+    assert_eq!(channel.state(), crate::ChannelState::Attaching);
 
     // Complete the attach
     let conns = mock.active_connections();
@@ -3320,7 +3322,7 @@ async fn rtp8d_enter_implicitly_attaches() {
         .expect("enter should complete")
         .unwrap();
     assert!(result.is_ok(), "enter should succeed after implicit attach");
-    assert_eq!(channel.state(), crate::protocol::ChannelState::Attached);
+    assert_eq!(channel.state(), crate::ChannelState::Attached);
 }
 
 // -- RTP15e: enterClient implicitly attaches channel --
@@ -3328,7 +3330,8 @@ async fn rtp8d_enter_implicitly_attaches() {
 #[tokio::test]
 async fn rtp15e_enter_client_implicitly_attaches() {
     use crate::mock_ws::{MockTransport, MockWebSocket};
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -3348,7 +3351,7 @@ async fn rtp15e_enter_client_implicitly_attaches() {
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
 
     let channel = client.channels.get("test-rtp15e");
-    assert_eq!(channel.state(), crate::protocol::ChannelState::Initialized);
+    assert_eq!(channel.state(), crate::ChannelState::Initialized);
 
     // enterClient on INITIALIZED triggers implicit attach
     let ch = channel.clone();
@@ -3356,7 +3359,7 @@ async fn rtp15e_enter_client_implicitly_attaches() {
         tokio::spawn(async move { ch.presence().enter_client("user-1", None).await });
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    assert_eq!(channel.state(), crate::protocol::ChannelState::Attaching);
+    assert_eq!(channel.state(), crate::ChannelState::Attaching);
 
     // Complete attach
     let conns = mock.active_connections();
@@ -3392,7 +3395,7 @@ async fn rtp15e_enter_client_implicitly_attaches() {
         result.is_ok(),
         "enterClient should succeed after implicit attach"
     );
-    assert_eq!(channel.state(), crate::protocol::ChannelState::Attached);
+    assert_eq!(channel.state(), crate::ChannelState::Attached);
 }
 
 // -- RTP6d: subscribe implicitly attaches channel --
@@ -3400,7 +3403,8 @@ async fn rtp15e_enter_client_implicitly_attaches() {
 #[tokio::test]
 async fn rtp6d_subscribe_implicitly_attaches() {
     use crate::mock_ws::{MockTransport, MockWebSocket};
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -3420,7 +3424,7 @@ async fn rtp6d_subscribe_implicitly_attaches() {
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
 
     let channel = client.channels.get("test-rtp6d");
-    assert_eq!(channel.state(), crate::protocol::ChannelState::Initialized);
+    assert_eq!(channel.state(), crate::ChannelState::Initialized);
 
     // Subscribe without explicitly attaching — should trigger implicit attach
     let _sub_id = channel.presence().subscribe(|_msg| {});
@@ -3438,7 +3442,7 @@ async fn rtp6d_subscribe_implicitly_attaches() {
     });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    assert_eq!(channel.state(), crate::protocol::ChannelState::Attached);
+    assert_eq!(channel.state(), crate::ChannelState::Attached);
 }
 
 // -- RTP6e: subscribe with attachOnSubscribe=false does not attach --
@@ -3446,7 +3450,8 @@ async fn rtp6d_subscribe_implicitly_attaches() {
 #[tokio::test]
 async fn rtp6e_subscribe_attach_on_subscribe_false() {
     use crate::mock_ws::{MockTransport, MockWebSocket};
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -3475,14 +3480,14 @@ async fn rtp6e_subscribe_attach_on_subscribe_false() {
             },
         )
         .unwrap();
-    assert_eq!(channel.state(), crate::protocol::ChannelState::Initialized);
+    assert_eq!(channel.state(), crate::ChannelState::Initialized);
 
     // Subscribe — should NOT trigger implicit attach
     let _sub_id = channel.presence().subscribe(|_msg| {});
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // Channel stays INITIALIZED
-    assert_eq!(channel.state(), crate::protocol::ChannelState::Initialized);
+    assert_eq!(channel.state(), crate::ChannelState::Initialized);
 
     // Verify no ATTACH message was sent
     let attach_count = mock
@@ -3551,7 +3556,8 @@ async fn rtp7b_unsubscribe_for_specific_action() {
 #[tokio::test]
 async fn rtp11b_get_implicitly_attaches() {
     use crate::mock_ws::{MockTransport, MockWebSocket};
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -3571,7 +3577,7 @@ async fn rtp11b_get_implicitly_attaches() {
     assert!(await_state(&client.connection, ConnectionState::Connected, 5000).await);
 
     let channel = client.channels.get("test-rtp11b");
-    assert_eq!(channel.state(), crate::protocol::ChannelState::Initialized);
+    assert_eq!(channel.state(), crate::ChannelState::Initialized);
 
     // get(waitForSync: false) on INITIALIZED triggers implicit attach
     let ch = channel.clone();
@@ -3600,7 +3606,7 @@ async fn rtp11b_get_implicitly_attaches() {
         .expect("get should complete")
         .unwrap();
     assert!(result.is_ok());
-    assert_eq!(channel.state(), crate::protocol::ChannelState::Attached);
+    assert_eq!(channel.state(), crate::ChannelState::Attached);
 }
 
 // -- Deliver messages with mutable message fields --
@@ -3667,7 +3673,7 @@ async fn deliver_messages_mutable_fields_default_none() {
 // UTS: realtime/unit/presence/realtime_presence_enter.md — RTP15f
 #[tokio::test]
 async fn rtp15f_enter_client_requires_valid_client_id() {
-    use crate::protocol::{ChannelState, ConnectionState};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let (client, mock) = phase8d_setup();
@@ -3686,7 +3692,8 @@ async fn rtp15f_enter_client_requires_valid_client_id() {
 #[tokio::test]
 async fn rtp15f_enter_client_mismatched_client_id_errors() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {

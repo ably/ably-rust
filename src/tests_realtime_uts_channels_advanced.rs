@@ -13,9 +13,8 @@ use crate::channel::{DeriveOptions, MessageFilter, RealtimeChannelOptions};
 use crate::error::ErrorInfo;
 use crate::mock_ws::{MockTransport, MockWebSocket};
 use crate::options::ClientOptions;
-use crate::protocol::{
-    action, ChannelEvent, ChannelMode, ChannelState, ConnectionState, ProtocolMessage,
-};
+use crate::protocol::{action, ProtocolMessage};
+use crate::{ChannelEvent, ChannelMode, ChannelState, ConnectionState};
 use crate::realtime::{await_channel_state, await_state, Realtime};
 
 fn connected_msg(id: &str, key: &str) -> ProtocolMessage {

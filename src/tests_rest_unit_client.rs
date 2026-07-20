@@ -40,10 +40,8 @@ use crate::options::LogLevel;
 #[allow(unused_imports)]
 use crate::presence::{LocalPresenceMap, PresenceMap};
 #[allow(unused_imports)]
-use crate::protocol::{
-    action, flags, ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionDetails,
-    ConnectionEvent, ConnectionState, ConnectionStateChange, ProtocolMessage, PublishResult,
-};
+use crate::protocol::{action, flags, ConnectionDetails, ProtocolMessage, PublishResult};
+use crate::{ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionEvent, ConnectionState, ConnectionStateChange};
 #[allow(unused_imports)]
 use crate::realtime::{Connection, Realtime, RealtimeAuth};
 #[allow(unused_imports)]

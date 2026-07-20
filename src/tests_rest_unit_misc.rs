@@ -40,10 +40,8 @@ use crate::options::LogLevel;
 #[allow(unused_imports)]
 use crate::presence::{LocalPresenceMap, PresenceMap};
 #[allow(unused_imports)]
-use crate::protocol::{
-    action, flags, ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionDetails,
-    ConnectionEvent, ConnectionState, ConnectionStateChange, ProtocolMessage, PublishResult,
-};
+use crate::protocol::{action, flags, ConnectionDetails, ProtocolMessage, PublishResult};
+use crate::{ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionEvent, ConnectionState, ConnectionStateChange};
 #[allow(unused_imports)]
 use crate::realtime::{Connection, Realtime, RealtimeAuth};
 #[allow(unused_imports)]
@@ -224,7 +222,7 @@ fn tb2c_channel_options_with_params() {
 fn tb2d_channel_options_with_modes() {
     // TB2d: ChannelOptions with modes
     use crate::channel::RealtimeChannelOptions;
-    use crate::protocol::ChannelMode;
+    use crate::ChannelMode;
 
     let options = RealtimeChannelOptions {
         modes: Some(vec![ChannelMode::Publish, ChannelMode::Subscribe]),

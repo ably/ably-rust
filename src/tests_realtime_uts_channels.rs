@@ -15,7 +15,8 @@ use crate::channel::RealtimeChannelOptions;
 use crate::error::ErrorInfo;
 use crate::mock_ws::{MockTransport, MockWebSocket};
 use crate::options::ClientOptions;
-use crate::protocol::{action, flags, ChannelMode, ChannelState, ConnectionState, ProtocolMessage};
+use crate::protocol::{action, flags, ProtocolMessage};
+use crate::{ChannelMode, ChannelState, ConnectionState};
 use crate::realtime::{await_state, Realtime};
 
 fn connected_msg(id: &str, key: &str) -> ProtocolMessage {
@@ -887,12 +888,12 @@ async fn rtl3e_disconnected_leaves_channels_untouched() {
 // suppresses it (RTL12); never a duplicate state event
 #[tokio::test]
 async fn rtl2g_update_event_and_no_duplicates() {
-    use crate::protocol::ChannelEvent;
+    use crate::ChannelEvent;
     let (mock, client) = auto_serving_client();
     connect(&client).await;
     let ch = attached_channel(&mock, &client, "updates").await;
 
-    let events: Arc<StdMutex<Vec<crate::protocol::ChannelStateChange>>> =
+    let events: Arc<StdMutex<Vec<crate::ChannelStateChange>>> =
         Arc::new(StdMutex::new(Vec::new()));
     let events_c = events.clone();
     let mut rx = ch.on_state_change();

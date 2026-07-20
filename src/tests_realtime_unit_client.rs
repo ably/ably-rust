@@ -40,10 +40,8 @@ use crate::options::LogLevel;
 #[allow(unused_imports)]
 use crate::presence::{LocalPresenceMap, PresenceMap};
 #[allow(unused_imports)]
-use crate::protocol::{
-    action, flags, ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionDetails,
-    ConnectionEvent, ConnectionState, ConnectionStateChange, ProtocolMessage, PublishResult,
-};
+use crate::protocol::{action, flags, ConnectionDetails, ProtocolMessage, PublishResult};
+use crate::{ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionEvent, ConnectionState, ConnectionStateChange};
 #[allow(unused_imports)]
 use crate::realtime::{Connection, Realtime, RealtimeAuth};
 #[allow(unused_imports)]
@@ -198,7 +196,7 @@ impl crate::auth::AuthCallback for TestAuthCallback {
 #[tokio::test]
 async fn rtc2_connection_attribute() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ConnectionState;
+    use crate::ConnectionState;
     use crate::realtime::Realtime;
 
     let mock = MockWebSocket::new();
@@ -224,7 +222,8 @@ async fn rtc2_connection_attribute() {
 #[tokio::test]
 async fn rtc15_connect_proxies_to_connection() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -453,7 +452,8 @@ async fn rtc1f1_transport_params_override_defaults() {
 #[tokio::test]
 async fn rtc7_disconnected_retry_timeout_controls_delay() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -544,7 +544,8 @@ async fn rtc7_default_timeouts() {
 async fn rtc8a_authorize_on_connected_sends_auth_message() {
     // RTC8a: authorize() on CONNECTED obtains a new token and sends AUTH.
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
@@ -604,7 +605,8 @@ async fn rtc8a_authorize_on_connected_sends_auth_message() {
 async fn rtc8a1_successful_reauth_emits_update_event() {
     // RTC8a1: Successful reauth emits UPDATE event and updates connection details.
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionDetails, ConnectionEvent, ConnectionState, ProtocolMessage};
+    use crate::protocol::{ConnectionDetails, ProtocolMessage};
+    use crate::{ConnectionEvent, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
@@ -677,7 +679,8 @@ async fn rtc8a2_failed_reauth_transitions_to_failed() {
     // RTC8a2: Failed reauth (e.g., incompatible clientId) transitions to FAILED.
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
@@ -730,7 +733,8 @@ async fn rtc8a2_failed_reauth_transitions_to_failed() {
 async fn rtc8a3_authorize_completes_only_after_server_response() {
     // RTC8a3: authorize() does not resolve until server responds.
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
@@ -797,7 +801,8 @@ async fn rtc8a3_authorize_completes_only_after_server_response() {
 async fn rtc8c_authorize_from_initialized_initiates_connection() {
     // RTC8c: authorize() from non-connected states initiates connection.
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::Realtime;
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
@@ -830,7 +835,8 @@ async fn rtc8c_authorize_from_failed_recovers() {
     // RTC8c: authorize() from FAILED state recovers the connection.
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
@@ -881,7 +887,8 @@ async fn rtc8c_authorize_from_failed_recovers() {
 async fn rtc7_realtime_request_timeout_applied_to_attach() {
     // RTC7: Custom realtimeRequestTimeout applied to attach
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending: PendingConnection| {
@@ -917,7 +924,8 @@ async fn rtc7_realtime_request_timeout_applied_to_attach() {
 async fn rtc7_realtime_request_timeout_applied_to_detach() {
     // RTC7: Custom realtimeRequestTimeout applied to detach
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTC7-detach";
@@ -1047,7 +1055,8 @@ fn rtc12_constructor_detects_key_vs_token() {
 // Spec: Realtime exposes a push attribute (delegating to REST Push).
 #[tokio::test]
 async fn rtc13_push_attribute() {
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::await_state;
 
     let (client, _mock) = phase8d_setup();
@@ -1102,7 +1111,7 @@ async fn rtc1b_realtime_internal_state() {
 #[tokio::test]
 async fn rtc1c_lifecycle_initialized_to_connecting() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ConnectionState;
+    use crate::ConnectionState;
 
     let mock = MockWebSocket::new();
     let transport = std::sync::Arc::new(crate::mock_ws::MockTransport::new(mock.inner()));
@@ -1164,7 +1173,8 @@ async fn rtc4_auth_attribute() {
 #[tokio::test]
 async fn rtc8b_authorize_while_connecting() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::{
         atomic::{AtomicU32, Ordering},
@@ -1231,7 +1241,8 @@ async fn rtc8b_authorize_while_connecting() {
 async fn rtc8b1_authorize_while_connecting_on_failed() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::{
         atomic::{AtomicU32, Ordering},
@@ -1366,7 +1377,7 @@ async fn rtc1a_realtime_constructor_with_options() {
 #[tokio::test]
 async fn rtc1b_auto_connect_false() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ConnectionState;
+    use crate::ConnectionState;
     use crate::realtime::Realtime;
 
     let mock = MockWebSocket::new();
@@ -1385,7 +1396,8 @@ async fn rtc1b_auto_connect_false() {
 #[tokio::test]
 async fn rtc1b_explicit_connect() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -1413,7 +1425,8 @@ async fn rtc1c_invalid_recovery_key() {
     // or the server to reject it. The client should still connect (without
     // recovery).
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -1491,7 +1504,8 @@ async fn rtc1f_transport_params_stringified() {
 #[tokio::test]
 async fn rtc5_close_behavior() {
     // RTC5: close() transitions from CONNECTED to CLOSED.
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::await_state;
 
     let (client, _mock) = phase8d_setup();
@@ -1505,7 +1519,8 @@ async fn rtc5_close_behavior() {
 #[tokio::test]
 async fn rtc5_close_channels_detached() {
     // RTC5: When close() is called, all attached channels should detach.
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let (client, mock) = phase8d_setup();
@@ -1622,7 +1637,7 @@ async fn rtc13_realtime_push() -> Result<()> {
 #[tokio::test]
 async fn rtc2_connection_attribute_depth() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ConnectionState;
+    use crate::ConnectionState;
     use crate::realtime::Realtime;
 
     let mock = MockWebSocket::new();
@@ -1667,7 +1682,8 @@ async fn rtc_channels_attribute_depth() {
 #[tokio::test]
 async fn rsa4c2_callback_error_during_connecting_goes_disconnected() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
@@ -1695,7 +1711,8 @@ async fn rsa4c2_callback_error_during_connecting_goes_disconnected() {
 #[tokio::test]
 async fn rsa4c3_callback_error_while_connected_stays_connected() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
@@ -1735,7 +1752,8 @@ async fn rsa4c3_callback_error_while_connected_stays_connected() {
 #[tokio::test]
 async fn rsa4d_callback_403_during_connecting_goes_failed() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
@@ -1763,7 +1781,8 @@ async fn rsa4d_callback_403_during_connecting_goes_failed() {
 #[tokio::test]
 async fn rsa4d_callback_403_during_reauth_goes_failed() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("token"));

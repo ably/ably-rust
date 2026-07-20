@@ -12,7 +12,7 @@ use crate::channel::Channels;
 use crate::connection::{spawn_connection_loop, Command, ConnectionSnapshot, LoopInput};
 use crate::error::{ErrorCode, ErrorInfo, Result};
 use crate::options::ClientOptions;
-use crate::protocol::{ConnectionEvent, ConnectionState, ConnectionStateChange};
+use crate::{ConnectionEvent, ConnectionState, ConnectionStateChange};
 use crate::rest::{Push, Rest};
 use crate::transport::Transport;
 
@@ -371,7 +371,7 @@ pub(crate) async fn await_state(
 #[cfg(test)]
 pub(crate) async fn await_channel_state(
     channel: &Arc<crate::channel::RealtimeChannel>,
-    target: crate::protocol::ChannelState,
+    target: crate::ChannelState,
     timeout_ms: u64,
 ) -> bool {
     let mut rx = channel.snapshot_rx.clone();

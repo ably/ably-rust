@@ -40,10 +40,8 @@ use crate::options::LogLevel;
 #[allow(unused_imports)]
 use crate::presence::{LocalPresenceMap, PresenceMap};
 #[allow(unused_imports)]
-use crate::protocol::{
-    action, flags, ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionDetails,
-    ConnectionEvent, ConnectionState, ConnectionStateChange, ProtocolMessage, PublishResult,
-};
+use crate::protocol::{action, flags, ConnectionDetails, ProtocolMessage, PublishResult};
+use crate::{ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionEvent, ConnectionState, ConnectionStateChange};
 #[allow(unused_imports)]
 use crate::realtime::{Connection, Realtime, RealtimeAuth};
 #[allow(unused_imports)]
@@ -274,7 +272,8 @@ impl crate::auth::AuthCallback for TestAuthCallback {
 #[tokio::test]
 async fn rtn25_error_reason_set_on_failed() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -319,7 +318,7 @@ async fn rtn25_error_reason_set_on_failed() {
 #[tokio::test]
 async fn rtn25_error_reason_on_disconnected() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ConnectionState;
+    use crate::ConnectionState;
     use crate::realtime::{await_state, Realtime};
 
     // Connection refused → DISCONNECTED with error
@@ -353,7 +352,8 @@ async fn rtn25_error_reason_on_disconnected() {
 #[tokio::test]
 async fn rtn4_state_change_events() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::{Arc, Mutex};
 
@@ -417,7 +417,8 @@ async fn rtn4_state_change_events() {
 async fn rtn14a_invalid_key_causes_failed() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -454,7 +455,8 @@ async fn rtn14a_invalid_key_causes_failed() {
 #[tokio::test]
 async fn rtn14d_retry_after_recoverable_failure() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -491,7 +493,8 @@ async fn rtn14d_retry_after_recoverable_failure() {
 async fn rtn14g_error_empty_channel_causes_failed() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -526,7 +529,8 @@ async fn rtn14g_error_empty_channel_causes_failed() {
 #[tokio::test]
 async fn rtn15a_unexpected_disconnect_triggers_reconnect() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -575,7 +579,8 @@ async fn rtn15a_unexpected_disconnect_triggers_reconnect() {
 #[tokio::test]
 async fn rtn15b_c6_successful_resume() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -643,7 +648,8 @@ async fn rtn15b_c6_successful_resume() {
 async fn rtn15c7_failed_resume_new_connection_id() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -707,7 +713,8 @@ async fn rtn15c7_failed_resume_new_connection_id() {
 async fn rtn15j_error_empty_channel_while_connected() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -751,7 +758,8 @@ async fn rtn15j_error_empty_channel_while_connected() {
 async fn rtn15h1_token_error_no_renewal() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -799,7 +807,8 @@ async fn rtn15h1_token_error_no_renewal() {
 async fn rtn15c4_fatal_error_during_resume() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -853,7 +862,8 @@ async fn rtn15c4_fatal_error_during_resume() {
 #[tokio::test]
 async fn rtn24_connected_while_connected_emits_update() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionEvent, ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionEvent, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -903,7 +913,8 @@ async fn rtn24_connected_while_connected_emits_update() {
 async fn rtn24_update_event_with_error_reason() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionEvent, ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionEvent, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -954,7 +965,8 @@ async fn rtn24_update_event_with_error_reason() {
 #[tokio::test]
 async fn rtn25_error_reason_cleared_on_success() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -998,7 +1010,8 @@ async fn rtn25_error_reason_cleared_on_success() {
 async fn rtn25_error_reason_in_state_change_events() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -1047,7 +1060,8 @@ async fn rtn25_error_reason_in_state_change_events() {
 #[tokio::test]
 async fn rtn13a_ping_sends_heartbeat() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -1115,7 +1129,8 @@ async fn rtn13b_ping_error_in_initialized() {
 async fn rtn13b_ping_error_in_failed() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -1148,7 +1163,8 @@ async fn rtn13b_ping_error_in_failed() {
 #[tokio::test]
 async fn rtn14e_disconnected_to_suspended_after_ttl() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -1203,7 +1219,8 @@ async fn rtn14e_disconnected_to_suspended_after_ttl() {
 #[tokio::test]
 async fn rtn15g_no_resume_after_ttl_expiry() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -1283,7 +1300,8 @@ async fn rtn15g_no_resume_after_ttl_expiry() {
 #[tokio::test]
 async fn rtn14f_suspended_retries_indefinitely() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -1348,7 +1366,8 @@ async fn rtn14f_suspended_retries_indefinitely() {
 #[tokio::test]
 async fn rtn23a_heartbeats_true_in_url() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::{Arc, Mutex};
 
@@ -1388,7 +1407,8 @@ async fn rtn23a_heartbeats_true_in_url() {
 #[tokio::test]
 async fn rtn23a_continuous_activity_keeps_alive() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -1436,7 +1456,8 @@ async fn rtn23a_continuous_activity_keeps_alive() {
 #[tokio::test]
 async fn rtn17i_always_try_primary_first() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1493,7 +1514,8 @@ async fn rtn17i_always_try_primary_first() {
 #[tokio::test]
 async fn rtn17f_connection_refused_triggers_fallback() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1541,7 +1563,8 @@ async fn rtn17f_connection_refused_triggers_fallback() {
 async fn rtn17f1_5xx_disconnected_triggers_fallback() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1599,7 +1622,7 @@ async fn rtn17f1_5xx_disconnected_triggers_fallback() {
 #[tokio::test]
 async fn rtn17g_empty_fallback_set_no_retry() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ConnectionState;
+    use crate::ConnectionState;
     use crate::realtime::{await_state, Realtime};
     use std::sync::{Arc, Mutex};
 
@@ -1640,7 +1663,8 @@ async fn rtn17g_empty_fallback_set_no_retry() {
 #[tokio::test]
 async fn rtn17h_fallback_domains_from_default_set() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1701,7 +1725,8 @@ async fn rtn2e_token_obtained_before_connection() {
     // BEFORE opening the WebSocket connection. The token is included in the
     // WebSocket URL as the accessToken query parameter.
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("callback-token"));
@@ -1736,7 +1761,8 @@ async fn rtn2e_token_obtained_before_connection() {
 async fn rtn2e_auth_callback_error_prevents_connection() {
     // RTN2e: If authCallback fails, no WebSocket connection should be attempted.
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
@@ -1769,7 +1795,8 @@ async fn rtn2e_auth_callback_error_prevents_connection() {
 async fn rtn2e_auth_callback_receives_client_id() {
     // RTN2e / RSA12a: authCallback receives TokenParams with configured clientId.
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
@@ -1801,7 +1828,8 @@ async fn rtn2e_auth_callback_receives_client_id() {
 async fn rtn22_server_auth_triggers_reauth() {
     // RTN22: Server sends AUTH, client obtains new token and sends AUTH back.
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionEvent, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionEvent, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("token"));
@@ -1869,7 +1897,8 @@ async fn rtn22_server_auth_triggers_reauth() {
 async fn rtn22_connection_stays_connected_during_reauth() {
     // RTN22: Connection remains CONNECTED during server-initiated reauth.
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionEvent, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionEvent, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("reauth-token"));
@@ -1927,7 +1956,8 @@ async fn rtn22_connection_stays_connected_during_reauth() {
 #[tokio::test]
 async fn rtn14b_token_renewal_fails_goes_disconnected() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     // First call succeeds (initial token), second call fails (renewal)
@@ -1976,7 +2006,8 @@ async fn rtn14b_token_renewal_fails_goes_disconnected() {
 #[tokio::test]
 async fn rtn15c5_recovery_with_expired_connection_error() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
 
     let mock = MockWebSocket::with_handler(|pending| {
         pending.respond_with_success(ProtocolMessage::connected(
@@ -2002,7 +2033,8 @@ async fn rtn15c5_recovery_with_expired_connection_error() {
 #[tokio::test]
 async fn rtn15e_token_error_no_renewal_means() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
 
     let mock = MockWebSocket::with_handler(|pending| {
         let mut msg = ProtocolMessage::new(crate::protocol::action::ERROR);
@@ -2037,7 +2069,8 @@ async fn rtn15e_token_error_no_renewal_means() {
 #[tokio::test]
 async fn rtn13c_ping_timeout_when_no_heartbeat_response() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
 
     let mock = MockWebSocket::with_handler(|pending| {
         pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
@@ -2066,7 +2099,8 @@ async fn rtn13c_ping_timeout_when_no_heartbeat_response() {
 #[tokio::test]
 async fn rtn13e_heartbeat_includes_random_id() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
 
     let mock = MockWebSocket::with_handler(|pending| {
         pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
@@ -2106,7 +2140,8 @@ async fn rtn13e_heartbeat_includes_random_id() {
 #[tokio::test]
 async fn rtn17e_http_uses_same_fallback_as_realtime() -> Result<()> {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::await_state;
 
     let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2158,7 +2193,8 @@ async fn rtn17e_http_uses_same_fallback_as_realtime() -> Result<()> {
 #[tokio::test]
 async fn rtn17j_fallback_hosts_random_order() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::{
         atomic::{AtomicU32, Ordering},
@@ -2325,7 +2361,8 @@ async fn rec3b_custom_connectivity_check_url() {
 async fn rtn17j_connectivity_check_before_fallback() {
     use crate::mock_http::{MockHttpClient, MockResponse};
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::{
         atomic::{AtomicU32, Ordering},
@@ -2379,7 +2416,7 @@ async fn rtn17j_connectivity_check_before_fallback() {
 async fn rtn17j_no_internet_skips_fallback() {
     use crate::mock_http::{MockHttpClient, MockResponse};
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ConnectionState;
+    use crate::ConnectionState;
     use crate::realtime::{await_state, Realtime};
     use std::sync::{
         atomic::{AtomicU32, Ordering},
@@ -2412,7 +2449,8 @@ async fn rtn17j_no_internet_skips_fallback() {
 #[tokio::test]
 async fn rtn23b_heartbeat_timeout_calculation() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
 
     let mut connected_msg = ProtocolMessage::connected("conn-id", "conn-key");
     connected_msg.connection_details = Some(crate::protocol::ConnectionDetails {
@@ -2448,7 +2486,8 @@ async fn rtn23b_heartbeat_timeout_calculation() {
 #[tokio::test]
 async fn rtn7d_rtn7e_connection_retry_behavior() -> Result<()> {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::await_state;
 
     let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2536,7 +2575,8 @@ async fn rtn7d_rtn7e_connection_retry_behavior() -> Result<()> {
 #[tokio::test]
 async fn rtn7e_pending_publishes_fail_on_suspended() -> Result<()> {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::await_state;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -2598,7 +2638,7 @@ async fn rtn7e_pending_publishes_fail_on_suspended() -> Result<()> {
 #[tokio::test]
 async fn rtn13c_ping_from_connecting_rejects() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ConnectionState;
+    use crate::ConnectionState;
 
     // RTN13d: SDK waits for CONNECTED when CONNECTING, so ping blocks.
     // Verify that the state is CONNECTING (the SDK's documented behavior
@@ -2622,7 +2662,8 @@ async fn rtn13c_ping_from_connecting_rejects() {
 #[tokio::test]
 async fn rtn13e_heartbeat_id() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
 
     let mock = MockWebSocket::with_handler(|pending| {
         pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
@@ -2673,7 +2714,8 @@ async fn rtn13e_heartbeat_id() {
 #[tokio::test]
 async fn rtn13e_concurrent_pings() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
 
     let mock = MockWebSocket::with_handler(|pending| {
         pending.respond_with_success(ProtocolMessage::connected("conn-id", "conn-key"));
@@ -2714,7 +2756,8 @@ async fn rtn13e_concurrent_pings() {
 async fn rtn14a_invalid_api_key_causes_failed() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -2749,7 +2792,8 @@ async fn rtn14a_invalid_api_key_causes_failed() {
 async fn rtn14b_token_renewal_failure_disconnected() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let callback = std::sync::Arc::new(TestAuthCallback::new("token").with_ttl(3600000));
@@ -2796,7 +2840,8 @@ async fn rtn14b_token_renewal_failure_disconnected() {
 async fn rtn14g_server_error_failed() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -2838,7 +2883,8 @@ async fn rtn14g_server_error_failed() {
 #[tokio::test]
 async fn rtn15g_no_resume_after_connection_state_ttl() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
@@ -2895,7 +2941,8 @@ async fn rtn15g_no_resume_after_connection_state_ttl() {
 #[tokio::test]
 async fn rtn15h2_token_renewal_failure_disconnected() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::await_state;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -2970,7 +3017,8 @@ async fn rtn15h2_token_renewal_failure_disconnected() {
 #[tokio::test]
 async fn rtn23b_heartbeat_ping_frame() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -3016,7 +3064,8 @@ async fn rtn23b_heartbeat_ping_frame() {
 #[tokio::test]
 async fn rtn23b_heartbeat_protocol_message() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -3057,7 +3106,7 @@ async fn rtn23b_heartbeat_protocol_message() {
 #[tokio::test]
 async fn rtn23b_heartbeat_during_connecting() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ConnectionState;
+    use crate::ConnectionState;
     use crate::realtime::Realtime;
 
     // Mock that never responds — stays in CONNECTING
@@ -3092,7 +3141,8 @@ async fn rtn23b_heartbeat_during_connecting() {
 #[tokio::test]
 async fn rtn23b_heartbeat_interval_calculation() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     // maxIdleInterval = 15000, realtimeRequestTimeout = 10000
@@ -3137,7 +3187,8 @@ async fn rtn23b_heartbeat_interval_calculation() {
 #[tokio::test]
 async fn rtn24_update_event_connection_details() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionEvent, ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionEvent, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -3184,7 +3235,8 @@ async fn rtn24_update_event_connection_details() {
 #[tokio::test]
 async fn rtn24_update_event_no_duplicate() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionEvent, ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionEvent, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -3232,7 +3284,8 @@ async fn rtn24_update_event_no_duplicate() {
 #[tokio::test]
 async fn rtn25_error_reason_suspended() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -3281,7 +3334,8 @@ async fn rtn25_error_reason_suspended() {
 #[tokio::test]
 async fn rtn25_error_reason_cleared() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -3326,7 +3380,8 @@ async fn rtn25_error_reason_cleared() {
 async fn rtn25_connection_state_change_reason() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -3377,7 +3432,8 @@ async fn rtn25_connection_state_change_reason() {
 #[tokio::test]
 async fn rtn8c_id_key_null_in_suspended() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -3485,7 +3541,7 @@ async fn rtn25_error_reason_initially_none_depth() {
 #[tokio::test]
 async fn rtn_connection_state_initialized_depth() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ConnectionState;
+    use crate::ConnectionState;
     use crate::realtime::Realtime;
 
     let mock = MockWebSocket::new();
@@ -3505,7 +3561,8 @@ async fn rtn_connection_state_initialized_depth() {
 #[tokio::test]
 async fn rtn_connected_sets_id_and_key_depth() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {

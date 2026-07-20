@@ -1,16 +1,64 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::crypto::CipherParams;
 use crate::error::{ErrorInfo, Result};
 use crate::http::PaginatedResult;
-use crate::protocol::{ChannelEvent, ChannelMode, ChannelState, ChannelStateChange};
 use crate::rest::{
     Annotation, Message, MessageOperation, PresenceAction, PresenceMessage, UpdateDeleteResult,
 };
+
+// --- Channel state model (public API, re-exported via lib.rs) ---
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ChannelState {
+    #[default]
+    Initialized,
+    Attaching,
+    Attached,
+    Detaching,
+    Detached,
+    Suspended,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChannelEvent {
+    Initialized,
+    Attaching,
+    Attached,
+    Detaching,
+    Detached,
+    Suspended,
+    Failed,
+    Update,
+}
+
+#[derive(Clone, Debug)]
+pub struct ChannelStateChange {
+    pub previous: ChannelState,
+    pub current: ChannelState,
+    pub event: ChannelEvent,
+    pub reason: Option<ErrorInfo>,
+    pub resumed: bool,
+    pub has_backlog: bool,
+    /// RTL13b/RTB1: when SUSPENDED with a scheduled reattach retry, the
+    /// delay until that retry.
+    pub retry_in: Option<std::time::Duration>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ChannelMode {
+    Presence,
+    Publish,
+    Subscribe,
+    PresenceSubscribe,
+    AnnotationPublish,
+    AnnotationSubscribe,
+}
 
 // --- Channels collection ---
 
@@ -1156,7 +1204,7 @@ impl<'a> RealtimeAnnotations<'a> {
             let has_mode = snapshot
                 .modes
                 .as_ref()
-                .map(|m| m.contains(&crate::protocol::ChannelMode::AnnotationSubscribe))
+                .map(|m| m.contains(&ChannelMode::AnnotationSubscribe))
                 .unwrap_or(false);
             if !has_mode {
                 self.channel.rest.inner.opts.log(

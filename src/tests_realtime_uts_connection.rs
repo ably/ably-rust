@@ -17,7 +17,8 @@ use std::sync::{Arc, Mutex as StdMutex};
 use crate::error::ErrorInfo;
 use crate::mock_ws::{MockTransport, MockWebSocket};
 use crate::options::ClientOptions;
-use crate::protocol::{action, ConnectionState, ConnectionStateChange, ProtocolMessage};
+use crate::protocol::{action, ProtocolMessage};
+use crate::{ConnectionState, ConnectionStateChange};
 use crate::realtime::{await_state, Realtime};
 
 fn connected_msg(id: &str, key: &str) -> ProtocolMessage {
@@ -544,7 +545,7 @@ async fn rtn4h_additional_connected_emits_update() {
         .await
         .expect("update event within 2s")
         .expect("event stream open");
-    assert_eq!(change.event, crate::protocol::ConnectionEvent::Update);
+    assert_eq!(change.event, crate::ConnectionEvent::Update);
     assert_eq!(change.current, ConnectionState::Connected);
     assert_eq!(client.connection.state(), ConnectionState::Connected);
     assert_eq!(client.connection.id().as_deref(), Some("second-id"));
@@ -1534,7 +1535,7 @@ async fn rtn22_server_auth_triggers_reauth() {
         let snapshot = changes.lock().unwrap().clone();
         if snapshot
             .iter()
-            .any(|c| c.event == crate::protocol::ConnectionEvent::Update)
+            .any(|c| c.event == crate::ConnectionEvent::Update)
         {
             // The connection never left CONNECTED
             assert!(
@@ -1892,7 +1893,7 @@ async fn rtc8a1_successful_reauth_update_event() {
     while let Ok(change) = events.try_recv() {
         assert_eq!(
             change.event,
-            crate::protocol::ConnectionEvent::Update,
+            crate::ConnectionEvent::Update,
             "RTN4h: UPDATE only"
         );
         assert_eq!(change.previous, ConnectionState::Connected);
@@ -1950,7 +1951,7 @@ async fn rtc8a1_capability_downgrade_channel_failed() {
     mock.active_connection().send_to_client(chan_err);
 
     assert!(
-        crate::realtime::await_channel_state(&ch, crate::protocol::ChannelState::Failed, 5000)
+        crate::realtime::await_channel_state(&ch, crate::ChannelState::Failed, 5000)
             .await
     );
     assert_eq!(ch.error_reason().and_then(|e| e.code), Some(40160));
@@ -2668,7 +2669,7 @@ async fn rtn16j_recover_seeds_channel_serials() {
             tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
         }
         // RTN16i: instantiated but NOT attached
-        assert_eq!(ch.state(), crate::protocol::ChannelState::Initialized);
+        assert_eq!(ch.state(), crate::ChannelState::Initialized);
     }
 
     // The first ATTACH after recovery carries the recovered serial (RTL4c1)

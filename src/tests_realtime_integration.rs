@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use crate::auth::{AuthCallback, AuthToken, TokenParams};
 use crate::options::ClientOptions;
-use crate::protocol::{ChannelState, ConnectionState};
+use crate::{ChannelState, ConnectionState};
 use crate::realtime::{await_channel_state, await_state, Realtime};
 use crate::rest::{Data, PresenceAction};
 use crate::tests_rest_integration::{get_sandbox, random_id, SandboxApp};
@@ -664,10 +664,10 @@ async fn rtan_annotations_live() {
             &name,
             crate::channel::RealtimeChannelOptions {
                 modes: Some(vec![
-                    crate::protocol::ChannelMode::Publish,
-                    crate::protocol::ChannelMode::Subscribe,
-                    crate::protocol::ChannelMode::AnnotationPublish,
-                    crate::protocol::ChannelMode::AnnotationSubscribe,
+                    crate::ChannelMode::Publish,
+                    crate::ChannelMode::Subscribe,
+                    crate::ChannelMode::AnnotationPublish,
+                    crate::ChannelMode::AnnotationSubscribe,
                 ]),
                 ..Default::default()
             },

@@ -31,7 +31,7 @@ pub mod http;
 pub(crate) mod http_client;
 pub mod options;
 pub(crate) mod presence;
-pub mod protocol;
+pub(crate) mod protocol;
 pub mod rest;
 pub mod stats;
 mod token_request;
@@ -54,10 +54,8 @@ pub(crate) mod proxy;
 // Crate re-exports
 pub use error::{ErrorCode, ErrorInfo, Result};
 pub use options::ClientOptions;
-pub use protocol::{
-    ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionEvent, ConnectionState,
-    ConnectionStateChange,
-};
+pub use channel::{ChannelEvent, ChannelMode, ChannelState, ChannelStateChange};
+pub use connection::{ConnectionEvent, ConnectionState, ConnectionStateChange};
 pub use rest::{Annotation, AnnotationAction, MessageAction};
 pub use rest::{Data, Extras, Message, PresenceAction, PresenceMessage, Rest};
 

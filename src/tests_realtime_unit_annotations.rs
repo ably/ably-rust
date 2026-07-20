@@ -40,10 +40,8 @@ use crate::options::LogLevel;
 #[allow(unused_imports)]
 use crate::presence::{LocalPresenceMap, PresenceMap};
 #[allow(unused_imports)]
-use crate::protocol::{
-    action, flags, ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionDetails,
-    ConnectionEvent, ConnectionState, ConnectionStateChange, ProtocolMessage, PublishResult,
-};
+use crate::protocol::{action, flags, ConnectionDetails, ProtocolMessage, PublishResult};
+use crate::{ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionEvent, ConnectionState, ConnectionStateChange};
 #[allow(unused_imports)]
 use crate::realtime::{Connection, Realtime, RealtimeAuth};
 #[allow(unused_imports)]
@@ -83,7 +81,8 @@ async fn setup_attached_channel_with_flags(
     std::sync::Arc<crate::channel::RealtimeChannel>,
 ) {
     use crate::mock_ws::{MockTransport, MockWebSocket};
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mut connected_msg = ProtocolMessage::connected("test-conn-id", "test-conn-key");
@@ -389,7 +388,8 @@ async fn rtan3a_rest_annotations_get_request() -> Result<()> {
 // Spec: Warn when subscribing to annotations without ANNOTATION_SUBSCRIBE mode.
 #[tokio::test]
 async fn rtan4e_annotation_subscribe_without_mode_warning() -> Result<()> {
-    use crate::protocol::{action, flags, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, flags, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -445,7 +445,8 @@ async fn rtan4e_annotation_subscribe_without_mode_warning() -> Result<()> {
 #[tokio::test]
 async fn rtan4e1_skip_warning_when_attach_on_subscribe_false() -> Result<()> {
     use crate::channel::RealtimeChannelOptions;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::await_state;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -533,7 +534,8 @@ async fn rtan4c_subscribe_with_type_filter() {
 #[tokio::test]
 async fn rtan4d_subscribe_triggers_implicit_attach() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {

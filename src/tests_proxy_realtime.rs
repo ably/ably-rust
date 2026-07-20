@@ -21,7 +21,7 @@ use std::time::Duration;
 use crate::auth::{AuthCallback, AuthToken, TokenParams};
 use crate::error::Result;
 use crate::options::ClientOptions;
-use crate::protocol::{ChannelEvent, ChannelState, ConnectionState};
+use crate::{ChannelEvent, ChannelState, ConnectionState};
 use crate::proxy::{ProxySession, Rule};
 use crate::realtime::{await_channel_state, await_state, Realtime};
 use crate::tests_proxy::{proxy_session, SandboxTokenCallback};

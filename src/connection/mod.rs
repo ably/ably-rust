@@ -21,13 +21,47 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::Instant;
 
 use crate::auth::{AuthHeader, Credential};
+use crate::channel::{ChannelMode, ChannelState, ChannelStateChange};
 use crate::error::{ErrorCode, ErrorInfo, Result};
-use crate::protocol::{
-    action, ChannelMode, ChannelState, ChannelStateChange, ConnectionDetails, ConnectionEvent,
-    ConnectionState, ConnectionStateChange, ProtocolMessage,
-};
+use crate::protocol::{action, ConnectionDetails, ProtocolMessage};
 use crate::rest::{Format, Rest};
 use crate::transport::{Transport, TransportConnection, TransportEvent};
+
+// --- Connection state model (public API, re-exported via lib.rs) ---
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ConnectionState {
+    #[default]
+    Initialized,
+    Connecting,
+    Connected,
+    Disconnected,
+    Suspended,
+    Closing,
+    Closed,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ConnectionEvent {
+    Initialized,
+    Connecting,
+    Connected,
+    Disconnected,
+    Suspended,
+    Closing,
+    Closed,
+    Failed,
+    Update,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConnectionStateChange {
+    pub previous: ConnectionState,
+    pub current: ConnectionState,
+    pub event: ConnectionEvent,
+    pub reason: Option<ErrorInfo>,
+}
 
 pub(crate) type Generation = u64;
 

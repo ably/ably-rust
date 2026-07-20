@@ -1,91 +1,12 @@
+//! The Ably realtime wire protocol: `ProtocolMessage` and its supporting types.
+//!
+//! The public connection/channel state model that used to live here now sits
+//! in its owning domain modules (`crate::connection`, `crate::channel`); this
+//! module is wire-only.
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::ErrorInfo;
-
-// --- Public state types (re-exported via lib.rs) ---
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum ConnectionState {
-    #[default]
-    Initialized,
-    Connecting,
-    Connected,
-    Disconnected,
-    Suspended,
-    Closing,
-    Closed,
-    Failed,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ConnectionEvent {
-    Initialized,
-    Connecting,
-    Connected,
-    Disconnected,
-    Suspended,
-    Closing,
-    Closed,
-    Failed,
-    Update,
-}
-
-#[derive(Clone, Debug)]
-pub struct ConnectionStateChange {
-    pub previous: ConnectionState,
-    pub current: ConnectionState,
-    pub event: ConnectionEvent,
-    pub reason: Option<ErrorInfo>,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum ChannelState {
-    #[default]
-    Initialized,
-    Attaching,
-    Attached,
-    Detaching,
-    Detached,
-    Suspended,
-    Failed,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ChannelEvent {
-    Initialized,
-    Attaching,
-    Attached,
-    Detaching,
-    Detached,
-    Suspended,
-    Failed,
-    Update,
-}
-
-#[derive(Clone, Debug)]
-pub struct ChannelStateChange {
-    pub previous: ChannelState,
-    pub current: ChannelState,
-    pub event: ChannelEvent,
-    pub reason: Option<ErrorInfo>,
-    pub resumed: bool,
-    pub has_backlog: bool,
-    /// RTL13b/RTB1: when SUSPENDED with a scheduled reattach retry, the
-    /// delay until that retry.
-    pub retry_in: Option<std::time::Duration>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ChannelMode {
-    Presence,
-    Publish,
-    Subscribe,
-    PresenceSubscribe,
-    AnnotationPublish,
-    AnnotationSubscribe,
-}
-
-// --- Internal wire types (pub(crate)) ---
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

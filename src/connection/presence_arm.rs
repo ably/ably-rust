@@ -7,7 +7,8 @@
 use tokio::sync::oneshot;
 
 use crate::error::{ErrorCode, ErrorInfo, Result};
-use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+use crate::protocol::{action, ProtocolMessage};
+use crate::{ChannelState, ConnectionState};
 
 use super::*;
 

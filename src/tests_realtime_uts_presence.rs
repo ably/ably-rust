@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex as StdMutex};
 use crate::error::ErrorInfo;
 use crate::mock_ws::{MockTransport, MockWebSocket};
 use crate::options::ClientOptions;
-use crate::protocol::{action, flags, ChannelState, ConnectionState, ProtocolMessage};
+use crate::protocol::{action, flags, ProtocolMessage};
+use crate::{ChannelState, ConnectionState};
 use crate::realtime::{await_channel_state, await_state, Realtime};
 use crate::rest::{PresenceAction, PresenceMessage};
 

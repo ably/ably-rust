@@ -2462,7 +2462,7 @@ async fn generate_presence_events(app: &SandboxApp, channel_name: &str) {
     assert!(
         crate::realtime::await_state(
             &client.connection,
-            crate::protocol::ConnectionState::Connected,
+            crate::ConnectionState::Connected,
             10000
         )
         .await
@@ -2653,7 +2653,7 @@ async fn rsc24_batch_presence() {
     assert!(
         crate::realtime::await_state(
             &rt.connection,
-            crate::protocol::ConnectionState::Connected,
+            crate::ConnectionState::Connected,
             10000
         )
         .await
@@ -2755,7 +2755,7 @@ async fn rsa17g_revoke_tokens_prevents_use() {
     assert!(
         crate::realtime::await_state(
             &rt.connection,
-            crate::protocol::ConnectionState::Connected,
+            crate::ConnectionState::Connected,
             10000
         )
         .await

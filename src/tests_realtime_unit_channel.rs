@@ -40,10 +40,8 @@ use crate::options::LogLevel;
 #[allow(unused_imports)]
 use crate::presence::{LocalPresenceMap, PresenceMap};
 #[allow(unused_imports)]
-use crate::protocol::{
-    action, flags, ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionDetails,
-    ConnectionEvent, ConnectionState, ConnectionStateChange, ProtocolMessage, PublishResult,
-};
+use crate::protocol::{action, flags, ConnectionDetails, ProtocolMessage, PublishResult};
+use crate::{ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionEvent, ConnectionState, ConnectionStateChange};
 #[allow(unused_imports)]
 use crate::realtime::{Connection, Realtime, RealtimeAuth};
 #[allow(unused_imports)]
@@ -340,7 +338,7 @@ async fn rts3a_get_after_release_creates_new_channel() {
 async fn rtl2b_channel_initial_state_is_initialized() {
     // RTL2b: Channel starts in initialized state
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ChannelState;
+    use crate::ChannelState;
     use crate::realtime::Realtime;
 
     let mock = MockWebSocket::new();
@@ -359,7 +357,8 @@ async fn rtl2b_channel_initial_state_is_initialized() {
 async fn rtl2a_state_change_events_emitted() {
     // RTL2a: State changes emit corresponding events
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL2a";
@@ -415,7 +414,8 @@ async fn rtl2a_state_change_events_emitted() {
 async fn rtl2d_channel_state_change_structure() {
     // RTL2d/TH1/TH2/TH5: ChannelStateChange has current, previous, event
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelEvent, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelEvent, ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL2d";
@@ -464,7 +464,8 @@ async fn rtl2d_channel_state_change_includes_error() {
     // RTL2d/TH3: Error included in state change when channel fails
     use crate::error::ErrorInfo;
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL2d-error";
@@ -519,7 +520,8 @@ async fn rtl2d_channel_state_change_includes_error() {
 async fn rtl2_filtered_event_subscription() {
     // RTL2: Subscribing to a specific event only receives that event
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelEvent, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelEvent, ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL2-filtered";
@@ -574,7 +576,8 @@ async fn rtl2_filtered_event_subscription() {
 async fn rtl2g_update_event_on_additional_attached() {
     // RTL2g: UPDATE event when ATTACHED received while already attached
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelEvent, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelEvent, ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL2g";
@@ -633,7 +636,8 @@ async fn rtl2g_update_event_on_additional_attached() {
 async fn rtl2g_no_duplicate_state_events() {
     // RTL2g: No duplicate state events
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelEvent, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelEvent, ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL2g-nodup";
@@ -700,7 +704,8 @@ async fn rtl2g_no_duplicate_state_events() {
 async fn rtl2i_has_backlog_flag() {
     // RTL2i/TH6: hasBacklog set when ATTACHED has HAS_BACKLOG flag
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL2i";
@@ -749,7 +754,8 @@ async fn rtl2i_has_backlog_flag() {
 async fn rtl2i_has_backlog_false_when_not_present() {
     // RTL2i: hasBacklog false when flag not present
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL2i-false";
@@ -796,7 +802,8 @@ async fn rtl2i_has_backlog_false_when_not_present() {
 async fn rtl2d_resumed_flag_in_state_change() {
     // RTL2d: resumed flag propagated in ChannelStateChange
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL2d-resumed";
@@ -845,7 +852,8 @@ async fn channel_error_reason_populated_on_failure() {
     // Channel errorReason populated when channel enters failed state
     use crate::error::ErrorInfo;
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-errorReason";
@@ -899,7 +907,8 @@ async fn channel_error_reason_cleared_on_successful_attach() {
     // errorReason cleared after successful attach following a failure
     use crate::error::ErrorInfo;
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-errorReason-clear";
@@ -967,7 +976,7 @@ async fn rts3b_options_set_on_new_channel() {
     // RTS3b: get() with options sets them on new channels
     use crate::channel::RealtimeChannelOptions;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ChannelMode;
+    use crate::ChannelMode;
     use crate::realtime::Realtime;
 
     let mock = MockWebSocket::new();
@@ -1079,7 +1088,8 @@ async fn rtl16a_set_options_triggers_reattach() {
     // RTL16a: setOptions with params/modes on attached channel triggers reattachment
     use crate::channel::RealtimeChannelOptions;
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending: PendingConnection| {
@@ -1247,7 +1257,7 @@ async fn rts5_get_derived_with_options_sets_on_channel() {
     // RTS5: getDerived passes options to the created channel
     use crate::channel::{DeriveOptions, RealtimeChannelOptions};
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ChannelMode;
+    use crate::ChannelMode;
     use crate::realtime::Realtime;
 
     let mock = MockWebSocket::new();
@@ -1285,7 +1295,8 @@ async fn rts5_get_derived_with_options_sets_on_channel() {
 async fn rtl4a_attach_when_already_attached_is_noop() {
     // RTL4a: If already ATTACHED nothing is done
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL4a";
@@ -1346,7 +1357,8 @@ async fn rtl4a_attach_when_already_attached_is_noop() {
 async fn rtl4h_attach_while_attaching_waits() {
     // RTL4h: If ATTACHING, attach waits for completion
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL4h";
@@ -1405,7 +1417,8 @@ async fn rtl4h_attach_while_attaching_waits() {
 async fn rtl4h_attach_while_detaching_waits_then_attaches() {
     // RTL4h: If DETACHING, attach waits for detach then attaches
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL4h-detaching";
@@ -1482,7 +1495,8 @@ async fn rtl4g_attach_from_failed_clears_error_reason() {
     // RTL4g: Attach from FAILED clears errorReason
     use crate::error::ErrorInfo;
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL4g";
@@ -1550,7 +1564,8 @@ async fn rtl4b_attach_fails_when_connection_failed() {
     // RTL4b: Attach fails when connection is FAILED
     use crate::error::ErrorInfo;
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending: PendingConnection| {
@@ -1595,7 +1610,7 @@ async fn rtl4b_attach_fails_when_connection_failed() {
 async fn rtl4i_attach_queued_when_connecting() {
     // RTL4i: Attach transitions to ATTACHING when connection is CONNECTING
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ChannelState;
+    use crate::ChannelState;
     use crate::realtime::Realtime;
 
     let mock = MockWebSocket::new(); // No handler — connection stays pending
@@ -1625,7 +1640,8 @@ async fn rtl4i_attach_queued_when_connecting() {
 async fn rtl4i_attach_completes_when_connected() {
     // RTL4i: Queued attach completes when connection becomes CONNECTED
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL4i-connected";
@@ -1672,7 +1688,8 @@ async fn rtl4i_attach_completes_when_connected() {
 async fn rtl4c_attach_sends_message_and_transitions() {
     // RTL4c: ATTACH sent, transitions to ATTACHING, then ATTACHED
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelEvent, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelEvent, ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL4c";
@@ -1732,7 +1749,8 @@ async fn rtl4c1_attach_includes_channel_serial() {
     // RTL4c1: ATTACH includes channelSerial when available
     use crate::channel::RealtimeChannelOptions;
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelMode, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelMode, ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL4c1";
@@ -1806,7 +1824,8 @@ async fn rtl4c1_attach_includes_channel_serial() {
 async fn rtl4f_attach_timeout_transitions_to_suspended() {
     // RTL4f: Attach timeout → SUSPENDED
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending: PendingConnection| {
@@ -1839,7 +1858,8 @@ async fn rtl4k_attach_includes_params() {
     // RTL4k: ATTACH includes params from ChannelOptions
     use crate::channel::RealtimeChannelOptions;
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL4k";
@@ -1902,7 +1922,8 @@ async fn rtl4l_attach_includes_modes_as_flags() {
     // RTL4l: Modes encoded as flags in ATTACH
     use crate::channel::RealtimeChannelOptions;
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, flags, ChannelMode, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, flags, ProtocolMessage};
+    use crate::{ChannelMode, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL4l";
@@ -1959,9 +1980,8 @@ async fn rtl4l_attach_includes_modes_as_flags() {
 async fn rtl4m_modes_populated_from_attached_response() {
     // RTL4m: Modes decoded from ATTACHED flags
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{
-        action, flags, ChannelMode, ChannelState, ConnectionState, ProtocolMessage,
-    };
+    use crate::protocol::{action, flags, ProtocolMessage};
+    use crate::{ChannelMode, ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL4m";
@@ -2005,7 +2025,8 @@ async fn rtl4m_modes_populated_from_attached_response() {
 async fn rtl4j_attach_resume_flag_on_reattach() {
     // RTL4j: ATTACH_RESUME flag set on reattachment
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, flags, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, flags, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL4j";
@@ -2082,7 +2103,8 @@ async fn rtl4j_attach_resume_flag_on_reattach() {
 async fn rtl5a_detach_when_initialized_is_noop() {
     // RTL5a: Detach from INITIALIZED is no-op
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending: PendingConnection| {
@@ -2108,7 +2130,8 @@ async fn rtl5a_detach_when_initialized_is_noop() {
 async fn rtl5a_detach_when_already_detached_is_noop() {
     // RTL5a: Detach from DETACHED is no-op
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL5a-detached";
@@ -2176,7 +2199,8 @@ async fn rtl5a_detach_when_already_detached_is_noop() {
 async fn rtl5i_detach_while_detaching_waits() {
     // RTL5i: If DETACHING, detach waits for completion
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL5i";
@@ -2245,7 +2269,8 @@ async fn rtl5i_detach_while_detaching_waits() {
 async fn rtl5i_detach_while_attaching_waits_then_detaches() {
     // RTL5i: If ATTACHING, detach waits for attach then detaches
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL5i-attaching";
@@ -2305,7 +2330,8 @@ async fn rtl5b_detach_from_failed_results_in_error() {
     // RTL5b: Detach from FAILED is an error
     use crate::error::ErrorInfo;
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL5b";
@@ -2358,7 +2384,8 @@ async fn rtl5b_detach_from_failed_results_in_error() {
 async fn rtl5j_detach_from_suspended_transitions_to_detached() {
     // RTL5j: Detach from SUSPENDED → immediate DETACHED
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending: PendingConnection| {
@@ -2394,7 +2421,8 @@ async fn rtl5j_detach_from_suspended_transitions_to_detached() {
 async fn rtl5l_detach_when_not_connected_transitions_immediately() {
     // RTL5l: Detach when connection not CONNECTED → immediate DETACHED
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState};
+    use crate::protocol::{action};
+    use crate::{ChannelState};
     use crate::realtime::Realtime;
 
     let mock = MockWebSocket::new(); // No handler — stays connecting
@@ -2434,7 +2462,8 @@ async fn rtl5l_detach_when_not_connected_transitions_immediately() {
 async fn rtl5d_normal_detach_flow() {
     // RTL5d: DETACH sent, transitions to DETACHING then DETACHED
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelEvent, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelEvent, ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL5d";
@@ -2505,7 +2534,8 @@ async fn rtl5d_normal_detach_flow() {
 async fn rtl5f_detach_timeout_returns_to_previous_state() {
     // RTL5f: Detach timeout → back to ATTACHED
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL5f";
@@ -2552,7 +2582,8 @@ async fn rtl5f_detach_timeout_returns_to_previous_state() {
 async fn rtl5k_attached_during_detaching_sends_new_detach() {
     // RTL5k: ATTACHED received while DETACHING → sends new DETACH
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL5k";
@@ -2623,7 +2654,8 @@ async fn rtl5k_attached_during_detaching_sends_new_detach() {
 async fn rtl5k_attached_while_detached_sends_detach() {
     // RTL5k: ATTACHED received while DETACHED → sends DETACH
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL5k-detached";
@@ -2696,7 +2728,8 @@ async fn rtl5k_attached_while_detached_sends_detach() {
 async fn rtl5_detach_emits_state_change_events() {
     // RTL5: Detach emits DETACHING then DETACHED events
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelEvent, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelEvent, ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL5-events";
@@ -2762,7 +2795,8 @@ async fn rtl5_detach_clears_error_reason() {
     // RTL5: Successful detach clears errorReason
     use crate::error::ErrorInfo;
     use crate::mock_ws::{MockWebSocket, PendingConnection};
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-RTL5-error";
@@ -2839,7 +2873,8 @@ async fn rtl5_detach_clears_error_reason() {
 async fn rtl6i1_publish_single_message() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6i1";
@@ -2922,7 +2957,8 @@ async fn rtl6i1_publish_single_message() {
 async fn rtl6c1_publish_immediately_when_attached() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6c1-attached";
@@ -2996,7 +3032,8 @@ async fn rtl6c1_publish_immediately_when_attached() {
 async fn rtl6c1_publish_immediately_when_initialized() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6c1-init";
@@ -3055,7 +3092,8 @@ async fn rtl6c1_publish_immediately_when_initialized() {
 async fn rtl6c5_publish_does_not_attach() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6c5";
@@ -3117,7 +3155,8 @@ async fn rtl6c5_publish_does_not_attach() {
 async fn rtl6c2_publish_queued_when_connecting() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6c2-connecting";
@@ -3198,7 +3237,8 @@ async fn rtl6c2_publish_queued_when_connecting() {
 async fn rtl6c2_publish_queued_when_initialized() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6c2-init";
@@ -3281,7 +3321,8 @@ async fn rtl6c2_publish_queued_when_initialized() {
 async fn rtl6c2_multiple_queued_messages_order() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6c2-order";
@@ -3364,7 +3405,8 @@ async fn rtl6c2_multiple_queued_messages_order() {
 async fn rtl6c4_publish_fails_when_connection_failed() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6c4-failed";
@@ -3418,7 +3460,8 @@ async fn rtl6c4_publish_fails_when_connection_failed() {
 async fn rtl6c4_publish_fails_when_channel_failed() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6c4-ch-failed";
@@ -3485,7 +3528,8 @@ async fn rtl6c4_publish_fails_when_channel_failed() {
 async fn rtl6c2_publish_fails_when_queue_disabled() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6c2-noqueue";
@@ -3527,7 +3571,8 @@ async fn rtl6c2_publish_fails_when_queue_disabled() {
 async fn rtl6j_publish_returns_publish_result() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6j";
@@ -3609,7 +3654,8 @@ async fn rtl6j_publish_returns_publish_result() {
 async fn rtl6j_batch_publish_returns_multiple_serials() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6j-batch";
@@ -3683,7 +3729,8 @@ async fn rtl6j_batch_publish_returns_multiple_serials() {
 async fn rtl7a_subscribe_receives_all_messages() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl7a";
@@ -3770,7 +3817,8 @@ async fn rtl7a_subscribe_receives_all_messages() {
 async fn rtl7a_subscribe_multiple_messages_in_single_protocol_message() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl7a-multi";
@@ -3843,7 +3891,8 @@ async fn rtl7a_subscribe_multiple_messages_in_single_protocol_message() {
 async fn rtl7b_subscribe_with_name_filter() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl7b";
@@ -3926,7 +3975,8 @@ async fn rtl7b_subscribe_with_name_filter() {
 async fn rtl7b_multiple_name_subscriptions() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl7b-multi";
@@ -4000,7 +4050,8 @@ async fn rtl7b_multiple_name_subscriptions() {
 async fn rtl7g_subscribe_triggers_implicit_attach() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl7g";
@@ -4060,7 +4111,8 @@ async fn rtl7g_subscribe_triggers_implicit_attach() {
 async fn rtl7h_subscribe_no_attach_when_disabled() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl7h";
@@ -4108,7 +4160,8 @@ async fn rtl7h_subscribe_no_attach_when_disabled() {
 async fn rtl7g_subscribe_no_attach_when_already_attached() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl7g-already";
@@ -4167,7 +4220,8 @@ async fn rtl7g_subscribe_no_attach_when_already_attached() {
 async fn rtl17_messages_not_delivered_when_not_attached() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl17";
@@ -4226,7 +4280,8 @@ async fn rtl17_messages_not_delivered_when_not_attached() {
 async fn rtl8a_unsubscribe_specific_listener() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl8a";
@@ -4309,7 +4364,8 @@ async fn rtl8a_unsubscribe_specific_listener() {
 async fn rtl8b_unsubscribe_from_specific_name() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl8b";
@@ -4394,7 +4450,8 @@ async fn rtl8b_unsubscribe_from_specific_name() {
 async fn rtl8c_unsubscribe_all() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl8c";
@@ -4526,7 +4583,8 @@ async fn phase8d_attach(
 #[tokio::test]
 async fn rtl3a_failed_connection_transitions_attached_to_failed() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_channel_state, await_state};
 
     let (client, mock) = phase8d_setup();
@@ -4563,7 +4621,8 @@ async fn rtl3a_failed_connection_transitions_attached_to_failed() {
 #[tokio::test]
 async fn rtl3a_initialized_unaffected_by_failed() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let (client, mock) = phase8d_setup();
@@ -4597,7 +4656,7 @@ async fn rtl3a_initialized_unaffected_by_failed() {
 // --- RTL3b: CLOSED connection transitions ATTACHED channel to DETACHED ---
 #[tokio::test]
 async fn rtl3b_closed_connection_transitions_attached_to_detached() {
-    use crate::protocol::{ChannelState, ConnectionState};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_channel_state, await_state};
 
     let (client, mock) = phase8d_setup();
@@ -4618,7 +4677,7 @@ async fn rtl3b_closed_connection_transitions_attached_to_detached() {
 // --- RTL15a: attachSerial set from ATTACHED channelSerial ---
 #[tokio::test]
 async fn rtl15a_attach_serial_from_attached() {
-    use crate::protocol::ConnectionState;
+    use crate::ConnectionState;
     use crate::realtime::await_state;
 
     let (client, mock) = phase8d_setup();
@@ -4640,7 +4699,8 @@ async fn rtl15a_attach_serial_from_attached() {
 // --- RTL15a: attachSerial updated on additional ATTACHED ---
 #[tokio::test]
 async fn rtl15a_attach_serial_updated_on_additional_attached() {
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::await_state;
 
     let (client, mock) = phase8d_setup();
@@ -4669,7 +4729,7 @@ async fn rtl15a_attach_serial_updated_on_additional_attached() {
 // --- RTL15b: channelSerial set from ATTACHED ---
 #[tokio::test]
 async fn rtl15b_channel_serial_from_attached() {
-    use crate::protocol::ConnectionState;
+    use crate::ConnectionState;
     use crate::realtime::await_state;
 
     let (client, mock) = phase8d_setup();
@@ -4686,7 +4746,8 @@ async fn rtl15b_channel_serial_from_attached() {
 // --- RTL15b: channelSerial updated from MESSAGE ---
 #[tokio::test]
 async fn rtl15b_channel_serial_updated_from_message() {
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::await_state;
 
     let channel_name = "test-rtl15b-msg";
@@ -4717,7 +4778,8 @@ async fn rtl15b_channel_serial_updated_from_message() {
 // --- RTL15b: channelSerial NOT updated when field absent ---
 #[tokio::test]
 async fn rtl15b_channel_serial_not_updated_when_absent() {
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::await_state;
 
     let channel_name = "test-rtl15b-absent";
@@ -4747,7 +4809,8 @@ async fn rtl15b_channel_serial_not_updated_when_absent() {
 // --- RTL15b: channelSerial cleared on DETACHED (RTL15b1) ---
 #[tokio::test]
 async fn rtl15b_channel_serial_cleared_on_detached() {
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let channel_name = "test-rtl15b-detached";
@@ -4784,7 +4847,8 @@ async fn rtl15b_channel_serial_cleared_on_detached() {
 #[tokio::test]
 async fn rtl15b1_channel_serial_cleared_on_failed() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_channel_state, await_state};
 
     let channel_name = "test-rtl15b1-failed";
@@ -4822,7 +4886,8 @@ async fn rtl15b1_channel_serial_cleared_on_failed() {
 #[tokio::test]
 async fn rtl15b1_channel_serial_cleared_on_suspended() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_channel_state, await_state};
 
     let channel_name = "test-rtl15b1-suspended";
@@ -4875,7 +4940,8 @@ async fn rtl15b1_channel_serial_cleared_on_suspended() {
 #[tokio::test]
 async fn rtl13a_server_detached_triggers_reattach() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_channel_state, await_state};
 
     let channel_name = "test-rtl13a";
@@ -4929,7 +4995,8 @@ async fn rtl13a_server_detached_triggers_reattach() {
 // --- RTL13a: DETACHED while DETACHING is normal (not server-initiated) ---
 #[tokio::test]
 async fn rtl13a_detached_while_detaching_is_normal() {
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let channel_name = "test-rtl13a-normal";
@@ -4973,7 +5040,8 @@ async fn rtl13a_detached_while_detaching_is_normal() {
 // --- RTL12: Additional ATTACHED with resumed=false emits UPDATE ---
 #[tokio::test]
 async fn rtl12_additional_attached_not_resumed_emits_update() {
-    use crate::protocol::{action, ChannelEvent, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelEvent, ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let channel_name = "test-rtl12";
@@ -5022,7 +5090,8 @@ async fn rtl12_additional_attached_not_resumed_emits_update() {
 // --- RTL12: Additional ATTACHED with resumed=true does NOT emit UPDATE ---
 #[tokio::test]
 async fn rtl12_additional_attached_resumed_no_update() {
-    use crate::protocol::{action, flags, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, flags, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let channel_name = "test-rtl12-resumed";
@@ -5054,7 +5123,8 @@ async fn rtl12_additional_attached_resumed_no_update() {
 // --- RTL12: Additional ATTACHED without error has null reason ---
 #[tokio::test]
 async fn rtl12_additional_attached_no_error_null_reason() {
-    use crate::protocol::{action, ChannelEvent, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelEvent, ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let channel_name = "test-rtl12-no-err";
@@ -5090,7 +5160,8 @@ async fn rtl12_additional_attached_no_error_null_reason() {
 #[tokio::test]
 async fn rtl14_channel_error_attached_to_failed() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_channel_state, await_state};
 
     let channel_name = "test-rtl14";
@@ -5130,7 +5201,8 @@ async fn rtl14_channel_error_attached_to_failed() {
 #[tokio::test]
 async fn rtl14_channel_error_does_not_affect_other_channels() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_channel_state, await_state};
 
     let (client, mock) = phase8d_setup();
@@ -5168,7 +5240,7 @@ async fn rtl14_channel_error_does_not_affect_other_channels() {
 // --- RTL23: Channel name attribute ---
 #[tokio::test]
 async fn rtl23_channel_name_attribute() {
-    use crate::protocol::ConnectionState;
+    use crate::ConnectionState;
     use crate::realtime::await_state;
 
     let (client, _mock) = phase8d_setup();
@@ -5187,7 +5259,8 @@ async fn rtl23_channel_name_attribute() {
 #[tokio::test]
 async fn rtl24_error_reason_set_on_error() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_channel_state, await_state};
 
     let channel_name = "test-rtl24";
@@ -5228,7 +5301,8 @@ async fn rtl24_error_reason_set_on_error() {
 #[tokio::test]
 async fn rtl24_error_reason_cleared_on_attach() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_channel_state, await_state};
 
     let channel_name = "test-rtl24-clear";
@@ -5267,7 +5341,7 @@ async fn rtl24_error_reason_cleared_on_attach() {
 // --- RTL25b: whenState waits for state transition ---
 #[tokio::test]
 async fn rtl25b_when_state_waits_for_transition() {
-    use crate::protocol::{ChannelState, ConnectionState};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -5313,7 +5387,8 @@ async fn rtl25b_when_state_waits_for_transition() {
 // --- RTL25b: whenState fires only once ---
 #[tokio::test]
 async fn rtl25b_when_state_fires_only_once() {
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -5360,7 +5435,7 @@ async fn rtl25b_when_state_fires_only_once() {
 // --- RTL25a: whenState for non-current state does not fire immediately ---
 #[tokio::test]
 async fn rtl25a_when_state_for_non_current_state_waits() {
-    use crate::protocol::{ChannelState, ConnectionState};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -5416,7 +5491,8 @@ async fn setup_attached_channel_with_flags(
     std::sync::Arc<crate::channel::RealtimeChannel>,
 ) {
     use crate::mock_ws::{MockTransport, MockWebSocket};
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mut connected_msg = ProtocolMessage::connected("test-conn-id", "test-conn-key");
@@ -5494,7 +5570,7 @@ async fn rtl11_queued_presence_fails_on_detached() {
         ..crate::protocol::ProtocolMessage::new(crate::protocol::action::DETACHED)
     });
     t.await.unwrap().unwrap();
-    assert_eq!(channel.state(), crate::protocol::ChannelState::Detached);
+    assert_eq!(channel.state(), crate::ChannelState::Detached);
 
     // Attempting presence on DETACHED channel should error immediately
     let result = channel.presence().enter(None).await;
@@ -5506,7 +5582,8 @@ async fn rtl11_queued_presence_fails_on_detached() {
 #[tokio::test]
 async fn rtl11_queued_presence_fails_on_failed() {
     use crate::mock_ws::{MockTransport, MockWebSocket};
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pending| {
@@ -6001,9 +6078,8 @@ async fn rtl31_message_versions_delegates_to_rest() -> Result<()> {
 #[tokio::test]
 async fn rtl3c_suspended_connection_suspends_channels() -> Result<()> {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{
-        action, ChannelState, ConnectionDetails, ConnectionState, ProtocolMessage,
-    };
+    use crate::protocol::{action, ConnectionDetails, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -6066,7 +6142,8 @@ async fn rtl3c_suspended_connection_suspends_channels() -> Result<()> {
 #[tokio::test]
 async fn rtl13b_server_detached_reattach_timeout_to_suspended() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let (client, mock) = phase8d_setup();
@@ -6110,7 +6187,7 @@ async fn rtl13b_server_detached_reattach_timeout_to_suspended() {
 // would require raw frame capture which the mock doesn't expose.
 #[tokio::test]
 async fn rtl6i3_null_fields_omitted_from_publish() {
-    use crate::protocol::{ChannelState, ConnectionState};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let (client, mock) = phase8d_setup();
@@ -6165,7 +6242,8 @@ fn chd1_connection_details_deserialization() {
 #[tokio::test]
 async fn rtl3a_failed_to_attaching_channel_failed() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_channel_state, await_state};
 
     let (client, mock) = phase8d_setup();
@@ -6206,7 +6284,8 @@ async fn rtl3a_failed_to_attaching_channel_failed() {
 #[tokio::test]
 async fn rtl3c_suspended_to_attaching_channel_suspended() -> Result<()> {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -6262,7 +6341,8 @@ async fn rtl3c_suspended_to_attaching_channel_suspended() -> Result<()> {
 #[tokio::test]
 async fn rtl4b_attach_fails_when_suspended() -> Result<()> {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::await_state;
 
     let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -6310,7 +6390,8 @@ async fn rtl4b_attach_fails_when_suspended() -> Result<()> {
 // --- RTL4c: Error reason set after reattach from SUSPENDED (test 2: state change includes error) ---
 #[tokio::test]
 async fn rtl4c_error_reason_after_reattach_from_suspended_state_change() {
-    use crate::protocol::{action, ChannelEvent, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelEvent, ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let (client, mock) = phase8d_setup();
@@ -6352,7 +6433,8 @@ async fn rtl4c_error_reason_after_reattach_from_suspended_state_change() {
 #[tokio::test]
 async fn rtl4g_error_reason_cleared_on_reattach() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let (client, mock) = phase8d_setup();
@@ -6406,7 +6488,8 @@ async fn rtl4g_error_reason_cleared_on_reattach() {
 #[tokio::test]
 async fn rtl6_binary_data_round_trip() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6-binary";
@@ -6473,7 +6556,8 @@ async fn rtl6_binary_data_round_trip() {
 #[tokio::test]
 async fn rtl6_e2e_publish() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6-e2e";
@@ -6572,7 +6656,8 @@ async fn rtl6_e2e_publish() {
 #[tokio::test]
 async fn rtl6c1_publish_when_channel_attaching() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6c1-attaching";
@@ -6646,7 +6731,8 @@ async fn rtl6c1_publish_when_channel_attaching() {
 #[tokio::test]
 async fn rtl6c2_fails_when_queue_messages_false() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl6c2-noq";
@@ -6692,7 +6778,8 @@ async fn rtl6c2_fails_when_queue_messages_false() {
 async fn rtl6c4_fails_when_channel_suspended() -> Result<()> {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -6756,7 +6843,8 @@ async fn rtl6c4_fails_when_channel_suspended() -> Result<()> {
 #[tokio::test]
 async fn rtl6c4_fails_when_connection_suspended() -> Result<()> {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{ConnectionState, ProtocolMessage};
+    use crate::protocol::{ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::await_state;
 
     let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -7053,7 +7141,8 @@ async fn rtl7b_multiple_name_specific_subscriptions_independent() {
 // --- RTL7g: Subscribe does not trigger reattach on already-attached channel ---
 #[tokio::test]
 async fn rtl7g_subscribe_does_not_reattach() {
-    use crate::protocol::{action, ChannelState};
+    use crate::protocol::{action};
+    use crate::{ChannelState};
 
     let (_, mock, _conn, channel) = setup_attached_channel("test-rtl7g-noreattach", None).await;
     assert_eq!(channel.state(), ChannelState::Attached);
@@ -7084,7 +7173,8 @@ async fn rtl7g_subscribe_does_not_reattach() {
 #[tokio::test]
 async fn rtl7g_subscribe_from_detached() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-rtl7g-detached";
@@ -7163,7 +7253,8 @@ async fn rtl8a_unsubscribe_non_subscribed_is_noop() {
 // --- RTL12: UPDATE without error has null reason ---
 #[tokio::test]
 async fn rtl12_update_without_error_has_null_reason() {
-    use crate::protocol::{action, ChannelEvent, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelEvent, ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let channel_name = "test-rtl12-null-reason";
@@ -7202,7 +7293,8 @@ async fn rtl12_update_without_error_has_null_reason() {
 #[tokio::test]
 async fn rtl13b_repeated_failures_cycle_suspended_attaching() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::await_state;
 
     let (client, mock) = phase8d_setup();
@@ -7244,7 +7336,8 @@ async fn rtl13b_repeated_failures_cycle_suspended_attaching() {
 #[tokio::test]
 async fn rtl14_channel_error_attaching() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_channel_state, await_state};
 
     let (client, mock) = phase8d_setup();
@@ -7288,7 +7381,8 @@ async fn rtl14_channel_error_attaching() {
 #[tokio::test]
 async fn rtl14_channel_error_isolated() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_channel_state, await_state};
 
     let (client, mock) = phase8d_setup();
@@ -7327,7 +7421,8 @@ async fn rtl14_channel_error_isolated() {
 #[tokio::test]
 async fn rtl14_channel_error_during_detach() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_channel_state, await_state};
 
     let channel_name = "test-rtl14-detaching";
@@ -7368,7 +7463,8 @@ async fn rtl14_channel_error_during_detach() {
 #[tokio::test]
 async fn rtl14_channel_error_cancels_retry() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_channel_state, await_state};
 
     let channel_name = "test-rtl14-cancel";
@@ -7419,7 +7515,8 @@ async fn rtl14_channel_error_cancels_retry() {
 #[tokio::test]
 async fn rtl14_channel_error_fifth() {
     use crate::error::ErrorInfo;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_channel_state, await_state};
 
     let (client, mock) = phase8d_setup();
@@ -7554,7 +7651,8 @@ async fn delta_attached(
     std::sync::Arc<crate::channel::RealtimeChannel>,
 ) {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let mock = MockWebSocket::with_handler(|pc| {
@@ -7949,7 +8047,8 @@ async fn pc3_vcdiff_decoder_called_with_utf8_base() {
 #[tokio::test]
 async fn rtl20_mismatched_id_triggers_recovery() {
     use crate::error::ErrorCode;
-    use crate::protocol::{action, ChannelState};
+    use crate::protocol::{action};
+    use crate::{ChannelState};
 
     let (client, mock, channel) =
         delta_attached(passthrough_decoder(), "test-rtl20-mismatch").await;
@@ -8022,7 +8121,8 @@ async fn rtl20_mismatched_id_triggers_recovery() {
 #[tokio::test]
 async fn rtl18_decode_failure_triggers_recovery() {
     use crate::error::ErrorCode;
-    use crate::protocol::{action, ChannelState};
+    use crate::protocol::{action};
+    use crate::{ChannelState};
 
     let (client, mock, channel) = delta_attached(failing_decoder(), "test-rtl18").await;
     let (_id, mut rx) = channel.subscribe();
@@ -8093,7 +8193,8 @@ async fn rtl18_decode_failure_triggers_recovery() {
 // UTS: realtime/unit/RTL18c/recovery-completes-on-attached-0
 #[tokio::test]
 async fn rtl18c_recovery_completes_on_attached() {
-    use crate::protocol::{action, ChannelState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState};
 
     // Decoder fails on the first call, then behaves as pass-through.
     let attempt = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -8177,7 +8278,8 @@ async fn rtl18c_recovery_completes_on_attached() {
 // UTS: realtime/unit/RTL18/single-recovery-at-time-1
 #[tokio::test]
 async fn rtl18_single_recovery_at_a_time() {
-    use crate::protocol::{action, ChannelState};
+    use crate::protocol::{action};
+    use crate::{ChannelState};
 
     let (client, mock, channel) = delta_attached(failing_decoder(), "test-rtl18-single").await;
     let conns = mock.active_connections();
@@ -8268,7 +8370,7 @@ async fn rts3a_channels_get_returns_same() {
 
 #[test]
 fn chm1_channel_mode_attributes() {
-    use crate::protocol::ChannelMode;
+    use crate::ChannelMode;
     // CHM1: ChannelMode enum has the expected variants
     let presence = ChannelMode::Presence;
     let publish = ChannelMode::Publish;
@@ -8292,7 +8394,7 @@ fn chm1_channel_mode_attributes() {
 #[tokio::test]
 async fn rtl2b_channel_initial_state_depth() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ChannelState;
+    use crate::ChannelState;
     use crate::realtime::Realtime;
 
     let mock = MockWebSocket::new();
@@ -8354,7 +8456,7 @@ async fn rtl_channels_get_returns_same_channel_depth() {
 #[tokio::test]
 async fn rtl_multiple_channels_independent_depth() {
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::ChannelState;
+    use crate::ChannelState;
     use crate::realtime::Realtime;
 
     let mock = MockWebSocket::new();
@@ -8383,7 +8485,8 @@ async fn rtl_multiple_channels_independent_depth() {
 async fn tm2_all_fields_populated_together() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-tm2-all";
@@ -8458,7 +8561,8 @@ async fn tm2_all_fields_populated_together() {
 async fn tm2a_existing_id_not_overwritten() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-tm2a-existing";
@@ -8520,7 +8624,8 @@ async fn tm2a_existing_id_not_overwritten() {
 async fn tm2a_message_id_populated() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-tm2a";
@@ -8593,7 +8698,8 @@ async fn tm2a_message_id_populated() {
 async fn tm2a_no_id_when_protocol_message_has_no_id() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-tm2a-no-proto-id";
@@ -8656,7 +8762,8 @@ async fn tm2a_no_id_when_protocol_message_has_no_id() {
 async fn tm2c_connection_id_populated() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-tm2c";
@@ -8719,7 +8826,8 @@ async fn tm2c_connection_id_populated() {
 async fn tm2c_existing_connection_id_not_overwritten() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-tm2c-existing";
@@ -8782,7 +8890,8 @@ async fn tm2c_existing_connection_id_not_overwritten() {
 async fn tm2f_existing_timestamp_not_overwritten() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-tm2f-existing";
@@ -8845,7 +8954,8 @@ async fn tm2f_existing_timestamp_not_overwritten() {
 async fn tm2f_timestamp_populated() {
     use crate::error::ErrorInfo;
     use crate::mock_ws::MockWebSocket;
-    use crate::protocol::{action, ChannelState, ConnectionState, ProtocolMessage};
+    use crate::protocol::{action, ProtocolMessage};
+    use crate::{ChannelState, ConnectionState};
     use crate::realtime::{await_state, Realtime};
 
     let channel_name = "test-tm2f";

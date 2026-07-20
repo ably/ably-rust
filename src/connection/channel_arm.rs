@@ -8,10 +8,8 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 use crate::error::{ErrorCode, ErrorInfo, Result};
-use crate::protocol::{
-    action, flags, ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionState,
-    ProtocolMessage,
-};
+use crate::protocol::{action, flags, ProtocolMessage};
+use crate::{ChannelEvent, ChannelMode, ChannelState, ChannelStateChange, ConnectionState};
 
 use super::presence_arm::{deliver_presence, resolve_presence_gets};
 use super::*;
