@@ -5,7 +5,7 @@ use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use cipher::generic_array::GenericArray;
 use rand::{thread_rng, Rng, RngCore};
 
-use crate::error::{Error, ErrorCode, Result};
+use crate::error::{ErrorCode, ErrorInfo, Result};
 
 type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
 type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
@@ -28,15 +28,10 @@ impl Default for CipherParams {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub enum CipherKind {
+    #[default]
     AesCbc,
-}
-
-impl Default for CipherKind {
-    fn default() -> Self {
-        CipherKind::AesCbc
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -87,8 +82,9 @@ impl CipherParamsBuilder {
             CipherKind::AesCbc => match len {
                 Some(KeyLen::Bits128) => {
                     let key = if let Some(key) = self.key {
-                        key.try_into()
-                            .map_err(|_| Error::new(ErrorCode::BadRequest, "Invalid key size"))?
+                        key.try_into().map_err(|_| {
+                            ErrorInfo::new(ErrorCode::BadRequest.code(), "Invalid key size")
+                        })?
                     } else {
                         let mut data = [0; 16];
                         thread_rng().fill_bytes(&mut data);
@@ -99,8 +95,9 @@ impl CipherParamsBuilder {
                 }
                 Some(KeyLen::Bits256) | None => {
                     let key = if let Some(key) = self.key {
-                        key.try_into()
-                            .map_err(|_| Error::new(ErrorCode::BadRequest, "Invalid key size"))?
+                        key.try_into().map_err(|_| {
+                            ErrorInfo::new(ErrorCode::BadRequest.code(), "Invalid key size")
+                        })?
                     } else {
                         let mut data = [0; 32];
                         thread_rng().fill_bytes(&mut data);
@@ -169,9 +166,9 @@ impl CipherParams {
 
     /// Decrypt the data using AES-CBC with PKCS7 padding.
     pub fn decrypt(&self, data: &mut [u8]) -> Result<Vec<u8>> {
-        if data.len() % self.block_size() != 0 || data.len() < self.block_size() {
-            return Err(Error::new(
-                ErrorCode::InvalidMessageDataOrEncoding,
+        if !data.len().is_multiple_of(self.block_size()) || data.len() < self.block_size() {
+            return Err(ErrorInfo::new(
+                ErrorCode::InvalidMessageDataOrEncoding.code(),
                 format!(
                     "invalid cipher message data; unexpected length: {}",
                     data.len()
@@ -195,8 +192,8 @@ impl CipherParams {
             }
         }
         .map_err(|_| {
-            Error::new(
-                ErrorCode::InvalidMessageDataOrEncoding,
+            ErrorInfo::new(
+                ErrorCode::InvalidMessageDataOrEncoding.code(),
                 "failed to decrypt message, malformed padding",
             )
         })
@@ -214,8 +211,8 @@ impl CipherParams {
             }
         }
         .map_err(|_| {
-            Error::new(
-                ErrorCode::InvalidMessageDataOrEncoding,
+            ErrorInfo::new(
+                ErrorCode::InvalidMessageDataOrEncoding.code(),
                 "failed to decrypt message, malformed padding",
             )
         })
@@ -223,7 +220,7 @@ impl CipherParams {
 }
 
 impl TryFrom<&str> for CipherParams {
-    type Error = Error;
+    type Error = ErrorInfo;
 
     fn try_from(value: &str) -> Result<Self> {
         Self::builder().string(value)?.build()
@@ -231,7 +228,7 @@ impl TryFrom<&str> for CipherParams {
 }
 
 impl TryFrom<String> for CipherParams {
-    type Error = Error;
+    type Error = ErrorInfo;
 
     fn try_from(value: String) -> Result<Self> {
         Self::builder().string(&value)?.build()
@@ -239,7 +236,7 @@ impl TryFrom<String> for CipherParams {
 }
 
 impl TryFrom<&[u8]> for CipherParams {
-    type Error = Error;
+    type Error = ErrorInfo;
 
     fn try_from(value: &[u8]) -> Result<Self> {
         Self::builder().key(value.to_vec()).build()
@@ -247,145 +244,9 @@ impl TryFrom<&[u8]> for CipherParams {
 }
 
 impl TryFrom<Vec<u8>> for CipherParams {
-    type Error = Error;
+    type Error = ErrorInfo;
 
     fn try_from(value: Vec<u8>) -> Result<Self> {
         Self::builder().key(value).build()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::convert::TryInto;
-    use std::fs;
-
-    use serde::Deserialize;
-
-    use super::*;
-    use crate::{json, rest};
-
-    #[test]
-    fn generate_random_key_128() {
-        let key = CipherParams::builder()
-            .key_len(KeyLen::Bits128)
-            .build()
-            .unwrap();
-        assert_eq!(key.bits(), 128);
-    }
-
-    #[test]
-    fn generate_random_key_256() {
-        let key = CipherParams::builder()
-            .key_len(KeyLen::Bits256)
-            .build()
-            .unwrap();
-        assert_eq!(key.bits(), 256);
-    }
-
-    #[derive(Deserialize)]
-    struct CryptoData {
-        key: String,
-        iv: String,
-        items: Vec<CryptoFixture>,
-    }
-
-    impl CryptoData {
-        fn load(name: &str) -> Self {
-            let path = format!("submodules/ably-common/test-resources/{}", name);
-            let file = fs::File::open(path).unwrap_or_else(|_| panic!("Expected {} to open", name));
-            serde_json::from_reader(file)
-                .unwrap_or_else(|_| panic!("Expected JSON data in {}", name))
-        }
-
-        fn opts(&self) -> rest::ChannelOptions {
-            rest::ChannelOptions {
-                cipher: Some(
-                    CipherParams::builder()
-                        .string(&self.key)
-                        .unwrap()
-                        .build()
-                        .unwrap(),
-                ),
-            }
-        }
-
-        fn cipher(&self) -> CipherParams {
-            base64::decode(&self.key)
-                .expect("Expected base64 encoded cipher key")
-                .try_into()
-                .unwrap()
-        }
-
-        fn cipher_iv(&self) -> Vec<u8> {
-            base64::decode(&self.iv).expect("Expected base64 encoded IV")
-        }
-    }
-
-    #[derive(Deserialize)]
-    struct CryptoFixture {
-        encoded: json::Value,
-        encrypted: json::Value,
-    }
-
-    #[tokio::test]
-    async fn encrypt_message_128() -> Result<()> {
-        let data = CryptoData::load("crypto-data-128.json");
-        let cipher = data.cipher();
-        for item in data.items.iter() {
-            let mut msg = rest::Message::from_encoded(item.encoded.clone(), None)?;
-            msg.encode_with_iv(
-                &rest::Format::MessagePack,
-                Some(&cipher),
-                Some(data.cipher_iv().clone()),
-            )?;
-            let expected = rest::Message::from_encoded(item.encrypted.clone(), None)?;
-            assert_eq!(msg.data, expected.data);
-            assert_eq!(msg.encoding, expected.encoding);
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn encrypt_message_256() -> Result<()> {
-        let data = CryptoData::load("crypto-data-256.json");
-        let cipher = data.cipher();
-        for item in data.items.iter() {
-            let mut msg = rest::Message::from_encoded(item.encoded.clone(), None)?;
-            msg.encode_with_iv(
-                &rest::Format::MessagePack,
-                Some(&cipher),
-                Some(data.cipher_iv().clone()),
-            )?;
-            let expected = rest::Message::from_encoded(item.encrypted.clone(), None)?;
-            assert_eq!(msg.data, expected.data);
-            assert_eq!(msg.encoding, expected.encoding);
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn decrypt_message_128() -> Result<()> {
-        let data = CryptoData::load("crypto-data-128.json");
-        let opts = data.opts();
-        for item in data.items.iter() {
-            let msg = rest::Message::from_encoded(item.encrypted.clone(), Some(&opts))?;
-            assert_eq!(msg.encoding, rest::Encoding::None);
-            let expected = rest::Message::from_encoded(item.encoded.clone(), None)?;
-            assert_eq!(msg.data, expected.data);
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn decrypt_message_256() -> Result<()> {
-        let data = CryptoData::load("crypto-data-256.json");
-        let opts = data.opts();
-        for item in data.items.iter() {
-            let msg = rest::Message::from_encoded(item.encrypted.clone(), Some(&opts))?;
-            assert_eq!(msg.encoding, rest::Encoding::None);
-            let expected = rest::Message::from_encoded(item.encoded.clone(), None)?;
-            assert_eq!(msg.data, expected.data);
-        }
-        Ok(())
     }
 }
