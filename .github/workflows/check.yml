@@ -33,9 +33,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      # Unit suite + conformance ratchets only. The live sandbox and uts-proxy
-      # integration tests (tests_*_integration, tests_proxy*, and the network
-      # tests_realtime_uts_* modules) require network access and are run
-      # manually, not in CI.
+      # Unit suite + the self-contained design-conformance ratchet only.
+      # Excluded from CI (run manually):
+      #  - live sandbox / uts-proxy tests (tests_*_integration, tests_proxy*,
+      #    the network tests_realtime_uts_* modules) need network access;
+      #  - the uts_coverage ratchet needs the ably/specification repo checked
+      #    out alongside (../specification), pinned to the matching commit.
       - name: Test
-        run: cargo test --lib -- _unit_ design_conformance uts_coverage uts_channels_advanced
+        run: cargo test --lib -- _unit_ design_conformance uts_channels_advanced
